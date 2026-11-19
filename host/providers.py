@@ -2030,6 +2030,8 @@ class AioProvider(Provider):
                           confirm=f"Desligar {label}? ({cut})")
             else:
                 it.update(sub="Desligado" + (f" · {w}" if w else ""), sub_color="#8B98A5", bg=self.OFF_BG)
+                if feat == "USB":   # com o USB da AIO ligado, a ligação ao ESP perde dados (testado)
+                    it["confirm"] = "Ligar o USB da AIO? A ligação ao DashDeck pode falhar com ele ligado."
             items.append(it)
         b = self.battery()
         pw = f"{b['w']:.1f} W".replace(".", ",") if b["w"] is not None else "?"

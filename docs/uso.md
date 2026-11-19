@@ -145,7 +145,7 @@ Os interruptores da placa AIO v2, como na aplicação **AIO v2 Controller**: um 
 - **Energia** (5.º box): bateria e potência total agora. Tocar abre o consumo de cada recurso e os botões **Medir**. A medição usa o `aiov2_ctl --measure`: mede a bateria com o recurso ligado e desligado (uns 5 s cada, por isso pede confirmação; no LoRa o meshtasticd reinicia). Só funciona a bateria, sem carregador. Os valores ficam guardados em `~/.config/dashd/aio_power.json`.
 - Tocar num box desligado liga o recurso. Num ligado, pede confirmação antes de desligar, porque
   pode cortar o que o está a usar (desligar o LoRa pára o meshtasticd, como na aplicação; desligar
-  o SDR pára a receção do ADS-B e do AIS).
+  o SDR pára a receção do ADS-B e do AIS). Ligar o **USB** também pede confirmação: com ele ligado, a ligação USB ao DashDeck perde dados.
 - Enquanto muda, o box mostra "a mudar..."; o resultado aparece num aviso.
 - O estado é lido a cada 5 s, por isso também mostra o que for mudado na aplicação do uConsole.
 - No menu, o box AIO v2 mostra os recursos ligados.
