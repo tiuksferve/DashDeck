@@ -1,0 +1,116 @@
+# DashDeck: tela auxiliar do uConsole
+
+O DashDeck transforma uma **Waveshare ESP32-C6-Touch-LCD-1.47** (320×172 na horizontal, com toque) num
+painel de controle e informação do **ClockworkPi uConsole** (CM5, Pi OS com Wayland/labwc e placa
+AIO v2 com RTL-SDR, LoRa e GPS). A placa está ligada só por **USB-C**, sem fios nos GPIO do uConsole.
+
+Na tela você pode:
+- abrir as aplicações do uConsole;
+- ligar e parar serviços;
+- ver dados ao vivo: Meshtastic, GPS, ADS-B, AIS e o estado do sistema;
+- ligar e desligar o readsb e o AIS-catcher a partir da tela, que partilham o RTL-SDR;
+- enviar respostas rápidas pela rede Meshtastic.
+
+```
+ uConsole                                                    ESP32-C6 (DashDeck, LVGL 9)
+ ┌──────────────────────────────┐   JSON, uma linha/msg   ┌───────────────────────────────┐
+ │ dashd (Python, systemd user) │ ◀═════ USB-C (CDC) ════▶│ só desenha telas genéricas    │
+ │  config.toml → menus, ações  │                         │ menu · list · kv · log · text │
+ │  providers → dados ao vivo   │                         │ plot (mapa, céu do GPS)       │
+ └──────┬───────────────────────┘                         │ toque, swipe, botão BOOT      │
+        │ HTTP 127.0.0.1:8080                             └───────────────────────────────┘
+        ▼
+ MeshDeckWeb ──TCP 4403──▶ meshtasticd (rádio LoRa)
+```
+
+O ESP **não guarda lógica**: menus, dados e ações ficam no daemon `dashd` do uConsole. Para
+mudar o menu basta editar `host/config.toml` e reiniciar o serviço, sem regravar o ESP.
+
+## Arranque rápido
+
+```bash
+systemctl --user status dashd       # estado (arranca sozinho com a sessão)
+systemctl --user restart dashd      # depois de editar host/config.toml
+systemctl --user stop dashd         # libertar a porta /dev/esp-dash
+systemctl --user status dashd -n 30 --no-pager   # últimas linhas do log
+```
+
+- **Para depurar**, rode em primeiro plano: `systemctl --user stop dashd && /usr/bin/python3 host/dashd.py -v`.
+  Use o `/usr/bin/python3`: o `python3` do PATH é um venv que não tem as dependências.
+- **Para gravar o firmware**, rode `firmware/flash.sh`. Ele para o dashd, grava e volta a ligá-lo.
+- **Para instalar noutro uConsole**, siga [docs/instalacao.md](docs/instalacao.md).
+
+## Na tela
+
+- **Menu inicial em boxes com scroll lateral**: AIO v2, Meshtastic, GPS, ADS-B, AIS, SDR, Aplicações, Serviços e Sistema.
+- **Barra de cima**: botão ←, título, pontos de página, hora, bateria do uConsole e ícone da ligação USB (verde ou vermelho).
+- **Dock** (na tela inicial e em Aplicações): Início, Relógio, Captura, Brilho e Bloquear.
+- **Ecrã apagado** após 3 min sem toques na tela inicial; um toque liga-o.
+- **Swipe para os lados** nas telas com várias páginas (GPS, ADS-B, AIS, Meshtastic).
+- **Para voltar**: o botão ← no topo, o **botão BOOT** da placa ou o Início no dock.
+
+Os detalhes de cada tela estão em [docs/uso.md](docs/uso.md).
+
+## Estado
+
+| Módulo | O que faz | Estado |
+|---|---|---|
+| Aplicações | Os programas de Acessórios do uConsole, lidos dos `.desktop` com o ícone real, mais Terminal, Gqrx, Arquivos e PyCharm | ok |
+| Meshtastic | Painel, Nós e Conversas (canais e diretas; cada uma abre as suas mensagens, verdes para RF e lilás para MQTT), com Responder em cada mensagem, Mensagem direta no detalhe do nó e o aviso animado de mensagem direta. As não lidas aparecem como selo vermelho no box. Os dados vêm pela API local do MeshDeckWeb | ok |
+| GPS | GPS ao vivo pelo MeshDeckWeb (com o gpsmux, partilhado com o meshtasticd), posição pelo Meshtastic, ou NMEA direto do `/dev/ttyAMA0`. Página com o céu dos satélites | ok |
+| ADS-B | Liga e desliga o readsb. Lista de aeronaves, detalhe e mapa com trajetos, zoom e setas sobre o mapa, e seguir uma aeronave | ok |
+| AIS | Liga e desliga o AIS-catcher. Lista de navios, detalhe e o mesmo mapa com trajetos e seguir um navio | ok |
+| AIO v2 | Interruptores GPS, LoRa, SDR e USB da placa AIO v2 (pelo `aiov2_ctl`), com informação ao vivo de cada um, a energia da bateria e a medição do consumo por recurso | ok |
+| SDR | Monitor do RTL-SDR: alimentação, dongle, quem o usa, frequência, histórico e "Libertar SDR" | ok |
+| Serviços | Ligar, parar e reiniciar unidades systemd, com o grupo exclusivo `sdr` (um só uso do RTL-SDR) | ok |
+| Sistema | CPU, temperatura, RAM, disco, bateria e IPs | ok |
+| Relógio | Ecrã inteiro em pixel art: paisagem que segue o sol e o tempo, ou digital retro; previsão do dia (Open-Meteo); swipe troca o mostrador e muda o brilho | ok |
+| Dock | Comandos fixos configuráveis | ok |
+
+O que falta e as limitações conhecidas estão em **[docs/pendencias.md](docs/pendencias.md)**.
+
+## Documentação
+
+| Documento | Conteúdo |
+|---|---|
+| [docs/instalacao.md](docs/instalacao.md) | Instalar do zero: dependências, udev, serviço, ESP-IDF, gravar o firmware e a ponte MeshDeckWeb |
+| [docs/uso.md](docs/uso.md) | Navegação, gestos e cada módulo na tela |
+| [docs/configuracao.md](docs/configuracao.md) | Referência do `host/config.toml`: tipos de item, providers e dock |
+| [docs/arquitetura.md](docs/arquitetura.md) | Como funciona: firmware, daemon, protocolo serial e a ponte Meshtastic |
+| [docs/pendencias.md](docs/pendencias.md) | O que falta, ideias e limitações conhecidas |
+
+## Estrutura
+
+```
+host/                 lado do uConsole (Python 3.11, /usr/bin/python3)
+  dashd.py            daemon: ligação serial, navegação, ações, envio de ícones e mapas
+  providers.py        dados ao vivo: system, gps, adsb, ais, mesh, clock, aio, sdr; trajetos e uso do SDR
+  clockscene.py       relógio: previsão (Open-Meteo), cena da paisagem (8 bpp) e ícones do tempo
+  meshbridge.py       cliente da API local do MeshDeckWeb
+  emojis.py           emojis no texto: separa as sequências e desenha-as a cores para o ESP
+  maptiles.py         tiles do mapa (Web Mercator), cache e redução a 16 cores
+  icons.py            ícones das apps (tema GTK, emoji) → RGB565A8
+  xdgapps.py          lista de aplicações a partir dos .desktop
+  config.toml         menus, dock e opções
+  dashd.service       unidade systemd --user
+firmware/             ESP-IDF 5.5 + LVGL 9.2 (ESP32-C6)
+  main/ui.c           renderizador de telas, protocolo (cabeçalho do arquivo)
+  main/clockface.c    mostradores do relógio em pixel art
+  main/bootanim.c     animação de arranque (Pixels ou Nascer do sol)
+  main/link.c         USB-Serial-JTAG, linhas JSON, logs "# ..."
+  main/board.c        display JD9853, toque AXS5106L, backlight, rotação
+  main/fonts/         fontes Montserrat com acentos (geradas)
+  components/         drivers do display e do toque (do demo Waveshare, corrigidos)
+  tools/gen_fonts.py  gera main/fonts a partir de tools/fonts/Montserrat-Medium.ttf
+  flash.sh            compila e grava (build em /dev/shm)
+setup/                regra udev, ativação do IDF e install.sh
+docs/                 esta documentação
+```
+
+## Licença
+MIT (ver [LICENSE](LICENSE)).
+
+## Licenças de terceiros
+- Montserrat: SIL Open Font License (`firmware/tools/fonts/OFL.txt`).
+- Drivers JD9853 e AXS5106: derivados do demo da Waveshare.
+- Tiles do mapa: © Esri (estilos `simples` e `satelite`) e © OpenStreetMap (`osm`). Use-os com moderação; o dashd guarda-os em cache.

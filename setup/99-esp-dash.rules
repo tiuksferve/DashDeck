@@ -1,0 +1,4 @@
+# Nome fixo /dev/esp-dash para a tela DashDeck (ESP32-C6 em USB-Serial-JTAG nativo, 303a:1001).
+# Serve para qualquer ESP32-C6/S3 em USB-Serial-JTAG. Com mais de um ESP32 ligado ao uConsole, acrescente
+# ATTRS{serial}=="..." com o da placa da tela (ver: udevadm info -a /dev/ttyACM0 | grep serial).
+SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", ATTRS{idProduct}=="1001", SYMLINK+="esp-dash", MODE="0660", GROUP="dialout"

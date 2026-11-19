@@ -1,0 +1,10 @@
+# Build do ESP-IDF (o flash.sh compila em /dev/shm/dashdeck-build) e componentes descarregados
+firmware/build/
+firmware/managed_components/
+firmware/sdkconfig.old
+# Python
+__pycache__/
+*.pyc
+# Editores
+.idea/
+.vscode/

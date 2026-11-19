@@ -1,0 +1,239 @@
+# Configuração do dashd: o menu da tela DashDeck.
+# Edite e reinicie o serviço (systemctl --user restart dashd). Não é preciso regravar o ESP.
+#
+# Tipos de item:
+#   submenu  — abre outro menu (items = [...])
+#   launch   — abre uma aplicação no uConsole (cmd)
+#   shell    — executa um comando em segundo plano e mostra um aviso (cmd, done)
+#   service  — liga/para/reinicia uma unidade systemd (unit, group opcional)
+#              Serviços com o mesmo "group" são exclusivos: ligar um pára os outros (ex.: um só SDR).
+#   provider — tela com dados ao vivo (provider = system | gps | adsb | ais | mesh | clock | aio | sdr)
+#   text     — tela de texto fixo
+#   home     — volta ao menu inicial
+#   backlight — alterna o brilho (levels = [25, 50, 75, 100])
+# img: imagem no lugar do ícone — "emoji:✈", um nome do tema de ícones ou um caminho .png/.svg
+# Ícones: home settings wifi gps play stop list bell power refresh eye charge battery usb bluetooth
+#         sd folder file mail audio video image warning bars keyboard call upload download loop edit ...
+
+[dashd]
+port = "/dev/esp-dash"
+title = "DashDeck"
+refresh = 2.0       # segundos entre atualizações da tela aberta
+backlight = 75      # 0..100 (de preferência um dos níveis do botão Brilho)
+layout = "grid"     # menus em boxes; "cards" = lista com cartões (cada submenu aceita layout = ...)
+rotation = 1        # 0 = retrato, 1 = horizontal, 3 = horizontal invertido, 2 = retrato invertido
+screen_off = 180    # apaga o ecrã após N s sem toques na tela inicial (0 = nunca); um toque liga
+dock_screens = ["home", "apps"]   # telas com o dock (ids; "home" = tela inicial)
+
+[[menu]]
+id = "aio"
+label = "AIO v2"
+icon = "power"
+img = "utilities-system-monitor"   # o ícone da aplicação AIO v2 Controller
+color = "#3FB950"
+type = "provider"
+provider = "aio"
+# Interruptores da placa AIO v2 (GPS, LoRa, SDR, USB) pelo aiov2_ctl. Tocar liga; desligar pede
+# confirmação. Desligar o LoRa pára o meshtasticd (como na aplicação).
+# cmd = "/usr/local/bin/aiov2_ctl"
+
+[[menu]]
+id = "mesh"
+label = "Meshtastic"
+icon = "mail"
+color = "#67EA94"
+type = "provider"
+provider = "mesh"
+# Dados pela API local do MeshDeckWeb (127.0.0.1:8080): a API do meshtasticd só aceita um cliente.
+# Páginas (swipe): Painel · Nós · Conversas (toque abre a conversa; Responder na mensagem). Não lidas = selo vermelho.
+channel = 0                       # canal inicial das respostas rápidas (troca-se na tela)
+quick = ["OK", "A caminho", "Cheguei", "Preciso de ajuda", "Posição: {pos}"]
+start_cmd = "cd $HOME/PycharmProjects/MeshDeckWeb && nohup ./start.sh --connect >> $HOME/.config/meshdeck/server.log 2>&1 &"
+
+[[menu]]
+id = "gps"
+label = "GPS"
+icon = "gps"
+color = "#3FB950"
+type = "provider"
+provider = "gps"
+# Se o meshtasticd usar o GPS (GPS.SerialPath no config.yaml), a posição vem do Meshtastic;
+# senão o dashd lê NMEA direto deste tty.
+tty = "/dev/ttyAMA0"
+baud = 9600
+
+[[menu]]
+id = "adsb"
+label = "ADS-B"
+icon = "eye"
+img = "emoji:✈"   # imagem colorida no lugar do símbolo
+color = "#58A6FF"
+type = "provider"
+provider = "adsb"
+unit = "readsb"
+group = "sdr"
+# Página "Mapa" (swipe): tiles em cache em ~/.cache/dashd/tiles (funciona offline depois de vistos).
+# map_style: "simples" (Esri Dark Gray, pouco detalhe), "satelite" (Esri + nomes) ou "osm" (OSM escurecido).
+# map = false desliga o fundo; map_url = "https://.../{z}/{x}/{y}.png" usa outro servidor.
+map_style = "simples"
+track_minutes = 30                 # trajeto guardado de cada aeronave (o AIS usa o do AIS-catcher)
+
+[[menu]]
+id = "ais"
+label = "AIS"
+icon = "loop"
+img = "emoji:🚢"   # imagem colorida no lugar do símbolo
+color = "#39C5CF"
+type = "provider"
+provider = "ais"
+unit = "ais-catcher"
+group = "sdr"
+url = "http://127.0.0.1:8119"      # servidor web do serviço ais-catcher (navios e trajetos)
+map_style = "simples"
+
+[[menu]]
+id = "sdr"
+label = "SDR"
+icon = "eye"
+img = "emoji:📻"
+color = "#D29922"
+type = "provider"
+provider = "sdr"
+# Monitor do RTL-SDR: alimentação na AIO, dongle, quem o usa, frequência, há quanto tempo e o histórico.
+# "Libertar SDR" pára o serviço (ou fecha o programa) que o tem aberto.
+
+[[menu]]
+id = "apps"
+label = "Aplicações"
+icon = "list"
+color = "#D2A8FF"
+type = "submenu"
+# Mesmos programas de Acessórios no menu do uConsole (lidos dos .desktop a cada 30 s):
+# Category=Utility, sem System/Accessibility. Os itens abaixo vêm a seguir (fora de Acessórios).
+xdg_category = "Utility"
+xdg_exclude = ["System", "Accessibility"]
+
+  [[menu.items]]
+  id = "term"
+  label = "Terminal"
+  icon = "keyboard"
+  type = "launch"
+  cmd = "lxterminal"
+
+  [[menu.items]]
+  id = "gqrx"
+  label = "Gqrx"
+  icon = "volume"
+  type = "launch"
+  cmd = "gqrx"
+
+  [[menu.items]]
+  id = "files"
+  label = "Arquivos"
+  icon = "folder"
+  app_icon = "system-file-manager"
+  type = "launch"
+  cmd = "pcmanfm"
+
+  [[menu.items]]
+  id = "pycharm"
+  label = "PyCharm"
+  icon = "edit"
+  img = "/opt/pycharm/bin/pycharm.png"   # instalado em /opt, sem .desktop (por isso não vem dos Acessórios)
+  type = "launch"
+  cmd = "/opt/pycharm/bin/pycharm"
+
+[[menu]]
+id = "services"
+label = "Serviços"
+icon = "power"
+color = "#F0883E"
+type = "submenu"
+
+  [[menu.items]]
+  id = "svc_readsb"
+  label = "readsb (ADS-B)"
+  icon = "eye"
+  type = "service"
+  unit = "readsb"
+  group = "sdr"
+
+  [[menu.items]]
+  id = "svc_ais"
+  label = "AIS-catcher"
+  icon = "loop"
+  type = "service"
+  unit = "ais-catcher"
+  group = "sdr"
+
+  [[menu.items]]
+  id = "svc_mesh"
+  label = "meshtasticd"
+  icon = "mail"
+  type = "service"
+  unit = "meshtasticd"
+
+  [[menu.items]]
+  id = "svc_gpsd"
+  label = "gpsd"
+  icon = "gps"
+  type = "service"
+  unit = "gpsd"
+
+[[menu]]
+id = "system"
+label = "Sistema"
+icon = "settings"
+type = "provider"
+provider = "system"
+
+# Dock: comandos fixos na parte de baixo da tela (até 6). Aceita os mesmos tipos de item do menu.
+# Aparece nas telas de dock_screens ([dashd]); nas outras o espaço fica para o conteúdo.
+[[dock]]
+id = "home"
+label = "Início"
+icon = "home"
+type = "home"
+
+[[dock]]
+id = "relogio"
+label = "Relógio"
+icon = "bell"
+img = "emoji:⏰"
+type = "provider"
+provider = "clock"
+# Ecrã inteiro com a hora e a previsão do dia. Swipe para os lados troca o mostrador,
+# para cima/baixo muda o brilho, um toque volta ao DashDeck (o mostrador e o brilho ficam guardados).
+face = "paisagem"         # mostrador inicial: "paisagem" ou "retro"
+lcd_color = "ambar"       # cor do digital retro: "ambar", "verde" ou "ciano"
+brightness = 50           # brilho inicial no relógio (o normal volta ao sair)
+dim_after = 300           # segundos sem toques até escurecer (0 = nunca); um toque repõe o brilho
+dim_brightness = 10       # brilho quando escurecido (%)
+weather = true            # previsão do Open-Meteo (sem chave), a cada 30 min, com cache offline
+# Posição da previsão: GPS (ou nó Meshtastic). Para uma posição fixa, descomente:
+# lat = 38.72
+# lon = -9.14
+# As coordenadas saem do uConsole arredondadas a 0,01° (~1 km).
+
+[[dock]]
+id = "shot"
+label = "Captura"
+icon = "image"
+type = "shell"
+cmd = "grim \"$HOME/Pictures/captura-$(date +%Y%m%d-%H%M%S).png\""
+done = "Captura em ~/Pictures"
+
+[[dock]]
+id = "bright"
+label = "Brilho"
+icon = "charge"
+type = "backlight"
+levels = [25, 50, 75, 100]
+
+[[dock]]
+id = "lock"
+label = "Bloquear"
+icon = "eye"
+# o mesmo que Ctrl+Alt+L no labwc (/etc/xdg/labwc/rc.xml); o loginctl lock-session não tem quem o ouça
+type = "launch"
+cmd = "swaylock -p"
