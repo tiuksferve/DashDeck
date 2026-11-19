@@ -34,7 +34,7 @@
 - **Segurança da ponte:** com `--local-api on`, qualquer processo do uConsole lê e envia mensagens pelo nó, sem login.
 - **`sudo -n`:** os botões de serviços precisam de sudo sem senha para o `systemctl`, e o ADS-B e o AIS também para o `fuser` e o `kill` (libertar o SDR).
 - **Espaço em disco:** o cartão do uConsole tem pouco espaço livre, por isso o build fica em `/dev/shm` e o ESP-IDF tem só o toolchain RISC-V.
-- **Controle de versões:** este projeto não está em git. A API local do MeshDeckWeb entrou na `main` desse repositório (PR #5). O campo `transport` das mensagens está no commit `d0dd048`, branch `local-api-transport`.
+- **Controle de versões:** o DashDeck está em git (branch `main`, remoto `github.com/tiuksferve/DashDeck`). As mudanças do MeshDeckWeb (API local, campo `transport`, nome DashDeck) estão no repositório dele.
 
 ## Histórico de versões do firmware
 
