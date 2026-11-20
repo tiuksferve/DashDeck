@@ -163,12 +163,12 @@ void notify_draw(uint8_t *buf, float t)
     B = (uint16_t *)buf;
     BS = W;
     A = buf + W * H * 2;
-    const int cx = W / 2, cy = 46;
+    const int cx = W / 2, cy = 40;
     memset(buf, 0, W * H * 3);
     // ondas a fechar sobre o centro
     for (int k = 0; k < 3; k++) {
         float p = clampf((t - k * 0.15f) / 0.8f);
-        if (p > 0 && p < 1) ring(cx, cy, (int)(110 - 98 * ease(p)), LIGHT, (int)(205 * (1 - p * 0.5f)));
+        if (p > 0 && p < 1) ring(cx, cy, (int)(90 - 78 * ease(p)), LIGHT, (int)(205 * (1 - p * 0.5f)));
     }
     if (t < 1.25f) {
         // os pixels voam para a forma do envelope
@@ -198,7 +198,7 @@ void notify_draw(uint8_t *buf, float t)
         memcpy(part, s_name, (size_t)shown);
         part[shown] = '\0';
         int sc = clockfont_width(s_name, 2) <= W - 8 ? 2 : 1;
-        int x0 = (W - clockfont_width(s_name, sc)) / 2, y0 = 82;
+        int x0 = (W - clockfont_width(s_name, sc)) / 2, y0 = H - 17;
         s_ncells = clockfont_cells(part, x0, y0, sc, s_cells, 400);
         for (int i = 0; i < s_ncells; i++) rect(s_cells[i][0] - 1, s_cells[i][1] - 1, sc + 2, sc + 2, c565(0x0E1A12));
         for (int i = 0; i < s_ncells; i++) rect(s_cells[i][0], s_cells[i][1], sc, sc, c565(INK));

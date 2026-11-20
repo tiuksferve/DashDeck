@@ -11,7 +11,7 @@ mensagem, até 8 KB (descrito no cabeçalho de `firmware/main/ui.c` e em `docs/a
 
 - **Menu inicial (boxes):** AIO v2, Meshtastic, GPS, ADS-B, AIS, SDR, Aplicações, Serviços, Sistema.
 - **Dock** (início e Aplicações): Início, Relógio, Captura, Brilho, Bloquear.
-- **Firmware atual:** 0.16.0 (gravado em 19/11).
+- **Firmware atual:** 0.17.0 (gravado em 20/11).
 
 ## Onde está cada coisa
 - `host/providers.py`: telas com dados (system, gps, adsb, ais, mesh, clock, aio, sdr).
@@ -37,7 +37,7 @@ mensagem, até 8 KB (descrito no cabeçalho de `firmware/main/ui.c` e em `docs/a
 - **USB da AIO v2:** com o interruptor USB da AIO ligado, a ligação ao ESP perde dados (gravação falha com "Packet content transfer stopped", o ESP pode deixar de ser reconhecido com erro -71). Mantê-lo desligado; o box pede confirmação antes de o ligar.
 - **Barramento USB partilhado:** o ESP, o RTL-SDR e discos USB estão no mesmo controlador (dwc2). Cópias grandes pioram a ligação.
 - **SDR:** só serve um programa de cada vez. O ADS-B e o AIS ligados pelo DashDeck desligam-se ao sair da tela (`keep_running` mantém-nos). A tela SDR mostra quem o usa e tem "Libertar SDR".
-- **Memória do ESP:** cerca de 260 KB livres no arranque. O relógio (165 KB) liberta os ícones se for preciso (`iconsfreed`). O aviso de mensagem usa um canvas de 66 KB.
+- **Memória do ESP:** cerca de 260 KB livres no arranque; 110 KB ficam reservados para o buffer de ecrã (relógio, mapas, arranque). Os ícones vão para o cartão SD. O fundo do relógio fica na RAM, porque ler do cartão leva 120+ ms por quadro. O aviso de mensagem (46 KB) usa a memória do fundo do relógio quando o relógio está aberto (`bgfreed`). O `hello` traz `largest` e `sd`.
 - **Disco do uConsole:** tem pouco espaço livre; por isso o build fica em `/dev/shm`.
 
 ## Feito recentemente (19/11)
@@ -50,7 +50,7 @@ mensagem, até 8 KB (descrito no cabeçalho de `firmware/main/ui.c` e em `docs/a
 
 ## Por fazer (por prioridade sugerida)
 1. **Mapa dos nós Meshtastic** (reaproveitar o mapa do ADS-B/AIS; verde RF, lilás MQTT; seguir um nó).
-2. **Atualizar o firmware pelo cartão SD** (copiar o `.bin` para o cartão; o ESP grava-o em `ota_1` ao arrancar). Exige gravar esta funcionalidade uma vez pela USB.
+2. **Atualizar o firmware pelo cartão SD** (o cartão já está montado em `/sd` desde a 0.17.0) (copiar o `.bin` para o cartão; o ESP grava-o em `ota_1` ao arrancar). Exige gravar esta funcionalidade uma vez pela USB.
 3. **Previsão por horas** no relógio (o Open-Meteo já dá os dados).
 4. Perfis de uso da AIO, mais cenas na paisagem, alarme/temporizador, volume e brilho do uConsole, rede (Wi-Fi/VPN), aplicações abertas, rotação pelo menu, cartão SD para fundos e ícones, histórico de mensagens no MeshDeckWeb.
 - Ainda por confirmar com uso real: o aviso "Ondas LoRa" com uma mensagem direta de verdade e a alternância das animações de arranque (só se testou com mensagens fictícias e imagens geradas no uConsole).

@@ -244,6 +244,7 @@ class App:
         self._owners: set = set()   # providers com tela na pilha
         self.notified: tuple | None = None   # (nó do Meshtastic, mensagem) do último aviso, para o toque
         self.last_dm_check = 0.0
+        self.bg_hold = 0.0   # não reenviar o fundo antes disto (o aviso de mensagem está com a memória)
         self.last_tpl = ""
         self.dock_lost = False   # o ESP libertou os ícones e o dock (para caber o relógio)
         self.layout = d.get("layout", "grid")      # menus em "grid" (boxes) ou "cards"
@@ -491,6 +492,8 @@ class App:
         self.send_emojis(scr)
         scr["dock"] = self.node().get("id") in self.dock_screens
         bg = scr.pop("_bg", None)
+        if bg and time.monotonic() < self.bg_hold:
+            bg = None
         if bg and self.send_bg(bg):
             self.last_sent = ""   # fundo novo: redesenha o plot mesmo que os dados não mudem
         payload = json.dumps(scr, sort_keys=True)
@@ -686,8 +689,9 @@ class App:
                 if self.esp_ready and now - self.last_hello < 2:
                     return  # hellos repetidos (buffer do ESP) não refazem a tela
                 self.last_hello = now
-                log.info("ESP DashDeck fw %s (%sx%s, rot %s, heap %s)", data.get("fw"), data.get("w"),
-                         data.get("h"), data.get("rot"), data.get("heap"))
+                log.info("ESP DashDeck fw %s (%sx%s, rot %s, heap %s, maior bloco %s, cartão %s)", data.get("fw"),
+                         data.get("w"), data.get("h"), data.get("rot"), data.get("heap"), data.get("largest", "?"),
+                         f"{data['sd']} MB livres" if data.get("sd", -1) >= 0 else "ausente")
                 if "rot" in data and int(data["rot"]) != self.rotation and not self.rot_sent:
                     self.rot_sent = True
                     log.info("a pedir rotação %d (o ESP reinicia)", self.rotation)
@@ -718,6 +722,9 @@ class App:
                     self.activate(child)
             elif t == "swipe":
                 self.on_swipe(data.get("dir", ""))
+            elif t == "bgfreed":   # o aviso usou a memória do fundo (relógio): volta a enviá-lo depois
+                self.bg_sent = None
+                self.bg_hold = time.monotonic() + 6
             elif t == "notify" and data.get("act") == "open":
                 self.open_notified()
             elif t == "iconsfreed":   # o relógio precisou da memória dos ícones

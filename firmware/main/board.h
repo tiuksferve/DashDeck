@@ -16,3 +16,9 @@ void board_set_backlight(uint8_t percent);
 
 // true enquanto o botão BOOT (GPIO9) estiver pressionado.
 bool board_boot_pressed(void);
+
+// Cartão SD (FAT) montado em BOARD_SD_PATH. false se não houver cartão (o resto funciona sem ele).
+#define BOARD_SD_PATH "/sd"
+bool board_sd_mount(void);
+// MB livres no cartão, ou -1 sem cartão.
+int board_sd_free_mb(void);

@@ -54,6 +54,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "board.h"
 #include "bootanim.h"
@@ -107,12 +108,22 @@ static char s_ctrl_ids[CTRL_MAX][ID_LEN];
 static char s_ctrl_sig[256];
 static lv_draw_buf_t s_cbuf;
 static uint8_t *s_cmem;
+// Buffer de ecrã inteiro reservado no arranque e reutilizado pelo canvas (relógio, mapas) e pela
+// animação de arranque: pedir e devolver 110 KB a cada tela fragmentava a memória até não haver um bloco
+// contínuo para o relógio.
+static uint8_t *s_arena;
+static size_t s_arena_size;
+static void boot_end(void);
+static lv_obj_t *s_boot;
 static int32_t s_cw, s_ch;
 // Imagem de fundo (4 bpp + paleta de 16, ou 8 bpp + paleta de 256 no relógio)
 static uint8_t *s_bg;
 static size_t s_bg_size;
 static int32_t s_bg_w, s_bg_h;
 static uint8_t s_bg_bpp = 4;
+static bool s_bg_on_sd;            // o fundo está em BG_FILE (sem RAM para ele)
+static FILE *s_bg_fw;              // a ser escrito
+static bool s_ntf_borrowed;        // o canvas do aviso está a usar a memória do fundo (relógio)
 static uint16_t s_bg_pal[256];
 static char s_bg_key[32];
 static bool s_bg_ready;
@@ -173,8 +184,13 @@ static char s_btn_ids[MAX_BTNS][ID_LEN];
 typedef struct {
     char id[24];
     lv_image_dsc_t dsc;
-    uint8_t *data;
+    uint8_t *data;      // na RAM (sem cartão SD)
+    char path[24];      // no cartão: "S:dash/xxxxxxxx.bin" (não gasta RAM)
 } icon_t;
+#define ICON_USED(i) (s_icons[i].data || s_icons[i].path[0])
+static bool s_sd_ok;    // cartão SD montado (ícones e fundos grandes vão para lá)
+#define SD_DIR BOARD_SD_PATH "/dash"
+#define BG_FILE SD_DIR "/bg.bin"
 static icon_t s_icons[ICON_MAX];
 static int s_icon_next;
 static void make_badge(lv_obj_t *card, int i, const cJSON *it);
@@ -470,13 +486,36 @@ static void handle_emoji(const cJSON *msg)
     cJSON_Delete(o);
 }
 
-static const lv_image_dsc_t *icon_find(const char *id)
+// Fonte da imagem do ícone para lv_image_set_src: o ficheiro no cartão ou o descritor na RAM.
+static const void *icon_find(const char *id)
 {
     if (!id || !id[0]) return NULL;
     for (int i = 0; i < ICON_MAX; i++) {
-        if (s_icons[i].data && !strcmp(s_icons[i].id, id)) return &s_icons[i].dsc;
+        if (ICON_USED(i) && !strcmp(s_icons[i].id, id))
+            return s_icons[i].path[0] ? (const void *)s_icons[i].path : (const void *)&s_icons[i].dsc;
     }
     return NULL;
+}
+
+// Grava o ícone como imagem do LVGL (cabeçalho + RGB565A8) no cartão. Devolve false se falhar.
+static bool icon_to_sd(icon_t *slot, const char *id, int w, int h, const uint8_t *buf, size_t size)
+{
+    size_t n = strlen(id);
+    const char *tail = n > 8 ? id + n - 8 : id;   // nomes 8.3 (o FAT do ESP não tem nomes longos)
+    char file[48];
+    snprintf(file, sizeof(file), SD_DIR "/%s.bin", tail);
+    FILE *f = fopen(file, "wb");
+    if (!f) return false;
+    lv_image_header_t hdr = {0};
+    hdr.magic = LV_IMAGE_HEADER_MAGIC;
+    hdr.cf = LV_COLOR_FORMAT_RGB565A8;
+    hdr.w = w;
+    hdr.h = h;
+    hdr.stride = w * 2;
+    bool ok = fwrite(&hdr, sizeof(hdr), 1, f) == 1 && fwrite(buf, 1, size, f) == size;
+    ok = (fclose(f) == 0) && ok;
+    if (ok) snprintf(slot->path, sizeof(slot->path), "S:dash/%s.bin", tail);
+    return ok;
 }
 
 static void handle_icon(const cJSON *msg)
@@ -492,10 +531,10 @@ static void handle_icon(const cJSON *msg)
         if (buf && mbedtls_base64_decode(buf, size, &olen, (const unsigned char *)d, strlen(d)) == 0 && olen == size) {
             icon_t *slot = NULL;
             for (int i = 0; i < ICON_MAX && !slot; i++) {
-                if (s_icons[i].data && !strcmp(s_icons[i].id, id)) slot = &s_icons[i];
+                if (ICON_USED(i) && !strcmp(s_icons[i].id, id)) slot = &s_icons[i];
             }
             for (int i = 0; i < ICON_MAX && !slot; i++) {
-                if (!s_icons[i].data) slot = &s_icons[i];
+                if (!ICON_USED(i)) slot = &s_icons[i];
             }
             if (!slot) {                     // cheio: substitui de forma rotativa
                 slot = &s_icons[s_icon_next];
@@ -504,8 +543,16 @@ static void handle_icon(const cJSON *msg)
             if (slot->data) {
                 lv_image_cache_drop(&slot->dsc);
                 free(slot->data);
+                slot->data = NULL;
             }
+            if (slot->path[0]) lv_image_cache_drop(slot->path);
+            slot->path[0] = '\0';
             strlcpy(slot->id, id, sizeof(slot->id));
+            if (s_sd_ok && icon_to_sd(slot, id, w, h, buf, size)) {   // no cartão: a RAM fica livre
+                free(buf);
+                ok = true;
+                goto ack;
+            }
             memset(&slot->dsc, 0, sizeof(slot->dsc));
             slot->dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
             slot->dsc.header.cf = LV_COLOR_FORMAT_RGB565A8;
@@ -520,6 +567,7 @@ static void handle_icon(const cJSON *msg)
             free(buf);
         }
     }
+ack:;
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "t", "iconack");
     cJSON_AddStringToObject(o, "id", id);
@@ -545,7 +593,7 @@ static void build_menu_item(int i, const cJSON *it)
     lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(card, item_click_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 
-    const lv_image_dsc_t *img = icon_find(jstr(it, "img", NULL));
+    const void *img = icon_find(jstr(it, "img", NULL));
     lv_obj_t *ic;
     if (img) {
         ic = lv_image_create(card);
@@ -610,7 +658,7 @@ static void make_badge(lv_obj_t *card, int i, const cJSON *it)
 
 static lv_obj_t *icon_widget(lv_obj_t *parent, const cJSON *it, int i, const lv_font_t *font)
 {
-    const lv_image_dsc_t *img = icon_find(jstr(it, "img", NULL));
+    const void *img = icon_find(jstr(it, "img", NULL));
     lv_obj_t *ic;
     if (img) {
         ic = lv_image_create(parent);
@@ -692,7 +740,7 @@ static void update_menu_item(int i, const cJSON *it)
     lv_label_set_text(s_lbl_b[i], sub);
     if (sub[0]) lv_obj_remove_flag(s_lbl_b[i], LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(s_lbl_b[i], LV_OBJ_FLAG_HIDDEN);
-    const lv_image_dsc_t *img = icon_find(jstr(it, "img", NULL));
+    const void *img = icon_find(jstr(it, "img", NULL));
     if (s_is_img[i]) {
         if (img) lv_image_set_src(s_lbl_c[i], img);
     } else {
@@ -883,6 +931,19 @@ static bool canvas_size(int32_t w, int32_t h)
     if (w < 16 || h < 16 || w * h > PLOT_MAX_PX) {
         return false;
     }
+    if (s_arena) {
+        uint32_t stride = lv_draw_buf_width_to_stride(w, LV_COLOR_FORMAT_RGB565);
+        if (stride * h > s_arena_size) return false;
+        if (s_boot) boot_end();   // a animação de arranque usa o mesmo buffer
+        if (w != s_cw || h != s_ch || s_cmem != s_arena || lv_canvas_get_draw_buf(s_canvas) != &s_cbuf) {
+            lv_draw_buf_init(&s_cbuf, w, h, LV_COLOR_FORMAT_RGB565, stride, s_arena, stride * h);
+            lv_canvas_set_draw_buf(s_canvas, &s_cbuf);
+            s_cmem = s_arena;
+            s_cw = w;
+            s_ch = h;
+        }
+        return true;
+    }
     if (w != s_cw || h != s_ch || !s_cmem) {
         uint32_t stride = lv_draw_buf_width_to_stride(w, LV_COLOR_FORMAT_RGB565);
         if (s_cmem && lv_canvas_get_draw_buf(s_canvas) != &s_cbuf) {
@@ -908,10 +969,54 @@ static bool canvas_size(int32_t w, int32_t h)
     return true;
 }
 
+// Fundo guardado no cartão: lê-o em blocos de linhas direto para o canvas.
+static void paint_bg_sd(void)
+{
+    static uint8_t blk[8192];   // blocos grandes: o FAT lê vários setores de uma vez
+    static int s_n;
+    static int64_t s_us;
+    int64_t t0 = esp_timer_get_time();
+    size_t rowb = s_bg_bpp == 8 ? (size_t)s_cw : (size_t)(s_cw + 1) / 2;
+    int rows = (int)(sizeof(blk) / rowb);
+    FILE *f = fopen(BG_FILE, "rb");
+    if (!f) {
+        lv_canvas_fill_bg(s_canvas, lv_color_hex(C_BG), LV_OPA_COVER);
+        return;
+    }
+    if (s_bg_bpp == 4 && (s_cw & 1)) rows = 1;   // 4 bpp com largura ímpar: lido linha a linha à mão
+    for (int32_t y0 = 0; y0 < s_ch; y0 += rows) {
+        int n = (int)(s_ch - y0 < rows ? s_ch - y0 : rows);
+        size_t want = s_bg_bpp == 8 ? rowb * n : (size_t)((s_cw * n + 1) / 2);
+        if (fread(blk, 1, want, f) != want) break;
+        for (int k = 0; k < n; k++) {
+            uint16_t *row = (uint16_t *)(s_cbuf.data + (y0 + k) * s_cbuf.header.stride);
+            for (int32_t x = 0; x < s_cw; x++) {
+                if (s_bg_bpp == 8) {
+                    row[x] = s_bg_pal[blk[k * rowb + x]];
+                } else {
+                    size_t i = (size_t)k * s_cw + x;
+                    row[x] = s_bg_pal[(i & 1) ? (blk[i / 2] & 0x0F) : (blk[i / 2] >> 4)];
+                }
+            }
+        }
+    }
+    fclose(f);
+    s_us += esp_timer_get_time() - t0;
+    if (++s_n == 40) {   // de vez em quando, quanto custa ler o fundo do cartão
+        ESP_LOGI(TAG, "fundo do cartão: %d ms por quadro", (int)(s_us / s_n / 1000));
+        s_n = 0;
+        s_us = 0;
+    }
+}
+
 static void paint_bg(const char *key)
 {
     if (!key || !s_bg_ready || strcmp(key, s_bg_key) || s_bg_w != s_cw || s_bg_h != s_ch) {
         lv_canvas_fill_bg(s_canvas, lv_color_hex(C_BG), LV_OPA_COVER);
+        return;
+    }
+    if (s_bg_on_sd) {
+        paint_bg_sd();
         return;
     }
     for (int32_t y = 0; y < s_ch; y++) {
@@ -976,11 +1081,14 @@ static void bg_ack(int32_t off, bool ok)
 // a imagem só é usada se todos chegarem em ordem.
 static void handle_bg(const cJSON *msg)
 {
+    static uint8_t chunk[2100];   // pedaço decodificado (o host envia 2 KB de cada vez)
     int32_t off = jint(msg, "off", 0);
-    if (off == 0) {
-        s_bg_next = 0;
+    if (s_ntf_borrowed) {   // a memória do fundo está com o aviso: o host tenta de novo depois
+        bg_ack(off, false);
+        return;
     }
     if (off == 0) {
+        s_bg_next = 0;
         int32_t w = jint(msg, "w", 0), h = jint(msg, "h", 0);
         uint8_t bpp = jint(msg, "bpp", 4) == 8 ? 8 : 4;
         size_t need = bpp == 8 ? (size_t)w * h : ((size_t)w * h + 1) / 2;
@@ -990,24 +1098,41 @@ static void handle_bg(const cJSON *msg)
             return;
         }
         s_bg_ready = false;
+        if (s_bg_fw) {
+            fclose(s_bg_fw);
+            s_bg_fw = NULL;
+        }
         if (w <= 0 || h <= 0 || w * h > PLOT_MAX_PX) {
             lvgl_port_unlock();
             return;
         }
-        if (need != s_bg_size) {
+        // na RAM se couber (mais rápido); senão no cartão SD
+        if (need != s_bg_size || s_bg_on_sd || !s_bg) {
             free(s_bg);
             s_bg = NULL;
             s_bg_size = 0;
-            if (bpp == 8) make_room(need + (size_t)s_W * s_H * 2);   // fundo + ecrã do relógio
+            s_bg_on_sd = false;
+            // na RAM (o relógio repinta o fundo a cada quadro; ler do cartão leva 120+ ms por quadro);
+            // o cartão só é usado se não houver RAM
+            if (bpp == 8) make_room(need);
             s_bg = heap_caps_malloc(need, MALLOC_CAP_8BIT);
-            s_bg_size = s_bg ? need : 0;
-            if (!s_bg) {
+            if (!s_bg && s_sd_ok) {
+                s_bg_fw = fopen(BG_FILE, "wb");
+                s_bg_on_sd = s_bg_fw != NULL;
+                ESP_LOGI(TAG, "fundo de %u B no cartão (livre %u, maior bloco %u)", (unsigned)need,
+                         (unsigned)esp_get_free_heap_size(),
+                         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+            }
+            s_bg_size = (s_bg || s_bg_on_sd) ? need : 0;
+            if (!s_bg_size) {
                 ESP_LOGE(TAG, "sem memória para fundo (%u B, livre %u)", (unsigned)need,
                          (unsigned)esp_get_free_heap_size());
                 lvgl_port_unlock();
                 bg_ack(off, false);
                 return;
             }
+        } else if (s_bg_on_sd) {
+            s_bg_fw = fopen(BG_FILE, "wb");
         }
         s_bg_w = w;
         s_bg_h = h;
@@ -1023,19 +1148,27 @@ static void handle_bg(const cJSON *msg)
         }
         lvgl_port_unlock();
     }
-    if (!s_bg || off < 0 || (size_t)off != s_bg_next || (size_t)off >= s_bg_size) {
+    bool have = s_bg_on_sd ? s_bg_fw != NULL : s_bg != NULL;
+    if (!have || off < 0 || (size_t)off != s_bg_next || (size_t)off >= s_bg_size) {
         bg_ack(off, false);
         return;
     }
     const char *d = jstr(msg, "d", "");
     size_t olen = 0;
-    if (mbedtls_base64_decode(s_bg + off, s_bg_size - off, &olen, (const unsigned char *)d, strlen(d)) != 0) {
-        ESP_LOGW(TAG, "bg: base64 inválido em %ld", (long)off);
+    uint8_t *dst = s_bg_on_sd ? chunk : s_bg + off;
+    size_t room = s_bg_on_sd ? sizeof(chunk) : s_bg_size - off;
+    if (mbedtls_base64_decode(dst, room, &olen, (const unsigned char *)d, strlen(d)) != 0 ||
+        (s_bg_on_sd && fwrite(chunk, 1, olen, s_bg_fw) != olen)) {
+        ESP_LOGW(TAG, "bg: pedaço inválido em %ld", (long)off);
         bg_ack(off, false);
         return;
     }
     s_bg_next = off + olen;
     if (jbool(msg, "last", false)) {
+        if (s_bg_fw) {
+            fclose(s_bg_fw);
+            s_bg_fw = NULL;
+        }
         s_bg_ready = s_bg_next == s_bg_size || s_bg_next + 1 == s_bg_size;
     }
     bg_ack(off, true);
@@ -1444,12 +1577,12 @@ static void clock_enter(const cJSON *msg)
         lv_display_trigger_activity(NULL);
         s_canvas = lv_canvas_create(s_clock);
         lv_obj_remove_flag(s_canvas, LV_OBJ_FLAG_CLICKABLE);
-        if (s_cmem && (s_cw != s_W || s_ch != s_H)) {   // buffer de um plot antigo: liberta antes de medir
+        if (!s_arena && s_cmem && (s_cw != s_W || s_ch != s_H)) {   // sem arena: liberta o buffer antigo
             free(s_cmem);
             s_cmem = NULL;
             s_cw = s_ch = 0;
         }
-        if (!s_cmem) make_room((size_t)lv_draw_buf_width_to_stride(s_W, LV_COLOR_FORMAT_RGB565) * s_H);
+        if (!s_arena && !s_cmem) make_room((size_t)lv_draw_buf_width_to_stride(s_W, LV_COLOR_FORMAT_RGB565) * s_H);
         if (!canvas_size(s_W, s_H)) {
             lv_obj_delete(s_clock);
             s_clock = NULL;
@@ -1482,13 +1615,14 @@ static void clock_exit(void)
     lv_obj_delete(s_clock);
     s_clock = NULL;
     s_canvas = NULL;
-    // devolve a memória (o host volta a enviar ícones e fundos quando precisar)
-    free(s_cmem);
+    // devolve a memória (o host volta a enviar ícones e fundos quando precisar); a arena fica
+    if (s_cmem != s_arena) free(s_cmem);
     s_cmem = NULL;
     s_cw = s_ch = 0;
     free(s_bg);
     s_bg = NULL;
     s_bg_size = 0;
+    s_bg_on_sd = false;
     s_bg_ready = false;
     s_bg_key[0] = '\0';
     s_bl = s_bl_saved;
@@ -1720,7 +1854,7 @@ static void build_dock(const cJSON *items)
         lv_obj_set_flex_flow(b, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(b, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_add_event_cb(b, dock_click_cb, LV_EVENT_CLICKED, (void *)(intptr_t)n);
-        const lv_image_dsc_t *img = icon_find(jstr(it, "img", NULL));
+        const void *img = icon_find(jstr(it, "img", NULL));
         if (img) {
             lv_obj_t *im = lv_image_create(b);
             lv_image_set_src(im, img);
@@ -1820,6 +1954,8 @@ static void send_hello(void)
     cJSON_AddNumberToObject(o, "h", s_H);
     cJSON_AddNumberToObject(o, "rot", s_rot);
     cJSON_AddNumberToObject(o, "heap", (double)esp_get_free_heap_size());
+    cJSON_AddNumberToObject(o, "largest", (double)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    cJSON_AddNumberToObject(o, "sd", board_sd_free_mb());   // MB livres no cartão, -1 sem cartão
     link_send(o);
     cJSON_Delete(o);
 }
@@ -1861,7 +1997,7 @@ static void sleep_enter(void)
 // Ao ligar o ESP, a animação ("Pixels" ou "Nascer do sol", ao acaso) é a tela de carregamento: fica por
 // cima de tudo, com uma barra de progresso, até o host mandar a primeira tela (e pelo menos 3,5 s).
 // Buffer próprio, libertado no fim. Sem resposta em 10 s mostra "A AGUARDAR O UCONSOLE".
-static lv_obj_t *s_boot, *s_boot_cv;
+static lv_obj_t *s_boot_cv;
 static lv_draw_buf_t s_boot_buf;
 static uint8_t *s_boot_mem;
 static lv_timer_t *s_boot_timer;
@@ -1874,7 +2010,7 @@ static void boot_end(void)
     s_boot_timer = NULL;
     if (s_boot) lv_obj_delete(s_boot);
     s_boot = s_boot_cv = NULL;
-    free(s_boot_mem);
+    if (s_boot_mem != s_arena) free(s_boot_mem);
     s_boot_mem = NULL;
 }
 
@@ -1909,7 +2045,7 @@ static void boot_press_cb(lv_event_t *e)
 static bool boot_start(void)
 {
     uint32_t stride = lv_draw_buf_width_to_stride(s_W, LV_COLOR_FORMAT_RGB565);
-    s_boot_mem = heap_caps_malloc(stride * s_H, MALLOC_CAP_8BIT);
+    s_boot_mem = s_arena ? s_arena : heap_caps_malloc(stride * s_H, MALLOC_CAP_8BIT);
     if (!s_boot_mem) return false;
     lv_draw_buf_init(&s_boot_buf, s_W, s_H, LV_COLOR_FORMAT_RGB565, stride, s_boot_mem, stride * s_H);
     s_boot = lv_obj_create(lv_layer_top());
@@ -1952,8 +2088,9 @@ static void ntf_end(void)
     s_ntf_timer = NULL;
     if (s_ntf) lv_obj_delete(s_ntf);
     s_ntf = s_ntf_cv = s_ntf_bar = NULL;
-    free(s_ntf_mem);
+    if (!s_ntf_borrowed) free(s_ntf_mem);
     s_ntf_mem = NULL;
+    s_ntf_borrowed = false;
 }
 
 static void ntf_timer_cb(lv_timer_t *t)
@@ -2005,6 +2142,15 @@ static void ntf_show(const cJSON *msg)
     lv_obj_add_event_cb(s_ntf, ntf_press_cb, LV_EVENT_PRESSED, NULL);
     size_t need = (size_t)NOTIFY_W * NOTIFY_H * 3;
     s_ntf_mem = heap_caps_malloc(need, MALLOC_CAP_8BIT);
+    if (!s_ntf_mem && s_clock && s_bg && !s_bg_on_sd && s_bg_size >= need) {
+        // relógio aberto: o fundo dele empresta a memória (o relógio fica parado por baixo do aviso e
+        // o host volta a enviar o fundo depois: {"t":"bgfreed"})
+        s_bg_ready = false;
+        s_bg_key[0] = '\0';
+        s_ntf_mem = s_bg;
+        s_ntf_borrowed = true;
+        link_send_event("bgfreed", NULL, NULL, NULL, NULL);
+    }
     if (!s_ntf_mem) {
         make_room(need);
         s_ntf_mem = heap_caps_malloc(need, MALLOC_CAP_8BIT);
@@ -2189,6 +2335,15 @@ void ui_init(lv_display_t *disp)
 
     s_list = s_body;
     lv_obj_add_event_cb(scr, gesture_cb, LV_EVENT_GESTURE, NULL);
+
+    // cartão SD (ícones e fundos grandes) e o buffer de ecrã reservado, antes de tudo o resto
+    s_sd_ok = board_sd_mount();
+    if (s_sd_ok) mkdir(SD_DIR, 0775);
+    s_arena_size = (size_t)lv_draw_buf_width_to_stride(s_W, LV_COLOR_FORMAT_RGB565) * s_H;
+    s_arena = heap_caps_malloc(s_arena_size, MALLOC_CAP_8BIT);
+    if (!s_arena) s_arena_size = 0;
+    ESP_LOGI(TAG, "arena %u B, SD %s, livre %u", (unsigned)s_arena_size, s_sd_ok ? "sim" : "não",
+             (unsigned)esp_get_free_heap_size());
 
     // a animação é a tela de carregamento; o spinner "Aguardando uConsole" só fica se faltar memória
     show_waiting();

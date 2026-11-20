@@ -11,6 +11,9 @@
 #include "esp_lcd_touch_axs5106.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
+#include "esp_vfs_fat.h"
+#include "driver/sdspi_host.h"
+#include "sdmmc_cmd.h"
 
 static const char *TAG = "board";
 
@@ -202,4 +205,44 @@ esp_err_t board_init(uint8_t rotation, lv_display_t **out_disp)
 
     *out_disp = disp;
     return ESP_OK;
+}
+
+// ---------- cartão SD (mesmo barramento SPI do display, CS no GPIO4) ----------
+static sdmmc_card_t *s_card;
+
+bool board_sd_mount(void)
+{
+    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    host.slot = LCD_SPI_HOST;
+    host.max_freq_khz = SDMMC_FREQ_HIGHSPEED;   // tenta 40 MHz; volta a 20 MHz se o cartão não aguentar
+    sdspi_device_config_t slot = SDSPI_DEVICE_CONFIG_DEFAULT();
+    slot.gpio_cs = PIN_SD_CS;
+    slot.host_id = LCD_SPI_HOST;
+    const esp_vfs_fat_mount_config_t mcfg = {
+        .format_if_mount_failed = false,   // nunca apaga um cartão com outros dados
+        .max_files = 3,
+        .allocation_unit_size = 16 * 1024,
+    };
+    esp_err_t err = esp_vfs_fat_sdspi_mount(BOARD_SD_PATH, &host, &slot, &mcfg, &s_card);
+    if (err != ESP_OK) {   // nem todos os cartões aguentam 40 MHz no SPI partilhado com o display
+        host.max_freq_khz = SDMMC_FREQ_DEFAULT;
+        err = esp_vfs_fat_sdspi_mount(BOARD_SD_PATH, &host, &slot, &mcfg, &s_card);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "cartão SD indisponível (%s)", esp_err_to_name(err));
+        s_card = NULL;
+        return false;
+    }
+    ESP_LOGI(TAG, "cartão SD: %s, %llu MB, %d kHz", s_card->cid.name,
+             (unsigned long long)s_card->csd.capacity * s_card->csd.sector_size / (1024 * 1024),
+             s_card->max_freq_khz);
+    return true;
+}
+
+int board_sd_free_mb(void)
+{
+    if (!s_card) return -1;
+    uint64_t total = 0, freeb = 0;
+    if (esp_vfs_fat_info(BOARD_SD_PATH, &total, &freeb) != ESP_OK) return -1;
+    return (int)(freeb / (1024 * 1024));
 }

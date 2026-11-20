@@ -50,16 +50,15 @@ está na placa) seria o próximo passo se um dia a tela ficar solta.
 **Partições (flash de 8 MB):** `nvs`, `otadata`, `phy`, `ota_0` e `ota_1` (3 MB cada) e `storage`
 (littlefs, 1,9 MB). As partições de OTA e de littlefs estão reservadas mas ainda não são usadas.
 
-**Memória:** cerca de 290 KB livres no arranque. Os buffers são alocados quando são precisos:
-- canvas do plot: até 320×172 em RGB565;
-- fundo do mapa: 4 bpp;
-- até 48 ícones de 3 KB.
+**Memória:** cerca de 260 KB livres no arranque, organizados assim:
+- **Buffer de ecrã reservado (110 KB):** reservado no arranque e reutilizado pela animação de arranque, pelo canvas do relógio e pelo dos mapas. Antes era pedido e devolvido a cada tela, o que fragmentava a memória até não haver um bloco contínuo para o relógio.
+- **Ícones no cartão SD:** com cartão, cada ícone é gravado em `/sd/dash/xxxxxxxx.bin` (cabeçalho de imagem do LVGL + RGB565A8) e o LVGL lê-o de `S:dash/...` (sistema de ficheiros stdio). Não gastam RAM e ficam no cartão entre arranques. Sem cartão, ficam na RAM (até 48 de 3 KB).
+- **Fundos:** o do relógio (8 bpp, 55 KB) e o dos mapas (4 bpp, ~20 KB) ficam na RAM. Se não houver RAM, vão para `/sd/dash/bg.bin` e são lidos do cartão a cada quadro (lento: 120+ ms; só como reserva).
+- **Emojis:** na RAM (até 48 de 630 B), porque o LVGL procura-os a cada letra desenhada.
+- **Aviso de mensagem:** canvas de 160×96 RGB565A8 (46 KB). Com o relógio aberto, usa emprestada a memória do fundo do relógio (o relógio fica parado por baixo) e o ESP avisa o host com `bgfreed` para o reenviar depois.
+- O `hello` traz `heap`, `largest` (maior bloco contínuo) e `sd` (MB livres no cartão, -1 sem cartão); o dashd regista-os.
 
-Com o mapa aberto sobram cerca de 190 KB.
-
-O relógio precisa de cerca de 165 KB: o ecrã inteiro (110 KB em RGB565) e, na paisagem, o fundo de
-8 bpp (55 KB). Se não houver um bloco contíguo livre, o ESP liberta os ícones e o dock e avisa o
-host com `iconsfreed`. Ao sair, liberta o canvas e o fundo, e o dashd volta a enviar o dock e os ícones.
+**Cartão SD:** no mesmo barramento SPI do display (CS no GPIO4), montado em `/sd` (FAT, nunca formatado pelo DashDeck). Tenta 40 MHz e volta a 20 MHz se o cartão não aguentar.
 
 **Limites:**
 - 8 KB por linha JSON;
@@ -89,6 +88,7 @@ host com `iconsfreed`. Ao sair, liberta o canvas e o fundo, e o dashd volta a en
 | `hello?` | — | Pede um `hello` |
 | `rot` | `v` (0 a 3) | Grava a rotação na NVS e reinicia, se mudou |
 | `icon` | `id`, `w`, `h` (até 48), `d` (base64 RGB565A8) | Guarda um ícone. O ESP responde `iconack` |
+| `bgfreed` (ESP → host) | — | O aviso de mensagem usou a memória do fundo do relógio; o host volta a enviá-lo |
 | `emoji` | `cp` (U+100000 + 0..47), `w`, `h` (até 24), `d` (base64 RGB565A8) | Guarda a imagem do emoji que o texto traz como o código privado `cp`. O ESP responde `emojiack` |
 | `bg` | `key`, `off`, `d` (base64), na 1.ª parte `w`, `h`, `pal` (16 cores) ou `bpp:8` com `pal` de 256, na última `last` | Fundo do plot (4 bpp) ou do relógio (8 bpp), em pedaços de 2 KB, cada um confirmado com `bgack` |
 | `dock` | `items` (`id`, `label`, `icon`, `img`, `color`) | Constrói o dock (só aparece nas telas com `"dock":true`) |
