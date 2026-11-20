@@ -1,5 +1,6 @@
 // Aviso de mensagem direta, animação "Ondas LoRa": ondas de rádio fecham-se no centro, os pixels
 // juntam-se num envelope verde que pulsa e o nome do remetente escreve-se por baixo.
+// Alarme (kind 1): o mesmo, em dourado, com os pixels a formar um despertador que abana enquanto toca.
 // Desenho num canvas pequeno (NOTIFY_W x NOTIFY_H) ao centro; o resto (fundo escurecido, faixa com o
 // texto) são objetos do LVGL em ui.c. Contas inteiras por pixel (o C6 não tem FPU).
 #include "notify.h"
@@ -24,7 +25,9 @@ static int s_ncells, s_nchars;
 static int16_t s_from[NPIX][2];
 static uint8_t s_delay[NPIX];
 
-static const uint32_t GREEN = 0x2EA043, LIGHT = 0x67EA94, DARK = 0x0E3B1C, INK = 0xE7FFE9;
+static uint32_t GREEN = 0x2EA043, LIGHT = 0x67EA94, DARK = 0x0E3B1C, INK = 0xE7FFE9;
+static int s_kind;
+static bool s_mask[NPIX];   // células que fazem parte da forma (o envelope usa todas)
 
 static inline uint16_t c565(uint32_t c)
 {
@@ -131,6 +134,57 @@ static void envelope(int cx, int cy, int w, int h, int glow)
     rect_a(x + 1, y + 1, w - 2, 1, LIGHT, 128);
 }
 
+static void disc(int cx, int cy, int r, uint16_t c)
+{
+    for (int y = -r; y <= r; y++)
+        for (int x = -r; x <= r; x++)
+            if (x * x + y * y <= r * r + r) put(cx + x, cy + y, c);
+}
+
+// forma do despertador na caixa 64 x 42 (para os pixels que voam)
+static bool alarm_mask(int x, int y)
+{
+    int dx = x - 32, dy = y - 25;
+    if (dx * dx + dy * dy <= 16 * 16) return true;                       // corpo
+    for (int s = -1; s <= 1; s += 2) {
+        int bx = x - (32 + s * 18), by = y - 8;
+        if (bx * bx + by * by <= 36 && y <= 11) return true;              // sinos
+    }
+    return false;
+}
+
+// despertador em pixel art centrado em (cx, cy), com os ponteiros nas 10:10
+static void alarm_clock(int cx, int cy, int glow)
+{
+    uint16_t gold = c565(GREEN), light = c565(LIGHT), dark = c565(DARK);
+    uint16_t face = c565(0xFFF6E0), hand = c565(0x3A2400);
+    for (int r = 4; glow && r > 0; r--)
+        for (int y = -20 - r * 2; y <= 20 + r * 2; y++)
+            for (int x = -20 - r * 2; x <= 20 + r * 2; x++)
+                if (x * x + (y - 2) * (y - 2) <= (20 + r * 2) * (20 + r * 2)) blend(cx + x, cy + y, LIGHT, glow * 6 / 256);
+    rect(cx - 13, cy + 15, 4, 5, dark);              // pés
+    rect(cx + 9, cy + 15, 4, 5, dark);
+    for (int s = -1; s <= 1; s += 2) {               // sinos
+        disc(cx + s * 18, cy - 15, 7, dark);
+        disc(cx + s * 18, cy - 15, 6, gold);
+        disc(cx + s * 18 - 2, cy - 17, 2, light);
+    }
+    rect(cx - 1, cy - 23, 2, 6, dark);               // martelo
+    rect(cx - 4, cy - 24, 8, 2, dark);
+    disc(cx, cy + 2, 17, dark);                      // corpo e mostrador
+    disc(cx, cy + 2, 16, gold);
+    disc(cx, cy + 2, 12, face);
+    rect(cx - 1, cy - 9, 2, 3, dark);                // 12, 3, 6, 9
+    rect(cx - 1, cy + 11, 2, 3, dark);
+    rect(cx - 11, cy + 1, 3, 2, dark);
+    rect(cx + 8, cy + 1, 3, 2, dark);
+    line(cx, cy + 2, cx - 6, cy - 2, hand);          // 10:10
+    line(cx, cy + 2, cx - 6, cy - 1, hand);
+    line(cx, cy + 2, cx + 8, cy - 3, hand);
+    rect(cx - 1, cy + 1, 3, 3, c565(0xC8382E));
+    disc(cx - 8, cy - 6, 2, light);                  // brilho
+}
+
 static uint32_t s_seed;
 static int rnd(int n)
 {
@@ -138,8 +192,16 @@ static int rnd(int n)
     return (int)((s_seed >> 8) % (uint32_t)n);
 }
 
-void notify_start(const char *name)
+void notify_start(const char *name, int kind)
 {
+    s_kind = kind;
+    if (kind == NOTIFY_ALARM) {
+        GREEN = 0xF2B21B; LIGHT = 0xFFE27A; DARK = 0x4A2A00; INK = 0xFFF6E0;
+    } else {
+        GREEN = 0x2EA043; LIGHT = 0x67EA94; DARK = 0x0E3B1C; INK = 0xE7FFE9;
+    }
+    for (int i = 0, y = 0; y < 42; y += 2)
+        for (int x = 0; x < 64; x += 2, i++) s_mask[i] = kind != NOTIFY_ALARM || alarm_mask(x, y);
     // nome em maiúsculas (a fonte pixel só tem maiúsculas); o que não existir fica em branco
     int n = 0;
     for (const char *p = name; *p && n < (int)sizeof(s_name) - 1; p++) {
@@ -175,6 +237,7 @@ void notify_draw(uint8_t *buf, float t)
         int i = 0;
         for (int y = 0; y < 42; y += 2)
             for (int x = 0; x < 64; x += 2, i++) {
+                if (!s_mask[i]) continue;
                 float e = ease((t - 0.45f - s_delay[i] / 100.0f) / 0.7f);
                 if (e <= 0) continue;
                 int px = (int)lroundf(s_from[i][0] + (cx - 32 + x - s_from[i][0]) * e);
@@ -184,7 +247,13 @@ void notify_draw(uint8_t *buf, float t)
     } else {
         float k = clampf((t - 1.25f) / 0.3f);
         float pulse = 1 + sinf(k * 3.14159f) * 0.12f;
-        envelope(cx, cy, (int)(64 * pulse), (int)(42 * pulse), 200);
+        if (s_kind == NOTIFY_ALARM) {   // toca em rajadas de 0,6 s: abana de um lado para o outro
+            float ph = fmodf(t - 1.25f, 1.0f);
+            int dx = ph < 0.6f ? (((int)(t * 28)) % 2 ? 2 : -2) : 0;
+            alarm_clock(cx + dx, cy + 2, 200);
+        } else {
+            envelope(cx, cy, (int)(64 * pulse), (int)(42 * pulse), 200);
+        }
         for (int j = 0; j < 2; j++) {
             float r = 30 + fmodf((t - 1.25f) * 80 + j * 30, 70);
             ring(cx, cy, (int)r, LIGHT, (int)(clampf(1 - (r - 30) / 70) * 180));

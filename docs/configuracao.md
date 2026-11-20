@@ -18,7 +18,7 @@ Não é preciso regravar o ESP. Se o TOML tiver um erro, o serviço não arranca
 | `refresh` | `2.0` | Segundos entre atualizações da tela aberta (só é enviado o que mudou) |
 | `backlight` | `80` | Brilho inicial, de 0 a 100 |
 | `layout` | `grid` | Menus em `grid` (boxes) ou `cards` (lista de cartões). Cada submenu aceita o seu `layout` |
-| `rotation` | `1` | 0 retrato, 1 horizontal, 2 retrato invertido, 3 horizontal invertido. O ESP grava o valor e reinicia sozinho |
+| `rotation` | `1` | 0 retrato, 1 horizontal, 2 retrato invertido, 3 horizontal invertido. O ESP grava o valor e reinicia sozinho. A rotação escolhida no menu (Sistema > DashDeck) fica em `~/.config/dashd/state.json` e passa à frente desta; apague esse ficheiro para voltar a usar a do config |
 | `screen_off` | `0` | Apaga o ecrã após N segundos sem toques na tela inicial (no config: 180). Um toque ou o BOOT liga-o, sem ativar nada. `0` = nunca |
 | `dock_screens` | `["home"]` | Ids das telas que mostram o dock (no config: `["home", "apps"]`: tela inicial e Aplicações) |
 
@@ -59,17 +59,29 @@ xdg_exclude = ["System", "Accessibility"]   # igual ao menu Acessórios do Pi OS
 ```
 
 Os itens fixos (`[[menu.items]]`) cujo comando já esteja num `.desktop` não aparecem repetidos.
+Os itens `provider` (ex.: **Abertas**) ficam sempre à frente dos programas.
 
 ## Providers
 
 ### `system`
-Não tem opções.
+Não tem opções. A segunda página (DashDeck) muda a rotação do ESP.
+
+### `windows`
+Programas abertos no uConsole (ver [uso.md](uso.md#aplicações)), no box **Abertas** das Aplicações. Usa o
+protocolo `wlr-foreign-toplevel-management` do compositor (labwc e outros wlroots), sem programas extra.
+O nome e o ícone vêm do `.desktop` com o mesmo `app_id` (nome do ficheiro, `StartupWMClass` ou executável).
+
+| Opção | Padrão | Descrição |
+|---|---|---|
+| `icons` | `{}` | Imagem para programas sem `.desktop`: `{ "app_id" = "nome do tema, caminho ou emoji:…" }` |
+| `hide` | `[]` | `app_id` que não aparecem na lista |
 
 ### `gps`
 | Opção | Padrão | Descrição |
 |---|---|---|
 | `tty` | `/dev/ttyAMA0` | Porta NMEA, usada quando o meshtasticd não está usando o GPS |
 | `baud` | `9600` | Velocidade da porta |
+| `gpsmux` | `127.0.0.1:10110` | NMEA partilhado pelo gpsmux do MeshDeckWeb; tem prioridade sobre o `tty` quando responde (`""` = usar sempre o tty) |
 
 ### `adsb`
 | Opção | Padrão | Descrição |
@@ -82,6 +94,7 @@ Não tem opções.
 | `map_style` | `simples` | `simples` (Esri Dark Gray), `satelite` (Esri com nomes) ou `osm` (OpenStreetMap escurecido) |
 | `map_url` | — | Outro servidor de tiles `https://.../{z}/{x}/{y}.png` (substitui o estilo) |
 | `track_minutes` | `30` | Minutos de trajeto guardados por aeronave |
+| `routes` | `true` | Origem e destino de cada voo pelo indicativo no hexdb.io (só o indicativo sai do uConsole; cache em `~/.cache/dashd/routes.json`). `false` desliga |
 
 ### `ais`
 | Opção | Padrão | Descrição |
@@ -139,12 +152,14 @@ Relógio em ecrã inteiro (ver [uso.md](uso.md#relógio)). Pode ser um `[[menu]]
 
 | Opção | Padrão | Descrição |
 |---|---|---|
-| `face` | `paisagem` | Mostrador inicial: `paisagem`, `retro` ou `previsao`. Depois de um swipe, vale o último usado (guardado em `~/.config/dashd/clock.json`, com o brilho) |
-| `lcd_color` | `ambar` | Cor do digital retro: `ambar`, `verde` ou `ciano` |
+| `face` | `paisagem` | Mostrador inicial: `paisagem`, `retro`, `previsao`, `cidade` ou `temporizador`. Depois de um swipe, vale o último usado (guardado em `~/.config/dashd/clock.json`, com o brilho, a cor, o temporizador e o alarme) |
+| `lcd_color` | `ambar` | Cor inicial do digital retro: `ambar`, `verde` ou `ciano` (depois, o toque longo muda-a) |
 | `brightness` | `50` | Brilho inicial no relógio (10 a 100). O brilho normal volta ao sair |
 | `dim_after` | `300` | Segundos sem toques até o relógio escurecer (`0` = nunca). Um toque repõe o brilho |
 | `dim_brightness` | `10` | Brilho quando escurecido (%) |
 | `weather` | `true` | Previsão do Open-Meteo (sem chave de API). `false` desliga os pedidos à internet |
+| `winter_snow` | `true` | Paisagem e cidade com neve no chão de dezembro a fevereiro |
+| `alarm_sound` | `true` | Bip no uConsole quando o alarme ou o temporizador tocam (`pw-play`, `paplay` ou `aplay`; o som fica em `~/.cache/dashd/alarme.wav`) |
 | `lat`, `lon` | — | Posição fixa da previsão. Sem elas, usa o GPS ou o nó Meshtastic e, sem posição, a última da cache |
 
 As coordenadas são arredondadas a 0,01° (cerca de 1 km) antes de serem enviadas ao Open-Meteo. A

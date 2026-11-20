@@ -17,9 +17,11 @@ está na placa) seria o próximo passo se um dia a tela ficar solta.
 ```
  dashd.py ─┬─ Link (thread)      serial /dev/esp-dash, reconexão, fila de eventos, fila de acks
            ├─ App (loop)         pilha de navegação, build() de cada tela, envio só do que mudou
-           ├─ providers.py       system · gps (NmeaReader) · adsb, ais (+maptiles) · mesh (+meshbridge) · clock (+clockscene) · aio (aiov2_ctl) · sdr
+           ├─ providers.py       system · gps (NmeaReader) · adsb, ais (+maptiles) · mesh (+meshbridge) · clock (+clockscene) · aio (aiov2_ctl) · sdr · net · console · windows (+wltop)
            ├─ icons.py           ícones (tema GTK, ficheiros, emoji) → RGB565A8 32×32
-           └─ xdgapps.py         aplicações a partir dos .desktop (cache de 30 s)
+           ├─ routes.py          rotas dos voos pelo indicativo (hexdb.io, thread, cache em disco)
+           ├─ wltop.py           janelas abertas (cliente Wayland em Python puro, wlr-foreign-toplevel)
+           └─ xdgapps.py         aplicações a partir dos .desktop (cache de 30 s) e o .desktop de cada app_id
 ```
 
 ## Firmware (`firmware/`)
@@ -52,7 +54,7 @@ está na placa) seria o próximo passo se um dia a tela ficar solta.
 
 **Memória:** o LVGL usa o heap do sistema (sem a reserva fixa de 64 KB), o que deixa cerca de 150 KB livres depois do buffer de ecrã. Organização:
 - **Buffer de ecrã reservado (110 KB):** reservado no arranque e reutilizado pela animação de arranque, pelo canvas do relógio e pelo dos mapas. Antes era pedido e devolvido a cada tela, o que fragmentava a memória até não haver um bloco contínuo para o relógio.
-- **Ícones no cartão SD:** com cartão, cada ícone é gravado em `/sd/dash/xxxxxxxx.bin` (cabeçalho de imagem do LVGL + RGB565A8) e o LVGL lê-o de `S:dash/...` (sistema de ficheiros stdio). Ficam no cartão entre arranques: o dashd pergunta primeiro (`icon` com `probe`) e só envia os que faltam. Enquanto sobrarem mais de 80 KB de heap, cada ícone fica também com uma cópia na RAM (os primeiros a chegar: dock, menu inicial), desenhada sem ler o cartão, que partilha o barramento SPI com o display. Os restantes desenham-se do cartão através da cache de imagens do LVGL (32 KB). O `make_room` esvazia a cache e depois as cópias na RAM quando o relógio precisa de espaço; o dashd volta a perguntar (`iconsfreed`) e as cópias regressam. Há 96 lugares; quando enchem, o ESP substitui por rotação um que não seja do dock e avisa com `{"t":"iconlost","id":..}`. Sem cartão, ficam só na RAM.
+- **Ícones no cartão SD:** com cartão, cada ícone é gravado em `/sd/dash/xxxxxxxx.bin` (cabeçalho de imagem do LVGL + RGB565A8) e o LVGL lê-o de `S:dash/...` (sistema de ficheiros stdio). Ficam no cartão entre arranques: o dashd pergunta primeiro (`icon` com `probe`) e só envia os que faltam. Os ícones da tela aberta e do dock ficam também com uma cópia na RAM, desenhada sem ler o cartão (que partilha o barramento SPI com o display): ao construir uma tela, cada ícone dela que só esteja no cartão é carregado, libertando primeiro a cache de imagens e as cópias de ícones que já não se veem, enquanto sobrarem pelo menos 36 KB de heap. Os que não couberem desenham-se do cartão através da cache de imagens do LVGL (32 KB). Sem isto, um swipe nas Aplicações (22 ícones) caía para 24 quadros/s com paragens de 390 ms; com isto fica nos 44. O `make_room` esvazia a cache e depois as cópias na RAM quando o relógio precisa de espaço; o dashd volta a perguntar (`iconsfreed`) e as cópias regressam. Há 96 lugares; quando enchem, o ESP substitui por rotação um que não seja do dock e avisa com `{"t":"iconlost","id":..}`. Sem cartão, ficam só na RAM.
 - **Fundos:** o do relógio (8 bpp, 55 KB) e o dos mapas (4 bpp, ~20 KB) ficam na RAM. Se não houver RAM, vão para `/sd/dash/bg.bin` e são lidos do cartão a cada quadro (lento: 120+ ms; só como reserva).
 - **Emojis:** na RAM (até 48 de 630 B), porque o LVGL procura-os a cada letra desenhada.
 - **Aviso de mensagem:** canvas de 160×96 RGB565A8 (46 KB). Com o relógio aberto, usa emprestada a memória do fundo do relógio (o relógio fica parado por baixo) e o ESP avisa o host com `bgfreed` para o reenviar depois.
@@ -135,8 +137,8 @@ está na placa) seria o próximo passo se um dia a tela ficar solta.
 | `dock` | `item` | Botão do dock |
 | `clock` | `face` ou `bl` (texto) | Gesto no relógio, já aplicado pelo ESP; o host guarda a escolha |
 | `iconsfreed` | — | O relógio libertou os ícones e o dock; o host volta a enviá-los |
-| `stats` | toque, quadros, `lock_max_ms`, `lock_type` | Resposta a `{"t":"stats"}` (o dashd pede-a com SIGUSR1 e escreve-a no log) |
-| `bench` | `frames`, `avg_ms`, `max_ms`, `fps` | Resposta a `{"t":"bench"}`: rola a tela atual 2 s e mede cada quadro |
+| `stats` | toque, quadros, `lock_max_ms`, `lock_type`, `clk_draws`, `clk_avg_ms`, `clk_max_ms` (desenho do relógio) | Resposta a `{"t":"stats"}` (o dashd pede-a com SIGUSR1 e escreve-a no log) |
+| `bench` | `frames`, `avg_ms`, `max_ms`, `fps` | Resposta a `{"t":"bench"}`: rola a tela atual 2 s (na horizontal ou, se não houver scroll lateral, na vertical) e mede cada quadro |
 | `iconlost` | `id` | O ESP precisou do lugar deste ícone (96 ocupados); o host volta a enviá-lo quando for preciso |
 | `pong`, `iconack`, `bgack` | — | Respostas |
 | linhas `# ...` | — | Logs do ESP-IDF (o dashd mostra-os com `-v`) |
@@ -150,7 +152,8 @@ enquanto o ESP desenhava, e o mapa aparecia pela metade. O fundo só é usado se
 - **Navegação:** pilha de nós do `config.toml`. Os providers podem acrescentar telas de detalhe (`on_tap` devolve uma tela).
 - **Atualização:** a cada `refresh` s, a tela aberta é reconstruída e só é enviada se o JSON mudou.
 - **Ligação:** reabre a porta sozinha, descarta o lixo acumulado e ignora `hello` repetidos (menos de 2 s). Em cada `hello` volta a enviar brilho, estado, dock, ícones e a tela.
-- **Rotação:** se o `rot` do `hello` for diferente do `config.toml`, envia `rot` uma vez e o ESP reinicia.
+- **Rotação:** se o `rot` do `hello` for diferente da rotação pedida (`config.toml` ou, se existir, a escolhida no menu em `~/.config/dashd/state.json`), envia `rot` uma vez e o ESP reinicia. Pelo menu (Sistema > DashDeck), o dashd grava a escolha, envia `rot` e não manda telas até ao `hello` seguinte.
+- **Janelas abertas:** `wltop.py` liga-se ao socket do compositor (`$XDG_RUNTIME_DIR/wayland-0`), pede o `zwlr_foreign_toplevel_manager_v1` e junta título, `app_id` e estado de cada janela em duas idas e voltas. Cada ação abre uma ligação nova (os identificadores não passam de uma ligação para outra), procura a janela pelo `app_id` e título (ou posição) e envia `activate` (com o `wl_seat`), `set_minimized` ou `close`.
 - **Ações:** `launch` usa `gio launch` (`.desktop`) ou um shell com o ambiente Wayland. `service` usa `sudo -n systemctl` numa thread e respeita os grupos exclusivos.
 
 ## GPS

@@ -48,6 +48,12 @@
 //   Swipe lateral troca o mostrador -> {"t":"clock","face":"1"}; vertical muda o brilho ->
 //   {"t":"clock","bl":"60"}; um toque pede confirmação e o 2.º (em 2,5 s) volta -> {"t":"back"}.
 //   "dim":s,"dim_bl":% no clock: escurece após s segundos sem toques; o toque seguinte repõe o brilho.
+//   Mostradores (face): 0 paisagem, 1 retro, 2 previsão, 3 cidade, 4 temporizador e alarme.
+//   "timer":{"set":s,"end":epoch local|0,"left":s em pausa|0}, "alarm":{"h","m","on"} (mostrador 4).
+//   No mostrador 4 os toques nas zonas enviam {"t":"clock","tset":"300"}, {"tact":"start|pause|reset"},
+//   {"alarm":"07:30"}, {"aon":"1"}; manter o dedo numa seta repete. No retro, um toque longo muda a cor
+//   do LCD -> {"t":"clock","pal":"1"}.
+//   notify: "kind":"alarm" (despertador dourado), "title" (1.ª linha da faixa), "dur" (s até fechar).
 //   Os gestos do relógio são medidos do toque ao soltar (não pelo detetor do LVGL). O brilho normal volta ao sair.
 #include "ui.h"
 
@@ -103,6 +109,8 @@ typedef enum { TPL_NONE, TPL_MENU, TPL_LIST, TPL_KV, TPL_LOG, TPL_TEXT, TPL_PLOT
 #define PLOT_PTS 80
 #define PLOT_MAX_PX (320 * 172)
 static lv_obj_t *s_canvas;
+static int64_t s_clk_dsum, s_clk_dmax;   // tempo do desenho do relógio (stats)
+static int s_clk_dn;
 static lv_obj_t *s_plot_wrap;      // canvas + botões de controlo por cima
 #define CTRL_MAX 10
 static char s_ctrl_ids[CTRL_MAX][ID_LEN];
@@ -145,6 +153,10 @@ static bool s_asleep;
 static lv_obj_t *s_shield;         // apanha o toque que acorda (não ativa o que está por baixo)
 static bool s_dock_want;           // a tela atual quer o dock
 static bool s_pressing;
+static int s_press_zone;          // zona do temporizador tocada (CZ_*)
+static bool s_long_done;          // o toque longo já fez algo (cor do LCD, repetição das setas)
+static bool s_edit_tm, s_edit_al; // há ajustes por enviar ao host
+static uint32_t s_edit_until;     // até lá, ignora os valores do host (pode vir um update antigo)
 static uint32_t s_dim_ms = 300000; // relógio: escurece após N ms sem toques (0 = nunca)
 static uint8_t s_dim_bl = 10;
 static bool s_dimmed;
@@ -184,13 +196,17 @@ static char s_btn_ids[MAX_BTNS][ID_LEN];
 #define ICON_MAX 96
 #define ICON_PX  48
 // Ícones ficam também na RAM (desenho rápido, sem ler o cartão no barramento do display) enquanto
-// sobrar pelo menos isto de heap; os outros desenham-se do cartão através da cache de imagens.
-#define ICON_RAM_RESERVE (80 * 1024)
+// sobrar pelo menos isto de heap. A RAM vai para os ícones da tela aberta e do dock: ao construir uma
+// tela, os que lá aparecem carregam-se do cartão e libertam as cópias de telas que já não se veem.
+// Os que não couberem desenham-se do cartão através da cache de imagens.
+#define ICON_RAM_RESERVE (36 * 1024)
 typedef struct {
     char id[24];
     lv_image_dsc_t dsc;
     uint8_t *data;      // cópia na RAM (se houver memória), usada em vez do cartão
     char path[24];      // no cartão: "S:dash/xxxxxxxx.bin" (persiste entre arranques)
+    uint32_t gen;       // última tela (s_icon_gen) que o usou
+    uint32_t tried;     // tela em que já se tentou trazê-lo para a RAM (não repete a cada update)
 } icon_t;
 #define ICON_USED(i) (s_icons[i].data || s_icons[i].path[0])
 static bool s_sd_ok;    // cartão SD montado (ícones e fundos grandes vão para lá)
@@ -198,6 +214,7 @@ static bool s_sd_ok;    // cartão SD montado (ícones e fundos grandes vão par
 #define BG_FILE SD_DIR "/bg.bin"
 static icon_t s_icons[ICON_MAX];
 static int s_icon_next;
+static uint32_t s_icon_gen = 1;   // sobe a cada tela nova
 static void make_badge(lv_obj_t *card, int i, const cJSON *it);
 static void ask_confirm(const char *text, uint32_t yes_color);
 static void draw_tracks(const cJSON *tracks);
@@ -492,13 +509,23 @@ static void handle_emoji(const cJSON *msg)
     cJSON_Delete(o);
 }
 
-// Fonte da imagem do ícone para lv_image_set_src: o ficheiro no cartão ou o descritor na RAM.
+static void icon_load_ram(icon_t *slot);
+
+// Fonte da imagem do ícone para lv_image_set_src: o descritor na RAM ou o ficheiro no cartão.
+// Marca-o como usado pela tela atual e, se só estiver no cartão, tenta trazê-lo para a RAM.
 static const void *icon_find(const char *id)
 {
     if (!id || !id[0]) return NULL;
     for (int i = 0; i < ICON_MAX; i++) {
-        if (ICON_USED(i) && !strcmp(s_icons[i].id, id))
-            return s_icons[i].data ? (const void *)&s_icons[i].dsc : (const void *)s_icons[i].path;
+        if (ICON_USED(i) && !strcmp(s_icons[i].id, id)) {
+            icon_t *slot = &s_icons[i];
+            slot->gen = s_icon_gen;
+            if (!slot->data && slot->path[0] && slot->tried != s_icon_gen) {
+                slot->tried = s_icon_gen;
+                icon_load_ram(slot);
+            }
+            return slot->data ? (const void *)&slot->dsc : (const void *)slot->path;
+        }
     }
     return NULL;
 }
@@ -551,6 +578,48 @@ static void icon_clear(icon_t *slot)
     }
     if (slot->path[0]) lv_image_cache_drop(slot->path);
     slot->path[0] = '\0';
+}
+
+static bool icon_is_dock(const icon_t *slot)
+{
+    for (int d = 0; d < DOCK_MAX; d++)
+        if (s_dock_imgs[d][0] && !strcmp(s_dock_imgs[d], slot->id)) return true;
+    return false;
+}
+
+// Traz para a RAM um ícone que só está no cartão. Para caber, esvazia a cache de imagens e liberta as
+// cópias na RAM de ícones que a tela atual e o dock não usam (os widgets deles já foram apagados).
+static void icon_load_ram(icon_t *slot)
+{
+    char file[48];
+    snprintf(file, sizeof(file), BOARD_SD_PATH "/%s", slot->path + 2);   // "S:dash/x.bin" -> /sd/dash/x.bin
+    const size_t size = 32 * 32 * 3;   // ícones de 32 px (RGB565A8)
+    if (!icon_ram_ok(size)) lv_image_cache_drop(NULL);
+    for (int i = 0; i < ICON_MAX && !icon_ram_ok(size); i++) {
+        icon_t *o = &s_icons[i];
+        if (o->data && o->gen != s_icon_gen && !icon_is_dock(o)) {
+            lv_image_cache_drop(&o->dsc);
+            free(o->data);
+            o->data = NULL;
+        }
+    }
+    if (!icon_ram_ok(size)) return;
+    FILE *f = fopen(file, "rb");
+    if (!f) return;
+    lv_image_header_t hdr;
+    uint8_t *buf = NULL;
+    if (fread(&hdr, sizeof(hdr), 1, f) == 1 && hdr.magic == LV_IMAGE_HEADER_MAGIC &&
+        (size_t)hdr.w * hdr.h * 3 <= (size_t)ICON_PX * ICON_PX * 3) {
+        size_t n = (size_t)hdr.w * hdr.h * 3;
+        buf = malloc(n);
+        if (buf && fread(buf, 1, n, f) == n) {
+            lv_image_cache_drop(slot->path);
+            icon_set_ram(slot, buf, hdr.w, hdr.h, n);
+            buf = NULL;
+        }
+    }
+    free(buf);
+    fclose(f);
 }
 
 // Grava o ícone como imagem do LVGL (cabeçalho + RGB565A8) no cartão. Devolve false se falhar.
@@ -1572,7 +1641,8 @@ static void clock_draw(void)
     s_cs.show_dots = (int32_t)(s_dots_until - ms) > 0;
     s_cs.show_exit = (int32_t)(s_exit_until - ms) > 0;
     s_cs.bright = s_bl;
-    if (s_cs.face == 0 || s_cs.face == 2) {   // paisagem e previsão têm fundo do host
+    s_cs.now = s_has_time ? (esp_timer_get_time() + s_epoch_off) / 1000000 : 0;
+    if (CLK_HAS_SCENE(s_cs.face)) {   // paisagem, previsão e cidade têm fundo do host
         bool ok = s_bg_ready && !strncmp(s_bg_key, "clk", 3) && s_bg_w == s_cw && s_bg_h == s_ch;
         if (ok) {
             paint_bg(s_bg_key);
@@ -1583,7 +1653,12 @@ static void clock_draw(void)
             lv_canvas_fill_bg(s_canvas, lv_color_hex(0x101830), LV_OPA_COVER);
         }
     }
+    int64_t t0 = esp_timer_get_time();
     clockface_draw((uint16_t *)s_cbuf.data, (int)(s_cbuf.header.stride / 2), s_cw, s_ch, &s_cs, &tm, ms);
+    int64_t dt = esp_timer_get_time() - t0;
+    s_clk_dsum += dt;
+    s_clk_dn++;
+    if (dt > s_clk_dmax) s_clk_dmax = dt;
     lv_obj_invalidate(s_canvas);
     s_clock_last_sec = s_cs.has_time ? tm.tm_sec : -1;
 }
@@ -1596,7 +1671,7 @@ static void clock_timer_cb(lv_timer_t *t)
     uint32_t ms = now_ms();
     bool ovl = (int32_t)(s_bright_until - ms) > 0 || (int32_t)(s_dots_until - ms) > 0 ||
                (int32_t)(s_exit_until - ms) > 0;
-    bool bg_new = (s_cs.face == 0 || s_cs.face == 2) && s_bg_ready && !s_clock_drawn_bg;
+    bool bg_new = CLK_HAS_SCENE(s_cs.face) && s_bg_ready && !s_clock_drawn_bg;
     if (clockface_animated(&s_cs) || (ht && tm.tm_sec != s_clock_last_sec) || ovl || ovl != s_ovl_was || bg_new) {
         clock_draw();
     }
@@ -1609,8 +1684,62 @@ static void clock_timer_cb(lv_timer_t *t)
 
 static void clock_gesture(lv_dir_t d);
 
+// Ajuste local de uma seta do temporizador/alarme (o host recebe o valor ao soltar).
+static void tz_step(int z)
+{
+    switch (z) {
+    case CZ_TMIN_UP: s_cs.tset += 60; break;
+    case CZ_TMIN_DN: s_cs.tset -= 60; break;
+    case CZ_TSEC_UP: s_cs.tset += 10; break;
+    case CZ_TSEC_DN: s_cs.tset -= 10; break;
+    case CZ_AH_UP: s_cs.alh = (s_cs.alh + 1) % 24; break;
+    case CZ_AH_DN: s_cs.alh = (s_cs.alh + 23) % 24; break;
+    case CZ_AM_UP: s_cs.alm = (s_cs.alm + 1) % 60; break;
+    case CZ_AM_DN: s_cs.alm = (s_cs.alm + 59) % 60; break;
+    default: return;
+    }
+    if (s_cs.tset < 0) s_cs.tset = 0;
+    if (s_cs.tset > 99 * 60 + 59) s_cs.tset = 99 * 60 + 59;
+    if (z <= CZ_TSEC_DN) s_edit_tm = true;
+    else s_edit_al = true;
+    s_edit_until = now_ms() + 2000;
+}
+
+static void tz_send(void)
+{
+    char v[12];
+    if (s_edit_tm) {
+        snprintf(v, sizeof(v), "%d", s_cs.tset);
+        link_send_event("clock", "tset", v, NULL, NULL);
+    }
+    if (s_edit_al) {
+        snprintf(v, sizeof(v), "%02d:%02d", s_cs.alh, s_cs.alm);
+        link_send_event("clock", "alarm", v, NULL, NULL);
+    }
+    s_edit_tm = s_edit_al = false;
+}
+
+// Toque (sem arrastar) numa zona do temporizador: setas ajustam, botões agem.
+static void tz_tap(int z)
+{
+    if (z == CZ_TGO) {
+        link_send_event("clock", "tact", s_cs.tend > 0 ? "pause" : "start", NULL, NULL);
+    } else if (z == CZ_TRESET) {
+        link_send_event("clock", "tact", "reset", NULL, NULL);
+    } else if (z == CZ_AON) {
+        s_cs.alon = !s_cs.alon;
+        s_edit_until = now_ms() + 2000;
+        link_send_event("clock", "aon", s_cs.alon ? "1" : "0", NULL, NULL);
+    } else {
+        tz_step(z);
+        tz_send();
+    }
+}
+
 // Gestos do relógio medidos aqui (do toque ao soltar), sem o detetor do LVGL: na altura de 172 px
 // um swipe vertical raramente chegava ao limite dele e era tratado como toque (saía do relógio).
+// No mostrador do temporizador, os toques nas zonas são botões (manter o dedo numa seta repete);
+// no digital retro, um toque longo muda a cor do LCD.
 static void clock_press_cb(lv_event_t *e)
 {
     lv_event_code_t code = lv_event_get_code(e);
@@ -1618,33 +1747,68 @@ static void clock_press_cb(lv_event_t *e)
     if (!indev) return;
     lv_point_t p;
     lv_indev_get_point(indev, &p);
+    int32_t dx = p.x - s_press_pt.x, dy = p.y - s_press_pt.y;
+    int32_t ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
+    const int32_t th = 24;
+    uint32_t ms = now_ms();
+    bool exit_shown = (int32_t)(s_exit_until - ms) > 0;
     if (code == LV_EVENT_PRESSED) {
         s_press_pt = p;
         s_pressing = true;
+        s_long_done = false;
+        s_press_zone = exit_shown ? CZ_NONE : clockface_zone(&s_cs, s_cw, s_ch, p.x, p.y);
         if (s_dimmed) {   // escurecido: o toque repõe o brilho (e segue como um toque normal)
             s_dimmed = false;
             board_set_backlight(s_bl);
+        }
+        if (s_press_zone) {
+            s_cs.hot = s_press_zone;
+            clock_draw();
+        }
+        return;
+    }
+    if (code == LV_EVENT_LONG_PRESSED || code == LV_EVENT_LONG_PRESSED_REPEAT) {
+        if (!s_pressing || ax >= th || ay >= th || exit_shown) return;
+        if (s_cs.face == 1 && code == LV_EVENT_LONG_PRESSED) {   // digital retro: muda a cor do LCD
+            char v[4];
+            s_cs.pal = (s_cs.pal + 1) % 3;
+            snprintf(v, sizeof(v), "%d", s_cs.pal);
+            link_send_event("clock", "pal", v, NULL, NULL);
+            s_long_done = true;
+            clock_draw();
+        } else if (s_press_zone >= CZ_TMIN_UP && s_press_zone <= CZ_AM_DN &&
+                   s_press_zone != CZ_TGO && s_press_zone != CZ_TRESET) {   // setas: repete
+            tz_step(s_press_zone);
+            s_long_done = true;
+            clock_draw();
         }
         return;
     }
     if (code != LV_EVENT_RELEASED || !s_pressing) return;
     s_pressing = false;
-    int32_t dx = p.x - s_press_pt.x, dy = p.y - s_press_pt.y;
-    int32_t ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
-    const int32_t th = 24;
+    int zone = s_press_zone;
+    s_press_zone = CZ_NONE;
+    if (s_cs.hot) {
+        s_cs.hot = CZ_NONE;
+        clock_draw();
+    }
     if (ax >= th && ax > ay) {
+        if (s_edit_tm || s_edit_al) tz_send();
         clock_gesture(dx < 0 ? LV_DIR_LEFT : LV_DIR_RIGHT);
     } else if (ay >= th) {
+        if (s_edit_tm || s_edit_al) tz_send();
         clock_gesture(dy < 0 ? LV_DIR_TOP : LV_DIR_BOTTOM);
+    } else if (exit_shown) {   // 2.º toque dentro do aviso: sai
+        s_exit_until = ms;
+        go_back();
+    } else if (s_long_done) {
+        if (s_edit_tm || s_edit_al) tz_send();
+    } else if (zone) {
+        tz_tap(zone);
+        clock_draw();
     } else {
-        uint32_t ms = now_ms();
-        if ((int32_t)(s_exit_until - ms) > 0) {   // 2.º toque dentro do aviso: sai
-            s_exit_until = ms;
-            go_back();
-        } else {
-            s_exit_until = ms + 2500;
-            clock_draw();
-        }
+        s_exit_until = ms + 2500;
+        clock_draw();
     }
 }
 
@@ -1657,7 +1821,7 @@ static int32_t jint_at(const cJSON *arr, int i, int32_t def)
 static void clock_apply(const cJSON *c)
 {
     if (!cJSON_IsObject(c)) return;
-    s_cs.face = (int)(jint(c, "face", s_cs.face) % 3);
+    s_cs.face = (int)(jint(c, "face", s_cs.face) % CLK_FACES);
     s_cs.pal = jint(c, "pal", s_cs.pal);
     s_cs.night = jbool(c, "night", false);
     int dim = jint(c, "dim", -1), dim_bl = jint(c, "dim_bl", -1);
@@ -1667,6 +1831,21 @@ static void clock_apply(const cJSON *c)
     s_cs.anim = !strcmp(an, "rain") ? CLK_ANIM_RAIN : !strcmp(an, "storm") ? CLK_ANIM_STORM
               : !strcmp(an, "snow") ? CLK_ANIM_SNOW : CLK_ANIM_NONE;
     strlcpy(s_clock_bg, jstr(c, "bg", ""), sizeof(s_clock_bg));
+    // temporizador e alarme: o estado a contar vem sempre do host; os valores ajustados no ESP há menos
+    // de 2 s ficam (um update pode ter saído antes de o host receber o ajuste)
+    const cJSON *tj = cJSON_GetObjectItemCaseSensitive(c, "timer"), *aj = cJSON_GetObjectItemCaseSensitive(c, "alarm");
+    bool editing = (int32_t)(s_edit_until - now_ms()) > 0 || s_pressing;
+    if (cJSON_IsObject(tj)) {
+        const cJSON *en = cJSON_GetObjectItemCaseSensitive(tj, "end");
+        s_cs.tend = cJSON_IsNumber(en) ? (int64_t)en->valuedouble : 0;
+        s_cs.tleft = jint(tj, "left", 0);
+        if (!editing) s_cs.tset = jint(tj, "set", s_cs.tset);
+    }
+    if (cJSON_IsObject(aj) && !editing) {
+        s_cs.alh = jint(aj, "h", s_cs.alh) % 24;
+        s_cs.alm = jint(aj, "m", s_cs.alm) % 60;
+        s_cs.alon = jbool(aj, "on", false);
+    }
     const cJSON *wx = cJSON_GetObjectItemCaseSensitive(c, "wx");
     s_cs.has_wx = cJSON_IsObject(wx);
     if (s_cs.has_wx) {
@@ -1736,6 +1915,8 @@ static void clock_enter(const cJSON *msg)
         lv_obj_remove_flag(s_clock, LV_OBJ_FLAG_GESTURE_BUBBLE);   // o gesto é tratado em clock_press_cb
         lv_obj_add_event_cb(s_clock, clock_press_cb, LV_EVENT_PRESSED, NULL);
         lv_obj_add_event_cb(s_clock, clock_press_cb, LV_EVENT_RELEASED, NULL);
+        lv_obj_add_event_cb(s_clock, clock_press_cb, LV_EVENT_LONG_PRESSED, NULL);
+        lv_obj_add_event_cb(s_clock, clock_press_cb, LV_EVENT_LONG_PRESSED_REPEAT, NULL);
         s_exit_until = now_ms();
         s_pressing = false;
         s_dimmed = false;
@@ -1794,13 +1975,14 @@ static void clock_exit(void)
     board_set_backlight(s_bl);
 }
 
-// Gestos no relógio: lateral troca o mostrador, vertical muda o brilho.
+// Gestos no relógio: lateral troca o mostrador (paisagem → retro → previsão → cidade → temporizador),
+// vertical muda o brilho.
 static void clock_gesture(lv_dir_t d)
 {
     char v[8];
     uint32_t ms = now_ms();
     if (d == LV_DIR_LEFT || d == LV_DIR_RIGHT) {
-        s_cs.face = (s_cs.face + (d == LV_DIR_LEFT ? 1 : 2)) % 3;   // paisagem → retro → previsão
+        s_cs.face = (s_cs.face + (d == LV_DIR_LEFT ? 1 : CLK_FACES - 1)) % CLK_FACES;
         s_dots_until = ms + 1500;
         snprintf(v, sizeof(v), "%d", s_cs.face);
         link_send_event("clock", "face", v, NULL, NULL);
@@ -2040,6 +2222,7 @@ static void build_dock(const cJSON *items)
 
 static void render_screen(const cJSON *msg)
 {
+    s_icon_gen++;   // os ícones da tela nova passam à frente na RAM
     strlcpy(s_screen_id, jstr(msg, "id", ""), ID_LEN);
     s_tpl = parse_tpl(jstr(msg, "tpl", "menu"));
     if (s_tpl != TPL_CLOCK) clock_exit();
@@ -2248,6 +2431,7 @@ static uint8_t *s_ntf_mem;
 static lv_timer_t *s_ntf_timer;
 static int64_t s_ntf_t0;
 static bool s_ntf_close;
+static float s_ntf_total = NOTIFY_TOTAL;   // s até fechar sozinho ("dur"; o alarme fica até 60 s)
 
 static void ntf_end(void)
 {
@@ -2263,11 +2447,11 @@ static void ntf_end(void)
 static void ntf_timer_cb(lv_timer_t *t)
 {
     float el = (float)(esp_timer_get_time() - s_ntf_t0) / 1e6f;
-    if (s_ntf_close || el > NOTIFY_TOTAL) {
+    if (s_ntf_close || el > s_ntf_total) {
         ntf_end();
         return;
     }
-    float fade = el < 0.3f ? el / 0.3f : el > NOTIFY_TOTAL - 0.3f ? (NOTIFY_TOTAL - el) / 0.3f : 1;
+    float fade = el < 0.3f ? el / 0.3f : el > s_ntf_total - 0.3f ? (s_ntf_total - el) / 0.3f : 1;
     lv_obj_set_style_bg_opa(s_ntf, (lv_opa_t)(150 * fade), 0);
     if (s_ntf_cv) {
         notify_draw(s_ntf_mem, el);
@@ -2298,6 +2482,9 @@ static void ntf_show(const cJSON *msg)
         board_set_backlight(s_bl);
     }
     lv_display_trigger_activity(NULL);
+    bool alarm = !strcmp(jstr(msg, "kind", ""), "alarm");
+    int dur = jint(msg, "dur", 0);
+    s_ntf_total = dur > 0 && dur <= 300 ? (float)dur : NOTIFY_TOTAL;
     s_ntf = lv_obj_create(lv_layer_top());
     lv_obj_remove_style_all(s_ntf);
     lv_obj_set_size(s_ntf, s_W, s_H);
@@ -2324,7 +2511,7 @@ static void ntf_show(const cJSON *msg)
     }
     if (s_ntf_mem) {   // sem memória fica só a faixa
         lv_draw_buf_init(&s_ntf_buf, NOTIFY_W, NOTIFY_H, LV_COLOR_FORMAT_RGB565A8, NOTIFY_W * 2, s_ntf_mem, need);
-        notify_start(jstr(msg, "from", ""));
+        notify_start(jstr(msg, "from", ""), alarm ? NOTIFY_ALARM : NOTIFY_DM);
         notify_draw(s_ntf_mem, 0);
         s_ntf_cv = lv_canvas_create(s_ntf);
         lv_obj_remove_flag(s_ntf_cv, LV_OBJ_FLAG_CLICKABLE);
@@ -2335,19 +2522,21 @@ static void ntf_show(const cJSON *msg)
     lv_obj_set_size(s_ntf_bar, s_W, 42);
     lv_obj_set_pos(s_ntf_bar, 0, s_H);
     lv_obj_set_style_bg_opa(s_ntf_bar, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(s_ntf_bar, lv_color_hex(0x0E3B1C), 0);
+    const uint32_t bar_bg = alarm ? 0x3B2A00 : 0x0E3B1C, bar_fg = alarm ? 0xFFC94A : 0x67EA94;
+    lv_obj_set_style_bg_color(s_ntf_bar, lv_color_hex(bar_bg), 0);
     lv_obj_set_style_border_side(s_ntf_bar, LV_BORDER_SIDE_TOP, 0);
     lv_obj_set_style_border_width(s_ntf_bar, 1, 0);
-    lv_obj_set_style_border_color(s_ntf_bar, lv_color_hex(0x67EA94), 0);
+    lv_obj_set_style_border_color(s_ntf_bar, lv_color_hex(bar_fg), 0);
     lv_obj_set_style_pad_hor(s_ntf_bar, 8, 0);
     lv_obj_set_style_pad_ver(s_ntf_bar, 4, 0);
     lv_obj_set_flex_flow(s_ntf_bar, LV_FLEX_FLOW_COLUMN);
     char head[64];
-    snprintf(head, sizeof(head), "Mensagem de %s", jstr(msg, "from", "?"));
-    lv_obj_t *l1 = mk_label(s_ntf_bar, &dash_font_14, 0x67EA94, head);
+    if (jstr(msg, "title", NULL)) utf8cpy(head, jstr(msg, "title", ""), sizeof(head));
+    else snprintf(head, sizeof(head), "Mensagem de %s", jstr(msg, "from", "?"));
+    lv_obj_t *l1 = mk_label(s_ntf_bar, &dash_font_14, bar_fg, head);
     lv_obj_set_width(l1, LV_PCT(100));
     lv_label_set_long_mode(l1, LV_LABEL_LONG_DOT);
-    lv_obj_t *l2 = mk_label(s_ntf_bar, &dash_font_12, 0xE7FFE9, jstr(msg, "text", ""));
+    lv_obj_t *l2 = mk_label(s_ntf_bar, &dash_font_12, alarm ? 0xFFF6E0 : 0xE7FFE9, jstr(msg, "text", ""));
     lv_obj_set_width(l2, LV_PCT(100));
     lv_label_set_long_mode(l2, LV_LABEL_LONG_DOT);
     s_ntf_t0 = esp_timer_get_time();
@@ -2586,14 +2775,17 @@ static void ts_hook(void)
 static void ts_report(void)
 {
     double secs = s_ts_time / 1e6;
-    char buf[200];
+    char buf[300];
     snprintf(buf, sizeof(buf), "{\"t\":\"stats\",\"presses\":%d,\"press_s\":%.2f,\"reads_per_s\":%.1f,"
              "\"gap_max_ms\":%.1f,\"frames\":%d,\"frame_avg_ms\":%.1f,\"frame_max_ms\":%.1f,"
-             "\"lock_max_ms\":%.1f,\"lock_type\":\"%s\"}",
+             "\"lock_max_ms\":%.1f,\"lock_type\":\"%s\",\"clk_draws\":%d,\"clk_avg_ms\":%.1f,"
+             "\"clk_max_ms\":%.1f}",
              s_ts_presses, secs, secs > 0 ? s_ts_reads / secs : 0.0, s_ts_gap_max / 1000.0, s_ts_frames,
              s_ts_frames ? s_ts_fsum / 1000.0 / s_ts_frames : 0.0, s_ts_fmax / 1000.0, s_lock_max / 1000.0,
-             s_lock_type);
+             s_lock_type, s_clk_dn, s_clk_dn ? s_clk_dsum / 1000.0 / s_clk_dn : 0.0, s_clk_dmax / 1000.0);
     s_lock_max = 0;
+    s_clk_dsum = s_clk_dmax = 0;
+    s_clk_dn = 0;
     s_ts_reads = s_ts_presses = s_ts_frames = 0;
     s_ts_time = s_ts_gap_max = s_ts_fsum = s_ts_fmax = 0;
     cJSON *o = cJSON_Parse(buf);
@@ -2617,9 +2809,12 @@ static void bench_ev(lv_event_t *e)
     }
 }
 
+static bool s_bn_y;   // a tela rola na vertical (retrato, listas)
+
 static void bench_scroll(void *obj, int32_t v)
 {
-    lv_obj_scroll_to_x(obj, v, LV_ANIM_OFF);
+    if (s_bn_y) lv_obj_scroll_to_y(obj, v, LV_ANIM_OFF);
+    else lv_obj_scroll_to_x(obj, v, LV_ANIM_OFF);
 }
 
 static void bench_done(lv_timer_t *t)
@@ -2638,7 +2833,7 @@ static void bench_done(lv_timer_t *t)
     lv_timer_delete(t);
 }
 
-static void bench_start(void)
+static void bench_start(int maxw)
 {
     static bool hooked;
     lv_display_t *d = lv_display_get_default();
@@ -2649,7 +2844,9 @@ static void bench_start(void)
     }
     lv_obj_update_layout(s_content);
     int32_t w = lv_obj_get_scroll_right(s_content) + lv_obj_get_scroll_x(s_content);
-    if (w > 330) w = 330;
+    s_bn_y = w <= 0;
+    if (s_bn_y) w = lv_obj_get_scroll_bottom(s_content) + lv_obj_get_scroll_y(s_content);
+    if (w > maxw) w = maxw;
     s_bn_frames = 0;
     s_bn_sum = s_bn_max = s_bn_t0 = 0;
     s_bn_start = esp_timer_get_time();
@@ -2693,7 +2890,7 @@ void ui_handle(const cJSON *msg)
     }
     if (!strcmp(t, "bench")) {
         lvgl_port_lock(0);
-        bench_start();
+        bench_start(jint(msg, "px", 330));
         lvgl_port_unlock();
         return;
     }

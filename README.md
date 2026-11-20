@@ -55,7 +55,8 @@ Os detalhes de cada tela estão em [docs/uso.md](docs/uso.md).
 
 | Módulo | O que faz | Estado |
 |---|---|---|
-| Aplicações | Os programas de Acessórios do uConsole, lidos dos `.desktop` com o ícone real, mais Terminal, Gqrx, Arquivos e PyCharm | ok |
+| ADS-B e AIS (rotas) | Origem e destino de cada voo (hexdb.io, pelo indicativo); destino e chegada prevista de cada navio (do próprio AIS) | ok |
+| Aplicações | Os programas de Acessórios do uConsole, lidos dos `.desktop` com o ícone real, mais Terminal, Gqrx, Arquivos e PyCharm; box **Abertas** com os programas abertos (mostrar, minimizar, fechar) | ok |
 | Meshtastic | Painel, Nós, Conversas e Mapa dos nós (canais e diretas; cada uma abre as suas mensagens, verdes para RF e lilás para MQTT), com Responder em cada mensagem, Mensagem direta no detalhe do nó e o aviso animado de mensagem direta. As não lidas aparecem como selo vermelho no box. Os dados vêm pela API local do MeshDeckWeb | ok |
 | GPS | GPS ao vivo pelo MeshDeckWeb (com o gpsmux, partilhado com o meshtasticd), posição pelo Meshtastic, ou NMEA direto do `/dev/ttyAMA0`. Página com o céu dos satélites | ok |
 | ADS-B | Liga e desliga o readsb. Lista de aeronaves, detalhe e mapa com trajetos, zoom e setas sobre o mapa, e seguir uma aeronave | ok |
@@ -65,8 +66,8 @@ Os detalhes de cada tela estão em [docs/uso.md](docs/uso.md).
 | Rede | Wi-Fi (estado, sinal, Internet, IP), redes ao alcance (as guardadas ligam-se com um toque) e VPN (NetworkManager e Tailscale) | ok |
 | Som | Volume e brilho do ecrã do uConsole, pelo dock | ok |
 | Serviços | Ligar, parar e reiniciar unidades systemd, com o grupo exclusivo `sdr` (um só uso do RTL-SDR) | ok |
-| Sistema | CPU, temperatura, RAM, disco, bateria e IPs | ok |
-| Relógio | Ecrã inteiro em pixel art: paisagem que segue o sol e o tempo, ou digital retro; previsão do dia (Open-Meteo); swipe troca o mostrador e muda o brilho | ok |
+| Sistema | CPU, temperatura, RAM, disco, bateria e IPs; página DashDeck com o firmware e a rotação do ecrã (vertical, horizontal, inverter) | ok |
+| Relógio | Ecrã inteiro em pixel art com 5 mostradores: paisagem que segue o sol, o tempo e as estações, digital retro (cor por toque longo), previsão por horas na costa, cidade à beira-rio, e temporizador e alarme com aviso animado e bip no uConsole; swipe troca o mostrador e muda o brilho | ok |
 | Dock | Comandos fixos configuráveis | ok |
 
 O que falta e as limitações conhecidas estão em **[docs/pendencias.md](docs/pendencias.md)**.
@@ -87,7 +88,7 @@ O que falta e as limitações conhecidas estão em **[docs/pendencias.md](docs/p
 host/                 lado do uConsole (Python 3.11, /usr/bin/python3)
   dashd.py            daemon: ligação serial, navegação, ações, envio de ícones e mapas
   providers.py        dados ao vivo: system, gps, adsb, ais, mesh, clock, aio, sdr; trajetos e uso do SDR
-  clockscene.py       relógio: previsão (Open-Meteo), cena da paisagem (8 bpp) e ícones do tempo
+  clockscene.py       relógio: previsão (Open-Meteo), cenas (lago, costa, cidade; 8 bpp) e ícones do tempo
   meshbridge.py       cliente da API local do MeshDeckWeb
   emojis.py           emojis no texto: separa as sequências e desenha-as a cores para o ESP
   maptiles.py         tiles do mapa (Web Mercator), cache e redução a 16 cores

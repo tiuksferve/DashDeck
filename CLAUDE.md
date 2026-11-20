@@ -11,10 +11,11 @@ mensagem, até 8 KB (descrito no cabeçalho de `firmware/main/ui.c` e em `docs/a
 
 - **Menu inicial (boxes):** AIO v2, Meshtastic, GPS, ADS-B, AIS, SDR, Rede, Aplicações, Serviços, Sistema.
 - **Dock** (início e Aplicações): Início, Relógio, Captura, Brilho, Som (volume e brilho do uConsole), Bloquear.
-- **Firmware atual:** 0.21.0 (gravado em 20/11).
+- **Firmware atual:** 0.24.2 (gravado em 20/11).
 
 ## Onde está cada coisa
-- `host/providers.py`: telas com dados (system, gps, adsb, ais, mesh, clock, aio, sdr, net, console).
+- `host/providers.py`: telas com dados (system, gps, adsb, ais, mesh, clock, aio, sdr, net, console, windows).
+- `host/wltop.py`: janelas abertas no uConsole (cliente Wayland em Python puro; listar, mostrar, minimizar, fechar).
 - `host/dashd.py`: ligação serial, navegação, envio de ícones, fundos, emojis e avisos.
 - `host/clockscene.py`: relógio (Open-Meteo, cena da paisagem em 8 bpp, ícones do tempo).
 - `host/emojis.py`: emojis a cores no texto (códigos privados U+100000+, imgfont no ESP).
@@ -36,17 +37,22 @@ mensagem, até 8 KB (descrito no cabeçalho de `firmware/main/ui.c` e em `docs/a
 ## Medir o desempenho
 - `kill -USR1 $(systemctl --user show -p MainPID --value dashd)`: o ESP responde com `stats` no log do dashd (leituras do toque por segundo, tempo dos quadros com o dedo no ecrã e o maior bloqueio do LVGL por uma mensagem, com o tipo).
 - `{"t":"bench"}` (com o dashd parado, por um script que use `dashd.App`): rola a tela atual 2 s e devolve quadros, média e pior tempo.
-- Referência na 0.21.0: scroll a 45-46 quadros/s (19 ms por quadro), atualizações até 2,4 ms, abrir Aplicações 166 ms.
+- Referência na 0.23.0: scroll a 44-46 quadros/s na tela inicial e nas Aplicações (lista toda: `{"t":"bench","px":3000}`), atualizações até 2,4 ms, abrir Aplicações ~100-160 ms. Memória livre nas Aplicações ~43-52 KB (os ícones ocupam o resto; relógio e aviso libertam-nos com o `make_room`).
 - Regra: nas funções `update_*` do `ui.c`, usar `set_text`, `set_text_color`, `set_bg_color`, `set_hidden` e `set_img` (só mudam se o valor for outro).
 
 ## Cuidados conhecidos
 - **USB da AIO v2:** com o interruptor USB da AIO ligado, a ligação ao ESP perde dados (gravação falha com "Packet content transfer stopped", o ESP pode deixar de ser reconhecido com erro -71). Mantê-lo desligado; o box pede confirmação antes de o ligar.
 - **Barramento USB partilhado:** o ESP, o RTL-SDR e discos USB estão no mesmo controlador (dwc2). Cópias grandes pioram a ligação.
 - **SDR:** só serve um programa de cada vez. O ADS-B e o AIS ligados pelo DashDeck desligam-se ao sair da tela (`keep_running` mantém-nos). A tela SDR mostra quem o usa e tem "Libertar SDR".
-- **Memória do ESP:** o LVGL usa o heap do sistema (`CONFIG_LV_USE_CLIB_MALLOC`); 110 KB ficam reservados para o buffer de ecrã (relógio, mapas, arranque) e sobram ~150 KB. Os ícones vão para o cartão SD (sem reenvio entre arranques) com cópia na RAM enquanto sobram 80 KB de heap (ler do cartão no barramento do display tornava swipes e animações lentos) e uma cache de imagens de 32 KB para os outros; 96 lugares, os do dock nunca são substituídos (`iconlost` avisa o host). O fundo do relógio fica na RAM, porque ler do cartão leva 120+ ms por quadro. O aviso de mensagem (46 KB) usa a memória do fundo do relógio quando o relógio está aberto (`bgfreed`). O `hello` traz `largest` e `sd`.
+- **Memória do ESP:** o LVGL usa o heap do sistema (`CONFIG_LV_USE_CLIB_MALLOC`); 110 KB ficam reservados para o buffer de ecrã (relógio, mapas, arranque) e sobram ~150 KB. Os ícones vão para o cartão SD (sem reenvio entre arranques) com cópia na RAM para os da tela aberta e do dock (carregados ao construir a tela, libertando os de outras telas, enquanto sobram 36 KB de heap; ler do cartão no barramento do display tornava swipes e animações lentos) e uma cache de imagens de 32 KB para os outros; 96 lugares, os do dock nunca são substituídos (`iconlost` avisa o host). O fundo do relógio fica na RAM, porque ler do cartão leva 120+ ms por quadro. O aviso de mensagem (46 KB) usa a memória do fundo do relógio quando o relógio está aberto (`bgfreed`). O `hello` traz `largest` e `sd`.
 - **Disco do uConsole:** tem pouco espaço livre; por isso o build fica em `/dev/shm`.
 
 ## Feito recentemente (19 e 20/11)
+- **Rotas** (20/11): ADS-B com origem/destino pelo indicativo (`host/routes.py`, hexdb.io, cache em `~/.cache/dashd/routes.json`); AIS com destino na lista e no mapa e chegada (ETA) no detalhe. Não testado com aviões e navios reais (readsb e AIS-catcher parados).
+- **Relógio legível** (20/11): `scrim()` (sombra translúcida esbatida, opacidade `SCRIM_A`) atrás dos blocos de texto e `outline_px()` (contorno 2 px + sombra) em `clockface.c`. Desenho ~14 ms por quadro.
+- **Abertas** (20/11): box à frente nas Aplicações com os programas abertos (labwc, protocolo wlr-foreign-toplevel); Mostrar, Minimizar, Fechar. Testado com o gestor de ficheiros.
+- **Rotação pelo menu** (20/11): Sistema, página DashDeck (Vertical/Horizontal, Inverter), gravada em `~/.config/dashd/state.json`. Em retrato, 43 quadros/s na tela inicial e nas Aplicações.
+- **Relógio** (20/11): mostrador **cidade**, neve no inverno na paisagem, toque longo no retro muda a cor, mostrador **temporizador e alarme** (desenho e zonas em `clockface.c`; o estado e o toque vivem no `ClockProvider`, `tick()` a cada segundo no dashd; aviso com o despertador em `notify.c`; bip pelo `pw-play`). As zonas de toque e a repetição ainda não foram usadas com o dedo.
 - **AIO v2: perfis de uso** (20/11): box Perfis com Meshtastic, ADS-B, AIS e Poupança (`[[menu.profiles]]`); o ativo fica verde. Testados só a abrir e o "já está ativo": aplicar um perfil mexe no hardware, ainda não foi feito com o utilizador.
 - **Rede** (20/11): Wi-Fi, redes guardadas/abertas com um toque, VPN do NetworkManager e Tailscale (nenhuma VPN configurada no uConsole por agora).
 - **Som** no dock (20/11): volume (wpctl) e brilho do ecrã do uConsole (backlight 0 a 9).
@@ -58,6 +64,6 @@ mensagem, até 8 KB (descrito no cabeçalho de `firmware/main/ui.c` e em `docs/a
 - Nome mudado de DashOS para DashDeck (também no MeshDeckWeb, branch `rename-dashdeck`).
 
 ## Por fazer (por prioridade sugerida)
-1. Mais cenas para o relógio, alarme/temporizador, aplicações abertas, rotação pelo menu, histórico de mensagens no MeshDeckWeb.
+1. Histórico de mensagens no MeshDeckWeb.
 2. **Atualizar o firmware pelo cartão SD** (por último; o cartão já está montado em `/sd` desde a 0.17.0): copiar o `.bin` para o cartão; o ESP grava-o em `ota_1` ao arrancar. Exige gravar esta funcionalidade uma vez pela USB.
 - Ainda por confirmar com uso real: o aviso "Ondas LoRa" com uma mensagem direta de verdade e a alternância das animações de arranque (só se testou com mensagens fictícias e imagens geradas no uConsole).

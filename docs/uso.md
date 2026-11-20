@@ -37,6 +37,7 @@ parado, a barra mostra "offline".
 - A seguir vêm Terminal, Gqrx, Arquivos e PyCharm (instalado em `/opt/pycharm`, sem `.desktop`, por isso está no `config.toml`).
 - Tocar abre o programa no uConsole, com `gio launch`, como o menu do sistema. Os programas de terminal, como o Vim, abrem numa janela de terminal.
 - Instalar ou remover um programa atualiza a lista em até 30 s.
+- **Abertas** (o primeiro box): os programas abertos no uConsole, com o ícone de cada um. O que está em uso fica com o fundo azul e "em uso" a verde; os outros dizem "aberta" ou "minimizada". Com duas janelas do mesmo programa, o box mostra o título da janela. Um toque abre a janela com **Mostrar** (traz para a frente, mesmo minimizada), **Minimizar** e **Fechar** (com confirmação; o programa pode ainda perguntar se quer gravar). Lê as janelas pelo compositor (labwc), por isso vê também as janelas Wayland que o `wmctrl` não vê.
 
 ### Meshtastic
 Precisa do MeshDeckWeb a correr, ligado ao nó e com `--local-api on` (ver [instalacao.md](instalacao.md#4-ponte-meshtastic-meshdeckweb)).
@@ -61,7 +62,7 @@ Precisa do MeshDeckWeb a correr, ligado ao nó e com `--local-api on` (ver [inst
 - **Fonte**, por esta ordem:
   - **MeshDeckWeb** (`/api/local/gps`), quando ele tem o GPS ao vivo: com o gpsmux do MeshDeckWeb instalado, o GPS é partilhado com o meshtasticd e chega aqui com fix, DOP e céu. Vê-se a cada pedido (cache de 1 s).
   - Se o meshtasticd está ativo e tem `GPS: SerialPath` no `/etc/meshtasticd/config.yaml` (sem gpsmux), o GPS é dele e a posição vem do nó Meshtastic, pela ponte, sem céu.
-  - Caso contrário, o dashd lê NMEA direto do `/dev/ttyAMA0` (9600 baud) e solta a porta assim que o meshtasticd a volte a usar.
+  - Com o meshtasticd parado, o GPS lê-se normalmente: pelo **gpsmux** do MeshDeckWeb (serviço `meshdeck-gpsmux`, porta TCP 127.0.0.1:10110) quando ele está a correr, porque é ele que tem o tty aberto para o partilhar; sem gpsmux, direto do `/dev/ttyAMA0` (9600 baud). Abrir o tty ao mesmo tempo que o gpsmux fazia os dois disputarem os dados. A fonte aparece como "gpsmux (partilhado)" ou o nome do tty.
 - **Dados:** fonte, fix (2D, 3D ou sem fix), satélites em uso e visíveis, latitude, longitude, altitude, velocidade, rumo, HDOP e hora UTC.
 - **Página Céu:**
   - Mostra os satélites num círculo com o norte para cima e os anéis de 30° e 60° de elevação.
@@ -69,7 +70,7 @@ Precisa do MeshDeckWeb a correr, ligado ao nó e com `--local-api on` (ver [inst
   - A cor é a força do sinal: verde a partir de 30, amarelo de 20 a 29 e vermelho abaixo de 20.
   - Ponto cheio é satélite em uso no fix; contorno vazio é satélite só visível.
   - Os satélites sem sinal não aparecem no gráfico, mas contam nos totais ao lado ("em uso / visíveis").
-  - **Só funciona no modo tty**: o Meshtastic não repassa os dados de satélites.
+  - **Só funciona a ler o NMEA** (gpsmux ou tty, com o meshtasticd parado): o Meshtastic não repassa os dados de satélites.
 
 ### ADS-B e AIS
 Os dois funcionam da mesma forma. O ADS-B usa o serviço `readsb` (aeronaves) e o AIS o serviço
@@ -87,9 +88,12 @@ Os dois funcionam da mesma forma. O ADS-B usa o serviço `readsb` (aeronaves) e 
   serviço ligado fora do DashDeck (pela tela Serviços ou por outro programa) não é desligado. Para o
   manter ligado em segundo plano, use `keep_running = true` no `config.toml`.
 - **Lista:**
-  - ADS-B: voo ou hex, altitude, velocidade e squawk. Emergências (7500, 7600, 7700) em vermelho.
-  - AIS: nome ou MMSI, tipo, velocidade, distância, há quanto tempo foi ouvido e país. Navios sem sinal há mais de 15 min saem da lista.
+  - ADS-B: voo ou hex com a rota (ex.: `TAP1352  LIS » LHR`), altitude, velocidade e squawk. Emergências (7500, 7600, 7700) em vermelho.
+  - AIS: nome ou MMSI com o destino (ex.: `SANTA MARIA  » PT LIS`), tipo, velocidade, distância, há quanto tempo foi ouvido e país. Navios sem sinal há mais de 15 min saem da lista.
   - Tocar abre o detalhe, com o botão **Seguir no mapa**.
+- **Origem e destino:**
+  - ADS-B: o avião só transmite o indicativo do voo, por isso o dashd procura a rota no [hexdb.io](https://hexdb.io) (só o indicativo sai do uConsole, nunca a posição). O detalhe mostra **Origem**, as **Escalas** e o **Destino** com o código IATA, o nome do aeroporto e o país; o painel do mapa mostra a rota curta. Enquanto procura aparece "a procurar..."; sem resultado, "desconhecida". A base é feita por voluntários: uma rota registada há mais de 2 anos fica a cinza, porque pode ter mudado. Voos privados e militares (sem indicativo de companhia) não têm rota. As respostas ficam em `~/.cache/dashd/routes.json` (24 h); `routes = false` desliga as consultas.
+  - AIS: o navio transmite o **Destino** (texto livre escrito pela tripulação, muitas vezes o código do porto, ex.: `PT LIS`) e a **Chegada** prevista, que aparece na hora local; "(passou)" quando a hora já passou. O porto de saída não faz parte do AIS.
 - **Mapa:**
   - O mesmo mapa escuro, com cada alvo, um traço na direção do rumo e o nome.
   - Cor no ADS-B: altitude (verde abaixo de 10 mil pés, azul abaixo de 25 mil, roxo acima, cinza no solo).
@@ -101,21 +105,23 @@ Os dois funcionam da mesma forma. O ADS-B usa o serviço `readsb` (aeronaves) e 
 - **Seguir um alvo:**
   - No detalhe, **Seguir no mapa** abre o mapa centrado nesse alvo, com o trajeto mais grosso e na cor dele.
   - O mapa só anda quando o alvo se afasta do centro, para não refazer o fundo a cada atualização.
-  - O painel ao lado mostra o alvo (altitude e velocidade, ou tipo, velocidade e estado do navio).
+  - O painel ao lado mostra o alvo (rota, altitude e velocidade, ou tipo, destino, velocidade e estado do navio).
   - As setas também funcionam enquanto segue: o mapa fica parado onde o deixou até tocar em **Centrar**.
   - **Soltar** (no mapa, no topo da lista ou no detalhe) volta ao mapa normal.
 
 ### Relógio
 Abre-se pelo botão **Relógio** do dock. É um ecrã inteiro, sem barra nem dock, com a hora, a data e a previsão do dia em pixel art.
+Nas cenas (paisagem, previsão, cidade), a hora, a data e o tempo ficam sobre uma sombra escura translúcida com as bordas esbatidas, e os números grandes têm contorno de 2 px com sombra projetada, para se lerem sobre céu claro, neve, nevoeiro ou nuvens.
 
 | Gesto | Efeito |
 |---|---|
-| Swipe para os lados | Troca de mostrador: paisagem → digital retro → previsão (os pontos em baixo mostram qual) |
+| Swipe para os lados | Troca de mostrador: paisagem → digital retro → previsão → cidade → temporizador e alarme (os pontos em baixo mostram qual) |
 | Swipe para cima / para baixo | Mais / menos brilho, em passos de 10% (aparece uma barra à direita) |
-| Toque em qualquer sítio | Mostra "Toque de novo para sair"; um 2.º toque em 2,5 s volta ao DashDeck, com o brilho normal |
+| Toque em qualquer sítio | Mostra "Toque de novo para sair"; um 2.º toque em 2,5 s volta ao DashDeck, com o brilho normal (no temporizador, os toques nas setas e nos botões não contam) |
+| Toque longo no digital retro | Muda a cor do LCD: âmbar → verde → ciano |
 | Botão BOOT | Volta logo ao DashDeck |
 
-O mostrador e o brilho escolhidos ficam guardados para a próxima vez.
+O mostrador, o brilho, a cor do LCD, o temporizador e o alarme ficam guardados para a próxima vez.
 
 Depois de 5 min sem toques, o relógio escurece para 10%. O toque seguinte repõe o brilho escolhido; se for um toque simples, mostra também o aviso de saída, que desaparece sozinho em 2,5 s.
 
@@ -123,23 +129,33 @@ Depois de 5 min sem toques, o relógio escurece para 10%. O toque seguinte repõ
   - Montanhas, colinas com pinheiros, uma casa e um lago onde se reflete o céu.
   - O céu segue o nascer e o pôr do sol do dia: madrugada, dia, dourado ao nascer e ao pôr, e noite com estrelas e a lua na fase real. A janela da casa acende-se à noite.
   - A previsão muda a cena: nuvens, chuva, neve (também nas montanhas e no telhado), nevoeiro e trovoada com relâmpagos.
+  - **Inverno** (dezembro a fevereiro): a terra, as colinas e o telhado ficam com neve, mesmo sem nevar (`winter_snow`).
   - Em cima ficam a hora, os segundos e a data; à direita, o ícone, a temperatura, a máxima (↑), a mínima (↓) e a probabilidade de chuva.
   - A cena é refeita a cada 5 min.
 - **Digital retro:**
   - Dígitos grandes em blocos, como num LCD, com os "8" apagados por trás e os dois pontos a piscar.
   - Uma fila de 60 pontos marca os segundos.
   - Em baixo ficam o ícone, a temperatura, a máxima, a mínima, a chuva e o vento.
-  - A cor (âmbar, verde ou ciano) escolhe-se no `config.toml`.
+  - A cor (âmbar, verde ou ciano) muda com um toque longo; a inicial vem do `config.toml`.
 - **Previsão:**
   - Uma costa em pixel art: mar com o reflexo do céu, um cabo ao longe, uma falésia com um farol listado (que acende e lança o feixe à noite) e um veleiro. O céu e o tempo seguem as mesmas regras da paisagem (chuva e neve a cair, nevoeiro, sol e lua).
   - Em cima, a hora, os segundos e a data.
   - Em baixo, numa faixa escura, as próximas 6 horas (a primeira é "AGORA"): hora, ícone do tempo (de dia ou de noite), temperatura e probabilidade de chuva (azul a partir de 30%). Na vertical ficam em 3 × 2.
+- **Cidade:**
+  - Uma cidade à beira-rio no mesmo estilo: prédios ao longe, prédios perto com janelas (acesas à noite, ao acaso), luzes vermelhas no topo, um cais com candeeiros e o reflexo de tudo na água.
+  - O céu, o sol, a lua e o tempo seguem as regras da paisagem; com neve, os telhados ficam brancos.
+  - A hora, a data e a previsão aparecem como na paisagem.
+- **Temporizador e alarme** (5.º mostrador): duas metades, o temporizador à esquerda (ciano) e o alarme à direita (âmbar); na vertical ficam uma por cima da outra.
+  - **Temporizador:** as setas por cima e por baixo dos dígitos mudam os minutos (±1) e os segundos (±10); manter o dedo numa seta repete. O botão ▶ começa (passa a ‖ para pausar, e de novo ▶ para retomar) e o ■ zera. A contar, as setas ficam apagadas e a linha de baixo diz a que horas termina; em pausa, os dígitos piscam.
+  - **Alarme:** as setas mudam as horas e os minutos (±1, com repetição); **LIGAR** / **DESLIGAR** ativa o alarme, que toca todos os dias a essa hora. Ligado, a linha de baixo diz quanto falta ("TOCA EM 7H20").
+  - **Quando toca** (em qualquer tela, até com o ecrã apagado): o ecrã acende e aparece a animação do alarme: as ondas fecham-se no centro, os pixels formam um despertador dourado que abana, e escreve-se "ALARME 07:30" ou "TEMPO!". A faixa em baixo diz o que tocou. O uConsole toca um bip duplo. Um toque no aviso pára tudo; sem toque, pára ao fim de 60 s.
+  - O temporizador e o alarme correm no dashd: continuam com o relógio fechado e depois de reiniciar o dashd.
 - **Hora:** o ESP conta a hora sozinho, acertada pelo dashd ao ligar e a cada 10 min. O relógio continua certo mesmo com o dashd parado.
 - **Previsão:**
   - Vem do Open-Meteo, a cada 30 min, para a posição do GPS (ou do nó Meshtastic) ou para a do `config.toml`.
   - Fica em cache e funciona sem internet até 12 h.
   - Sem previsão, a paisagem mostra só a hora e o retro mostra "SEM PREVISAO".
-- No menu, o box mostra a temperatura e o estado do tempo.
+- No menu, o box mostra a temperatura e o estado do tempo, o alarme quando está ligado e o temporizador quando está a contar.
 - **Memória:** se os ícones das aplicações ocuparem a memória do ESP, o relógio liberta-os e o dashd volta a enviá-los ao sair (o dock reaparece em menos de 0,2 s; os ícones das Aplicações voltam ao abrir esse menu).
 
 ### AIO v2
@@ -187,5 +203,6 @@ Aberto pelo **Som** no dock: volume do uConsole (PipeWire) e brilho do ecrã do 
 - Os serviços do grupo **`sdr`** (readsb, AIS-catcher) são exclusivos, porque só há um RTL-SDR: ligar um para os outros. As telas ADS-B e AIS também ligam e desligam o seu serviço.
 
 ### Sistema
-Hostname, uptime, CPU e load, temperatura, RAM, espaço livre em `/`, bateria e o IP de cada interface.
-Os valores ficam amarelos ou vermelhos acima dos limites (CPU acima de 80%, temperatura acima de 65 °C e 75 °C, menos de 1 GB livre, bateria abaixo de 15%).
+Duas páginas (swipe):
+- **uConsole:** hostname, uptime, CPU e load, temperatura, RAM, espaço livre em `/`, bateria e o IP de cada interface. Os valores ficam amarelos ou vermelhos acima dos limites (CPU acima de 80%, temperatura acima de 65 °C e 75 °C, menos de 1 GB livre, bateria abaixo de 15%).
+- **DashDeck:** versão do firmware, tamanho e orientação do ecrã e o cartão SD do ESP. **Vertical**/**Horizontal** troca a orientação e **Inverter** roda 180° (para o cabo do outro lado). Pede confirmação: o ESP reinicia em cerca de 5 s e volta à mesma tela. A escolha fica gravada no uConsole (`~/.config/dashd/state.json`) e passa à frente do `rotation` do `config.toml`.

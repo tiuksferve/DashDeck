@@ -302,17 +302,88 @@ def _coast(cv: "_Canvas", w: int, h: int, HZ: int, L: float, G: float, cf: float
     cv.rect(bx, by - 12, 1, 12, hull)
 
 
+def _city(cv: "_Canvas", w: int, h: int, HZ: int, L: float, G: float, cf: float, snowy: bool, bot, sun_x: float,
+          e: float, epoch: float) -> None:
+    """Cidade à beira-rio: prédios ao longe, prédios perto com janelas (acesas à noite), cais com candeeiros e
+    o reflexo de tudo na água."""
+    shift = int(epoch / 300)
+    lit = L < .55
+    far = _mix(_mix(_hex("#1a2042"), _hex("#6a7fa8"), L), bot, .4)
+    near = _mix(_hex("#0c0f1e"), _hex("#3c4458"), L)
+    near_l = _mix(_hex("#151a2e"), _hex("#58627a"), L)
+    roof_snow = _mix(_hex("#6a7496"), _hex("#eef2fa"), L)
+    glass = _mix(_hex("#1a2238"), _hex("#9cc0dc"), L)
+    warm = _hex("#ffd36a")
+    rb = random.Random(11)
+    # prédios ao longe (silhueta clara, com algumas antenas)
+    x = 0
+    while x < w:
+        bw, bh = rb.randint(10, 22), rb.randint(18, 44)
+        cv.rect(x, HZ - 4 - bh, bw, bh, far)
+        if rb.random() < .25:
+            cv.rect(x + bw // 2, HZ - 4 - bh - 6, 1, 6, far)
+        x += bw + rb.randint(-2, 1)
+    # prédios perto: alturas que deixam livre o canto da hora (esquerda) e o do tempo (direita, em cima)
+    x = -4
+    while x < w:
+        bw = rb.randint(14, 30)
+        bh = rb.randint(26, 62 if w * .25 < x < w * .6 else 48)
+        top = HZ - 4 - bh
+        cv.rect(x, top, bw, bh, near)
+        cv.rect(x, top, 1, bh, near_l)                               # aresta iluminada
+        if snowy:
+            cv.rect(x, top - 1, bw, 2, roof_snow)
+        kind = rb.random()
+        for wy in range(top + 4, HZ - 8, 5):                          # janelas 2x2 em grelha
+            for wx in range(x + 3, x + bw - 3, 4):
+                on = ((wx * 31 + wy * 17 + int(kind * 97)) * 2654435761 >> 7) % 100 < (38 if lit else 0)
+                if on:
+                    cv.rect(wx, wy, 2, 2, warm)
+                elif kind < .5:
+                    cv.rect(wx, wy, 2, 2, _mul(glass, .55 if lit else .9))
+        if rb.random() < .2 and bh > 40:                             # luz vermelha no topo
+            cv.px(x + bw // 2, top - 2, _hex("#ff4a3a") if lit else _hex("#a03030"))
+        x += bw + rb.randint(1, 4)
+    # cais e candeeiros
+    quay = _mix(_hex("#141822"), _hex("#5a5a60"), L)
+    cv.rect(0, HZ - 4, w, 4, quay)
+    cv.rect(0, HZ - 4, w, 1, _mul(quay, 1.3))
+    for lx in range(12, w, 38):
+        cv.rect(lx, HZ - 12, 1, 8, _mul(quay, .7))
+        cv.rect(lx - 1, HZ - 13, 3, 1, warm if lit else _hex("#9aa4b4"))
+        if lit:
+            cv.disc(lx, HZ - 12, 4, warm, .16)
+    # água com o reflexo da cidade (as janelas acesas desenham riscos)
+    water_tint = _hex("#101a34")
+    glint = _hex("#ffd890")
+    for y in range(HZ, h):
+        k = (y - HZ) / max(1, h - HZ)
+        for xx in range(w):
+            off = round(math.sin(y * .8 + shift + xx * .02))
+            c0 = _mix(_mul(cv.get(xx + off, HZ - 1 - (y - HZ) * 2), .6), water_tint, .25 + .3 * k)
+            if (xx * 5 + y * 11 + shift * 7) % 41 == 0:
+                c0 = _mix(c0, (255, 255, 255), .2 * (1 - k))
+            if abs(xx - sun_x) < 3 - (y - HZ) / 9 and (y + shift) % 3 and e > -.05:
+                c0 = _mix(c0, glint, .5 * (1 - cf))
+            cv.p[y * w + xx] = c0
+        if y == HZ:
+            for xx in range(w):
+                cv.p[y * w + xx] = _mul(cv.p[y * w + xx], .8)
+
+
 def render_scene(w: int, h: int, minute: int, kind: str, sr: int, ss: int, epoch: float,
-                 scene: str = "lago") -> Image.Image:
-    """Paisagem sem a hora nem as partículas (essas são do ESP). Devolve uma imagem RGB w x h."""
+                 scene: str = "lago", winter: bool = False) -> Image.Image:
+    """Paisagem sem a hora nem as partículas (essas são do ESP). Devolve uma imagem RGB w x h.
+    scene: "lago", "costa" ou "cidade". winter: terra com neve mesmo sem nevar (dezembro a fevereiro)."""
     cv = _Canvas(w, h)
+    shift = int(epoch / 300)
     # linha da água: o lago fica em baixo; na costa o mar começa a meio (a faixa da previsão fica por cima)
-    HZ = h - 22 if scene == "lago" else int(h * 0.56)
+    HZ = h - 22 if scene in ("lago", "cidade") else int(h * 0.56)
     cf = CLOUD_FACTOR.get(kind, 0)
     e = sun_elev(minute, sr, ss)
     L = _clamp((e + .12) / .4)
     G = _clamp(1 - abs(e) / .3) * (1 - cf * .6)
-    snowy = kind == "neve"
+    snowy = kind == "neve" or winter
     top = _mix(_hex("#070b24"), _hex("#2f6fd0"), L)
     bot = _mix(_hex("#1c2350"), _hex("#a3d6f7"), L)
     top = _mix(top, _hex("#4a3a7a"), G * .5)
@@ -457,6 +528,8 @@ def render_scene(w: int, h: int, minute: int, kind: str, sr: int, ss: int, epoch
         cv.rect(hx + 7, base - 6, 3, 2, _hex("#ffd36a") if lit else _hex("#8fb6d4"))
         if lit:
             cv.disc(hx + 8, base - 5, 4, _hex("#ffd36a"), .12)
+    elif scene == "cidade":
+        _city(cv, w, h, HZ, L, G, cf, snowy, bot, sun_x, e, epoch)
     else:
         _coast(cv, w, h, HZ, L, G, cf, snowy, bot, sun_x, e, epoch)
 

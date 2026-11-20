@@ -19,6 +19,9 @@ from pathlib import Path
 
 import maptiles
 import meshbridge
+import routes
+import wltop
+import xdgapps
 
 log = logging.getLogger("dashd.providers")
 
@@ -119,7 +122,47 @@ class SystemProvider(Provider):
         used, total = self._mem()
         return f"{t:.0f}°C · RAM {100 * used / total:.0f}%" if t else ""
 
+    # ---- página DashDeck: o próprio ecrã (firmware, rotação)
+    ROT_NAMES = {0: "vertical", 1: "horizontal", 2: "vertical invertida", 3: "horizontal invertida"}
+
+    def pages(self) -> int:
+        return 2
+
+    def _deck(self) -> dict:
+        a = self.app
+        e = getattr(a, "esp_info", {}) or {}
+        rot = a.rotation
+        rows = [["Firmware", str(e.get("fw", "?"))],
+                ["Ecrã", f"{a.esp_w}×{a.esp_h} · {self.ROT_NAMES.get(rot, rot)}"],
+                ["Cartão SD", f"{e['sd']} MB livres" if e.get("sd", -1) >= 0 else "ausente",
+                 None if e.get("sd", -1) >= 0 else "sub"],
+                ["Rodar", "o DashDeck reinicia (~5 s)", "sub"]]
+        land = rot in (1, 3)
+        btns = [{"id": "rot_v" if land else "rot_h", "label": "Vertical" if land else "Horizontal",
+                 "color": "#2F81F7",
+                 "confirm": f"Pôr o DashDeck na {'vertical' if land else 'horizontal'}? Reinicia."},
+                {"id": "rot_flip", "label": "Inverter", "color": "#8957E5",
+                 "confirm": "Rodar o DashDeck 180°? Reinicia."}]
+        return {"tpl": "kv", "rows": [r if r[2:] and r[2] else r[:2] for r in rows], "buttons": btns}
+
+    def on_button(self, btn_id: str):
+        rot = self.app.rotation
+        if btn_id == "rot_flip":
+            nv = rot ^ 2                       # 1 <-> 3, 0 <-> 2
+        elif btn_id == "rot_v":
+            nv = 0 if rot == 1 else 2          # horizontal -> vertical, mantendo o lado
+        elif btn_id == "rot_h":
+            nv = 1 if rot == 0 else 3
+        else:
+            return None
+        self.app.set_rotation(nv)
+        return None
+
     def render(self, page: int = 0) -> dict:
+        if page == 1:
+            out = self._deck()
+            out["title"] = "Sistema · DashDeck"
+            return out
         used, total = self._mem()
         du = shutil.disk_usage("/")
         t = self._temp()
@@ -139,7 +182,8 @@ class SystemProvider(Provider):
                          "err" if bat[0] < 15 else None])
         for ifname, ip in self._ips():
             rows.append([ifname, ip])
-        return {"tpl": "kv", "rows": [[r[0], r[1]] + ([r[2]] if len(r) > 2 and r[2] else []) for r in rows]}
+        return {"title": "Sistema · uConsole", "tpl": "kv",
+                "rows": [[r[0], r[1]] + ([r[2]] if len(r) > 2 and r[2] else []) for r in rows]}
 
 
 # ------------------------------------------------------------------ GPS
@@ -196,10 +240,16 @@ def _nmea_coord(val: str, hemi: str) -> float | None:
 
 
 class NmeaReader:
-    """Lê NMEA de um tty numa thread. Pára (e fecha a porta) quando should_run() fica falso."""
+    """Lê NMEA numa thread: pelo gpsmux do MeshDeckWeb (TCP, partilhado) se estiver a correr, senão
+    direto do tty. Pára (e fecha a ligação) quando should_run() fica falso.
 
-    def __init__(self, port: str, baud: int, should_run):
+    O gpsmux tem o tty aberto para o partilhar com o meshtasticd; abri-lo também aqui fazia os dois
+    disputarem os bytes (o dashd ficava a reabrir a porta sem receber nada)."""
+
+    def __init__(self, port: str, baud: int, should_run, tcp: str = ""):
         self.port, self.baud, self.should_run = port, baud, should_run
+        self.tcp = tcp                 # "host:porta" do gpsmux ("" = só o tty)
+        self.via = ""                  # por onde está a ler agora ("gpsmux" ou o tty)
         self.fix: dict = {}
         self.sats_view: dict[str, int] = {}
         self.sats: dict[tuple[str, int], dict] = {}   # (sistema, prn) -> el, az, snr, t
@@ -255,24 +305,61 @@ class NmeaReader:
         except (ValueError, IndexError):
             pass
 
+    def _line(self, raw: bytes) -> None:
+        line = raw.decode("ascii", errors="ignore").strip()
+        if self._valid(line):
+            self.last_rx = time.time()
+            self._parse(line)
+
+    def _run_tcp(self) -> bool:
+        """Lê do gpsmux enquanto houver ligação. False se o gpsmux não responde."""
+        host, _, port = self.tcp.rpartition(":")
+        try:
+            sock = socket.create_connection((host or "127.0.0.1", int(port)), timeout=2)
+        except (OSError, ValueError):
+            return False
+        self.error, self.via = "", "gpsmux"
+        log.info("GPS: lendo o gpsmux em %s", self.tcp)
+        buf = b""
+        with sock:
+            sock.settimeout(3)
+            while self.should_run():
+                try:
+                    data = sock.recv(4096)
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                if not data:
+                    break
+                buf += data
+                while b"\n" in buf:
+                    raw, buf = buf.split(b"\n", 1)
+                    self._line(raw)
+        log.info("GPS: largando o gpsmux")
+        return True
+
     def _run(self) -> None:
         import serial  # pyserial
         while True:
             if not self.should_run():
+                self.via = ""
                 time.sleep(2)
+                continue
+            if self.tcp and self._run_tcp():
                 continue
             try:
                 with serial.Serial(self.port, self.baud, timeout=1) as s:
-                    self.error = ""
+                    self.error, self.via = "", self.port
                     log.info("GPS: lendo %s a %d baud", self.port, self.baud)
+                    t_open = time.time()
                     while self.should_run():
                         raw = s.readline()
-                        if not raw:
-                            continue
-                        line = raw.decode("ascii", errors="ignore").strip()
-                        if self._valid(line):
-                            self.last_rx = time.time()
-                            self._parse(line)
+                        if raw:
+                            self._line(raw)
+                        # entretanto o gpsmux arrancou: passa a lê-lo (ele precisa do tty só para si)
+                        if self.tcp and time.time() - t_open > 10 and not self.alive():
+                            break
                     log.info("GPS: libertando %s", self.port)
             except Exception as e:  # porta inexistente, sem permissão, etc.
                 self.error = str(e)
@@ -333,7 +420,8 @@ class GpsProvider(Provider):
         self.baud = int(node.get("baud", 9600))
         self._src = "?"
         self._src_t = 0.0
-        self.reader = NmeaReader(self.tty, self.baud, lambda: self.source() == "tty")
+        self.reader = NmeaReader(self.tty, self.baud, lambda: self.source() == "tty",
+                                 tcp=str(node.get("gpsmux", "127.0.0.1:10110")))
 
     def _meshdeck(self) -> MeshDeckGps | None:
         """GPS ao vivo do MeshDeckWeb, se ele o estiver a ler (gpsmux ou tty dele)."""
@@ -364,7 +452,7 @@ class GpsProvider(Provider):
         if self.source() == "meshdeck":
             md = self._meshdeck()
             return "MeshDeckWeb" + (" · gpsmux" if md and md.source == "gpsmux" else "")
-        return self.tty
+        return "gpsmux (partilhado)" if self.reader.via == "gpsmux" else self.tty
 
     def _fix_label(self) -> tuple[str, str]:
         f = self._live().fix
@@ -1607,6 +1695,7 @@ class AdsbProvider(TargetMapProvider):
         self.paths = [node["json"]] if node.get("json") else self.PATHS
         self.receiver: tuple[float, float] | None = None
         self.tracker = Tracker(max_age=float(node.get("track_minutes", 30)) * 60)
+        self.routes = routes.Routes(enabled=bool(node.get("routes", True)))   # origem e destino (hexdb.io)
         self._loaded = (0.0, False)
         threading.Thread(target=self._poll, daemon=True).start()
 
@@ -1658,6 +1747,8 @@ class AdsbProvider(TargetMapProvider):
                       "heading": trk, "label": bool((a.get("flight") or "").strip()), "raw": a}
                 if tg["lat"] is not None and a.get("seen_pos", 0) < 30:
                     self.tracker.add(hexid, tg["lat"], tg["lon"], now - a.get("seen_pos", 0))
+                if tg["label"]:
+                    self.routes.want(name)
                 out.append(tg)
             out.sort(key=lambda t: (t["lat"] is None, t["raw"].get("seen", 999)))
             self.targets = out
@@ -1695,22 +1786,40 @@ class AdsbProvider(TargetMapProvider):
         gs = a.get("gs", a.get("speed"))
         sub = " · ".join(x for x in [self._alt(a), f"{gs:.0f} kt" if isinstance(gs, (int, float)) else ""] if x)
         emerg = a.get("squawk") in ("7500", "7600", "7700")
-        return {"id": t["id"], "label": t["name"], "sub": sub, "right": a.get("squawk", ""),
+        rt = self.routes.short(t["name"]) if t["label"] else ""
+        return {"id": t["id"], "label": f"{t['name']}  {rt}" if rt else t["name"], "sub": sub,
+                "right": a.get("squawk", ""),
                 "color": "#F85149" if emerg else ("#58A6FF" if t["id"] == self.follow else
                                                  "#E6EDF3" if t["lat"] is not None else "#8B98A5")}
 
     def follow_rows(self, t):
         a = t["raw"]
         gs = a.get("gs")
-        rows = [["Altitude", self._alt(a) or "?"]]
+        rows = []
+        rt = self.routes.short(t["name"]) if t["label"] else ""
+        if rt:
+            rows.append(["Rota", rt])
+        rows.append(["Altitude", self._alt(a) or "?"])
         if isinstance(gs, (int, float)):
             rows.append(["Veloc.", f"{gs:.0f} kt" + (f" · {a['track']:.0f}°" if a.get("track") is not None else "")])
         return rows
 
     def detail_rows(self, t):
         a = t["raw"]
-        return [["Hex", t["id"].upper()]] + _fmt_rows(a, [
-            ("flight", "Voo", "{}"), ("r", "Matrícula", "{}"), ("t", "Tipo", "{}"),
+        r = self.routes.get(t["name"]) if t["label"] else None
+        route = []
+        if r:
+            col = "sub" if r["old"] else None
+            route = [["Origem", routes.Routes.place(r["from"])] + ([col] if col else []),
+                     *[["Escala", routes.Routes.place(v)] + ([col] if col else []) for v in r["via"]],
+                     ["Destino", routes.Routes.place(r["to"])] + ([col] if col else [])]
+            if r["old"]:
+                route.append(["", "rota registada há mais de 2 anos", "sub"])
+        elif t["label"] and self.routes.enabled:
+            route = [["Rota", "desconhecida" if (t["name"].upper() in self.routes.routes)
+                      else "a procurar...", "sub"]]
+        return [["Hex", t["id"].upper()]] + _fmt_rows(a, [("flight", "Voo", "{}")]) + route + _fmt_rows(a, [
+            ("r", "Matrícula", "{}"), ("t", "Tipo", "{}"),
             ("squawk", "Squawk", "{}"), ("alt_baro", "Alt baro", "{} ft"), ("alt_geom", "Alt GNSS", "{} ft"),
             ("gs", "Veloc.", "{:.0f} kt"), ("track", "Rumo", "{:.0f}°"), ("baro_rate", "V/S", "{} ft/min"),
             ("lat", "Lat", "{:.4f}"), ("lon", "Lon", "{:.4f}"), ("r_dst", "Dist.", "{:.1f} nm"),
@@ -1807,6 +1916,32 @@ class AisProvider(TargetMapProvider):
     def color(self, t):
         return self.type_info(t["raw"])[1]
 
+    @staticmethod
+    def dest(s: dict) -> str:
+        """Destino escrito pela tripulação (texto livre, ex.: "LISBOA" ou "PT LIS")."""
+        d = " ".join((s.get("destination") or "").replace("@", " ").split())
+        return d if d and d not in ("-", "NONE", "N/A") else ""
+
+    @staticmethod
+    def eta(s: dict) -> str:
+        """ETA do AIS (UTC, sem ano) na hora local, ex.: "21/11 14:30". "" se não for indicada."""
+        mo, d, h, mi = (s.get(k) for k in ("eta_month", "eta_day", "eta_hour", "eta_minute"))
+        if not all(isinstance(v, int) for v in (mo, d, h, mi)) or not (1 <= mo <= 12 and 1 <= d <= 31) \
+                or h > 23 or mi > 59:
+            return ""
+        import calendar
+        now = time.gmtime()
+        year = now.tm_year
+        try:
+            ts = calendar.timegm((year, mo, d, h, mi, 0))
+            if ts < time.time() - 180 * 86400:      # passou há muito: é do ano seguinte
+                ts = calendar.timegm((year + 1, mo, d, h, mi, 0))
+        except (ValueError, OverflowError):
+            return ""
+        lt = time.localtime(ts)
+        txt = time.strftime("%d/%m %H:%M", lt)
+        return txt + (" (passou)" if ts < time.time() - 3600 else "")
+
     def list_item(self, t):
         s = t["raw"]
         kind = self.type_info(s)[0]
@@ -1817,13 +1952,17 @@ class AisProvider(TargetMapProvider):
         if s.get("distance") is not None:
             parts.append(f"{s['distance']:.1f} nm")
         parts.append(fmt_ago(s.get("last_signal")))
-        return {"id": t["id"], "label": t["name"], "sub": " · ".join(parts), "right": s.get("country") or "",
+        dest = self.dest(s)
+        return {"id": t["id"], "label": f"{t['name']}  » {dest}" if dest else t["name"], "sub": " · ".join(parts),
+                "right": s.get("country") or "",
                 "color": "#58A6FF" if t["id"] == self.follow else
                 ("#E6EDF3" if t["lat"] is not None else "#8B98A5")}
 
     def follow_rows(self, t):
         s = t["raw"]
         rows = [["Tipo", self.type_info(s)[0]]]
+        if self.dest(s):
+            rows.append(["Destino", self.dest(s)])
         if isinstance(s.get("speed"), (int, float)):
             rows.append(["Veloc.", f"{s['speed']:.1f} kt" + (f" · {s['cog']:.0f}°" if s.get("cog") is not None else "")])
         st = AIS_STATUS.get(s.get("status"))
@@ -1835,7 +1974,12 @@ class AisProvider(TargetMapProvider):
         s = t["raw"]
         rows = [["MMSI", t["id"]], ["Tipo", self.type_info(s)[0]]]
         rows += _fmt_rows(s, [("shipname", "Nome", "{}"), ("callsign", "Indicativo", "{}"), ("imo", "IMO", "{}"),
-                              ("country", "País", "{}"), ("destination", "Destino", "{}")])
+                              ("country", "País", "{}")])
+        if self.dest(s):
+            rows.append(["Destino", self.dest(s)])
+        if self.eta(s):
+            rows.append(["Chegada", self.eta(s), "sub" if "passou" in self.eta(s) else None])
+        rows = [r if len(r) < 3 or r[2] else r[:2] for r in rows]
         st = AIS_STATUS.get(s.get("status"))
         if st:
             rows.append(["Estado", st])
@@ -2266,28 +2410,49 @@ class AioProvider(Provider):
 # ------------------------------------------------------------------ relógio
 
 class ClockProvider(Provider):
-    """Modo relógio em ecrã inteiro (tpl "clock"): paisagem ou digital retro, com a previsão do dia.
+    """Modo relógio em ecrã inteiro (tpl "clock"), com cinco mostradores (swipe lateral):
+    0 paisagem (lago; com neve no inverno), 1 digital retro, 2 previsão por horas (costa), 3 cidade,
+    4 temporizador e alarme.
 
     O ESP conta a hora sozinho (acertada com {"t":"time"}); este provider envia a previsão, o ícone e,
-    na paisagem, o fundo desenhado em clockscene.py (refeito a cada 5 min ou quando o tempo muda).
-    O mostrador e o brilho escolhidos com gestos ficam em ~/.config/dashd/clock.json.
+    nas cenas, o fundo desenhado em clockscene.py (refeito a cada 5 min ou quando o tempo muda).
+    O temporizador e o alarme vivem aqui (tick() a cada segundo, mesmo fora do relógio): quando tocam, o
+    ESP mostra o aviso animado e o uConsole toca um som até um toque no aviso (ou 60 s).
+    O mostrador, o brilho, a cor do LCD, o temporizador e o alarme ficam em ~/.config/dashd/clock.json.
     """
     STATE = Path.home() / ".config" / "dashd" / "clock.json"
+    SOUND = Path.home() / ".cache" / "dashd" / "alarme.wav"
     LCD = {"ambar": 0, "âmbar": 0, "verde": 1, "ciano": 2}
+    FACES = {"paisagem": 0, "retro": 1, "previsao": 2, "previsão": 2, "cidade": 3, "temporizador": 4, "alarme": 4}
+    NFACES = 5
+    SCENES = {0: "lago", 2: "costa", 3: "cidade"}
+    RING_S = 60
 
     def __init__(self, node, app):
         super().__init__(node, app)
         import clockscene
         self.cs = clockscene
-        self.face = {"paisagem": 0, "retro": 1, "previsao": 2, "previsão": 2}.get(str(node.get("face", "paisagem")), 0)
+        self.face = self.FACES.get(str(node.get("face", "paisagem")), 0)
         self.bl = int(node.get("brightness", 50))
+        self.pal = self.LCD.get(str(node.get("lcd_color", "ambar")).lower(), 0)
+        # temporizador: tset = duração escolhida; tend = fim (epoch) a contar; tleft = restante em pausa
+        self.tset, self.tend, self.tleft = 300, 0.0, None
+        self.alh, self.alm, self.alon = 7, 30, False
+        self._al_last = ""          # "AAAA-MM-DD HH:MM" do último toque (não repete no mesmo minuto)
         try:
             st = json.loads(self.STATE.read_text())
-            self.face = int(st.get("face", self.face)) % 3
+            self.face = int(st.get("face", self.face)) % self.NFACES
             self.bl = int(st.get("bl", self.bl))
+            self.pal = int(st.get("pal", self.pal)) % 3
+            self.tset = int(st.get("tset", self.tset))
+            self.tend = float(st.get("tend", 0) or 0)
+            self.tleft = st.get("tleft")
+            self.alh, self.alm = int(st.get("alh", self.alh)) % 24, int(st.get("alm", self.alm)) % 60
+            self.alon = bool(st.get("alon", False))
         except (OSError, ValueError):
             pass
-        self.pal = self.LCD.get(str(node.get("lcd_color", "ambar")).lower(), 0)
+        self.ringing: str = ""      # "alarm" ou "timer" enquanto toca
+        self._ring_stop = threading.Event()
         self._scene: tuple | None = None
         # a posição do GPS (modo tty) só existe com o provider GPS criado
         gps = next((n for n in app.cfg.get("menu", []) if n.get("provider") == "gps"), None)
@@ -2311,24 +2476,132 @@ class ClockProvider(Provider):
     def _save(self) -> None:
         try:
             self.STATE.parent.mkdir(parents=True, exist_ok=True)
-            self.STATE.write_text(json.dumps({"face": self.face, "bl": self.bl}))
+            self.STATE.write_text(json.dumps({"face": self.face, "bl": self.bl, "pal": self.pal, "tset": self.tset,
+                                              "tend": self.tend, "tleft": self.tleft, "alh": self.alh,
+                                              "alm": self.alm, "alon": self.alon}))
         except OSError as e:
             log.debug("relógio: %s", e)
 
+    @staticmethod
+    def _local_epoch(t: float | None = None) -> float:
+        """Hora local em segundos (a mesma base do {"t":"time"} que o ESP usa)."""
+        t = time.time() if t is None else t
+        return t + time.localtime(t).tm_gmtoff
+
+    # ---- gestos e botões vindos do ESP
     def on_event(self, data: dict) -> None:
-        """{"t":"clock","face":"1"} ou {"t":"clock","bl":"60"} vindos dos gestos no ESP."""
+        """{"t":"clock", ...}: face, bl, pal (gestos); tset (duração), tact (start|pause|reset),
+        alarm ("HH:MM") e aon ("0"/"1") do mostrador do temporizador."""
         if "face" in data:
-            self.face = int(data["face"]) % 3
+            self.face = int(data["face"]) % self.NFACES
         if "bl" in data:
             self.bl = max(10, min(100, int(data["bl"])))
+        if "pal" in data:
+            self.pal = int(data["pal"]) % 3
+        if "tset" in data and not self.tend:
+            self.tset = max(0, min(99 * 60 + 59, int(data["tset"])))
+            self.tleft = None
+        if "tact" in data:
+            act = data["tact"]
+            if act == "start" and not self.tend:
+                left = self.tleft if self.tleft else self.tset
+                if left > 0:
+                    self.tend, self.tleft = time.time() + left, None
+            elif act == "pause" and self.tend:
+                self.tleft, self.tend = max(1, round(self.tend - time.time())), 0.0
+            elif act == "reset":
+                self.tend, self.tleft = 0.0, None
+        if "alarm" in data:
+            try:
+                h, m = (int(v) for v in str(data["alarm"]).split(":"))
+                self.alh, self.alm = h % 24, m % 60
+            except ValueError:
+                pass
+        if "aon" in data:
+            self.alon = str(data["aon"]) == "1"
         self._save()
+
+    # ---- temporizador e alarme (chamado a cada segundo pelo dashd)
+    def tick(self) -> None:
+        now = time.time()
+        if self.tend and now >= self.tend:
+            self.tend, self.tleft = 0.0, None
+            self._save()
+            self.ring("timer")
+        if self.alon:
+            lt = time.localtime(now)
+            stamp = time.strftime("%Y-%m-%d %H:%M", lt)
+            if lt.tm_hour == self.alh and lt.tm_min == self.alm and stamp != self._al_last:
+                self._al_last = stamp
+                self.ring("alarm")
+
+    def ring(self, kind: str) -> None:
+        """Aviso animado no ESP e som no uConsole até stop_ring() (toque no aviso) ou RING_S segundos."""
+        self.stop_ring()
+        self.ringing = kind
+        hm = f"{self.alh:02d}:{self.alm:02d}"
+        if kind == "alarm":
+            msg = {"from": f"ALARME {hm}", "title": f"Alarme das {hm}", "text": "Toque para parar"}
+        else:
+            m, sec = divmod(self.tset, 60)
+            msg = {"from": "TEMPO!", "title": "Temporizador terminado",
+                   "text": f"{m} min" + (f" {sec} s" if sec else "") + " · toque para parar"}
+        log.info("relógio: %s a tocar", kind)
+        self.app.events.put(("notify", {"kind": "alarm", "dur": self.RING_S, **msg}))
+        if self.node.get("alarm_sound", True):
+            self._ring_stop.clear()
+            threading.Thread(target=self._sound, daemon=True, name="alarme").start()
+        else:
+            threading.Timer(self.RING_S, self.stop_ring).start()
+
+    def stop_ring(self) -> None:
+        self.ringing = ""
+        self._ring_stop.set()
+
+    def _sound(self) -> None:
+        if not self.SOUND.exists():
+            self._make_sound()
+        player = next((p for p in ("pw-play", "paplay", "aplay") if shutil.which(p)), None)
+        t0 = time.monotonic()
+        while not self._ring_stop.is_set() and time.monotonic() - t0 < self.RING_S and player:
+            try:
+                subprocess.run([player, str(self.SOUND)], capture_output=True, timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                break
+            self._ring_stop.wait(0.4)
+        self.ringing = ""
+
+    def _make_sound(self) -> None:
+        """Bip duplo de despertador (880 Hz), gerado uma vez."""
+        import struct
+        import wave
+        rate, frames = 22050, bytearray()
+        for dur, f in ((.12, 880), (.08, 0), (.12, 880), (.08, 0), (.12, 1175)):
+            n = int(rate * dur)
+            for i in range(n):
+                env = min(1.0, i / 200, (n - i) / 200)
+                v = math.sin(2 * math.pi * f * i / rate) * env * 0.6 if f else 0
+                frames += struct.pack("<h", int(v * 32767))
+        try:
+            self.SOUND.parent.mkdir(parents=True, exist_ok=True)
+            with wave.open(str(self.SOUND), "wb") as wv:
+                wv.setnchannels(1)
+                wv.setsampwidth(2)
+                wv.setframerate(rate)
+                wv.writeframes(bytes(frames))
+        except OSError as e:
+            log.warning("relógio: som do alarme: %s", e)
 
     def _wx(self) -> dict | None:
         return self.weather.current() if self.weather else None
 
     def summary(self) -> str:
+        if self.tend:
+            m, sec = divmod(max(0, round(self.tend - time.time())), 60)
+            return f"temporizador {m}:{sec:02d}"
         wx = self._wx()
-        return f"{wx['t']}° · {self.cs.KINDS.get(wx['kind'], '')}" if wx else "sem previsão"
+        base = f"{wx['t']}° · {self.cs.KINDS.get(wx['kind'], '')}" if wx else "sem previsão"
+        return f"{base} · alarme {self.alh:02d}:{self.alm:02d}" if self.alon else base
 
     def render(self, page: int = 0) -> dict:
         now = time.localtime()
@@ -2340,7 +2613,10 @@ class ClockProvider(Provider):
         night = self.cs.sun_elev(minute, sr, ss) < -0.05
         clock = {"face": self.face, "pal": self.pal, "bl": self.bl, "night": night,
                  "dim": int(self.node.get("dim_after", 300)), "dim_bl": int(self.node.get("dim_brightness", 10)),
-                 "anim": self.cs.ANIM.get(kind, "")}
+                 "anim": self.cs.ANIM.get(kind, ""),
+                 "timer": {"set": self.tset, "end": round(self._local_epoch(self.tend)) if self.tend else 0,
+                           "left": self.tleft or 0},
+                 "alarm": {"h": self.alh, "m": self.alm, "on": self.alon}}
         if wx:
             clock["wx"] = {k: wx[k] for k in ("t", "max", "min", "rain", "wind")}
             clock["icon"] = self.cs.weather_icon(kind, night)
@@ -2354,13 +2630,14 @@ class ClockProvider(Provider):
                     icons.append({k: v for k, v in self.cs.weather_icon(hk, not is_day).items() if k != "role"})
                 hours.append([-1 if i == 0 else int(tm[11:13]), keys.index(ik), temp, rain])
             clock["hours"], clock["hicons"] = hours, icons
-        if self.face in (0, 2):
-            scene = "costa" if self.face == 2 else "lago"
+        scene = self.SCENES.get(self.face)
+        if scene:
+            winter = bool(self.node.get("winter_snow", True)) and now.tm_mon in (12, 1, 2)
             w, h = self.app.esp_w, self.app.esp_h
-            key = f"clk{w}{scene[0]}{kind[:3]}{time.strftime('%d%H')}{minute % 60 // 5}"
+            key = f"clk{w}{scene[:2]}{'w' if winter else ''}{kind[:3]}{time.strftime('%d%H')}{minute % 60 // 5}"
             if not self._scene or self._scene[0] != key:
                 t0 = time.monotonic()
-                img = self.cs.render_scene(w, h, minute, kind, sr, ss, time.time(), scene=scene)
+                img = self.cs.render_scene(w, h, minute, kind, sr, ss, time.time(), scene=scene, winter=winter)
                 self._scene = self.cs.scene_bg(key, img)
                 log.debug("relógio: cena %s em %.2f s", key, time.monotonic() - t0)
             clock["bg"] = key
@@ -2747,9 +3024,139 @@ class ConsoleProvider(Provider):
         return None
 
 
+# ------------------------------------------------------------------ janelas abertas no uConsole
+
+class WindowsProvider(Provider):
+    """Programas abertos no uConsole (labwc, protocolo wlr-foreign-toplevel em wltop.py), em boxes com o
+    ícone de cada um. Um toque abre a janela com Mostrar (traz para a frente), Minimizar e Fechar."""
+    ACTIVE_BG = "#1C2B45"
+
+    def __init__(self, node, app):
+        super().__init__(node, app)
+        self._cache: tuple[float, list[dict]] = (0.0, [])
+        self.error = ""
+        self.sel: dict | None = None                 # janela aberta no detalhe
+        self.icons = dict(node.get("icons", {}))     # app_id -> imagem, para programas sem .desktop
+        self.hide = set(node.get("hide", []))        # app_id que não aparecem
+
+    def windows(self, max_age: float = 1.0) -> list[dict]:
+        t, wins = self._cache
+        if time.monotonic() - t < max_age:
+            return wins
+        try:
+            wins = [w for w in wltop.windows() if w["app_id"] not in self.hide]
+            self.error = ""
+        except (OSError, wltop.WaylandError) as e:
+            wins, self.error = [], str(e)
+        self._cache = (time.monotonic(), wins)
+        return wins
+
+    def _info(self, w: dict) -> tuple[str, str]:
+        """(nome do programa, imagem) a partir do .desktop do app_id."""
+        d = xdgapps.by_app_id(w["app_id"]) or {}
+        name = d.get("label") or w["app_id"] or "?"
+        return name, self.icons.get(w["app_id"]) or d.get("icon") or w["app_id"]
+
+    @staticmethod
+    def _state(w: dict) -> tuple[str, str]:
+        if w["active"]:
+            return "em uso", "#3FB950"
+        if w["minimized"]:
+            return "minimizada", "#8B98A5"
+        return "aberta", "#58A6FF"
+
+    def summary(self) -> str:
+        wins = self.windows()
+        if self.error:
+            return "indisponível"
+        return f"{len(wins)} aberta{'s' if len(wins) != 1 else ''}" if wins else "nenhuma aberta"
+
+    def render(self, page: int = 0) -> dict:
+        wins = self.windows()
+        if self.error:
+            return {"tpl": "text", "text": f"Não foi possível ler as janelas.\n{self.error}"}
+        if not wins:
+            return {"tpl": "text", "text": "Nenhum programa aberto no uConsole."}
+        count: dict[str, int] = {}
+        for w in wins:
+            count[w["app_id"]] = count.get(w["app_id"], 0) + 1
+        items = []
+        for w in wins:
+            name, img = self._info(w)
+            st, col = self._state(w)
+            # com duas janelas do mesmo programa, o título distingue-as
+            label = (w["title"] or name) if count[w["app_id"]] > 1 else name
+            it = {"id": f"w:{w['idx']}", "label": label[:32], "img": img, "icon": "list",
+                  "sub": st, "sub_color": col}
+            if w["active"]:
+                it["bg"] = self.ACTIVE_BG
+            items.append(it)
+        return {"tpl": "menu", "layout": "grid", "items": items}
+
+    def _find(self) -> dict | None:
+        s = self.sel
+        if not s:
+            return None
+        wins = self.windows()
+        return next((w for w in wins if w["app_id"] == s["app_id"] and w["title"] == s["title"]), None) or \
+            next((w for w in wins if w["app_id"] == s["app_id"] and w["idx"] == s["idx"]), None)
+
+    def render_detail(self, kind: str) -> dict:
+        w = self._find()
+        if not w:
+            return {"tpl": "text", "text": "Esta janela já foi fechada."}
+        self.sel = w   # o título pode mudar (ex.: o terminal mostra a pasta)
+        name, _ = self._info(w)
+        st, _ = self._state(w)
+        if w["maximized"] and not w["minimized"]:
+            st += " · maximizada"
+        if w["fullscreen"]:
+            st += " · ecrã inteiro"
+        rows = [["Janela", w["title"][:60] or "(sem título)"], ["Programa", name],
+                ["Estado", st, "ok" if w["active"] else "sub"]]
+        btns = [{"id": "front", "label": "Mostrar", "color": "#2F81F7"}]
+        if not w["minimized"]:
+            btns.append({"id": "min", "label": "Minimizar", "color": "#8957E5"})
+        ask = f"Fechar {name}? O que não estiver gravado pode perder-se."
+        if len(ask.encode()) > 78:   # o ESP guarda até 80 bytes por confirmação
+            ask = f"Fechar {name[:40]}?"
+        btns.append({"id": "close", "label": "Fechar", "color": "err", "confirm": ask})
+        return {"tpl": "kv", "rows": rows, "buttons": btns}
+
+    def on_tap(self, item_id: str):
+        if not item_id.startswith("w:"):
+            return None
+        idx = int(item_id[2:])
+        w = next((w for w in self.windows(max_age=0) if w["idx"] == idx), None)
+        if not w:
+            return ("Esta janela já foi fechada", "warn")
+        self.sel = w
+        return {"id": "win", "label": self._info(w)[0][:24], "dynamic": "win", "owner": self.node["id"]}
+
+    def on_button(self, btn_id: str):
+        action = {"front": "activate", "min": "minimize", "close": "close"}.get(btn_id)
+        if not action:
+            return None
+        w = self._find()
+        if not w:
+            return ("back", "Esta janela já foi fechada")
+        try:
+            ok = wltop.act(w["idx"], w["app_id"], w["title"], action)
+        except (OSError, wltop.WaylandError) as e:
+            return (f"Falhou: {str(e)[:60]}", "err")
+        self._cache = (0.0, [])
+        name = self._info(w)[0]
+        if not ok:
+            return ("back", "Esta janela já foi fechada")
+        if action == "close":
+            self.sel = None
+            return ("back", f"A fechar {name}")
+        return (f"{name}: {'à frente' if action == 'activate' else 'minimizado'}", "ok")
+
+
 REGISTRY = {"system": SystemProvider, "gps": GpsProvider, "adsb": AdsbProvider, "ais": AisProvider,
             "mesh": MeshtasticProvider, "clock": ClockProvider, "aio": AioProvider, "sdr": SdrProvider,
-            "net": NetworkProvider, "console": ConsoleProvider}
+            "net": NetworkProvider, "console": ConsoleProvider, "windows": WindowsProvider}
 
 
 def create(name: str, node: dict, app) -> Provider:

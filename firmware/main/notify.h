@@ -7,6 +7,10 @@
 #define NOTIFY_ANIM 1.9f      // s até a faixa com o texto aparecer
 #define NOTIFY_TOTAL 5.5f     // s até o aviso desaparecer sozinho
 
-void notify_start(const char *name);
+#define NOTIFY_DM 0
+#define NOTIFY_ALARM 1
+
+// kind: NOTIFY_DM (envelope verde) ou NOTIFY_ALARM (despertador dourado).
+void notify_start(const char *name, int kind);
 // buf: NOTIFY_W x NOTIFY_H em RGB565A8 (cor e depois alfa), apagado e redesenhado a cada chamada.
 void notify_draw(uint8_t *buf, float t);

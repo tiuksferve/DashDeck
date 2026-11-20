@@ -2,15 +2,26 @@
 // Modo relógio: desenho pixel art direto num buffer RGB565 (sem LVGL).
 // Mostrador 0 = paisagem (o fundo vem do host; aqui desenha-se a hora, a previsão e a chuva/neve),
 // mostrador 1 = digital retro (todo desenhado aqui), mostrador 2 = previsão por horas (fundo da costa
-// vindo do host, com a faixa das próximas horas desenhada aqui).
+// vindo do host, com a faixa das próximas horas desenhada aqui), mostrador 3 = cidade (como a paisagem,
+// com outro fundo), mostrador 4 = temporizador e alarme (todo desenhado aqui, com zonas de toque).
 #include <stdbool.h>
 #include <stdint.h>
 #include <time.h>
 
 typedef enum { CLK_ANIM_NONE, CLK_ANIM_RAIN, CLK_ANIM_STORM, CLK_ANIM_SNOW } clk_anim_t;
 
+#define CLK_FACES 5
+#define CLK_FACE_TIMER 4
+#define CLK_HAS_SCENE(f) ((f) == 0 || (f) == 2 || (f) == 3)   // fundo desenhado pelo host
+
+// Zonas de toque do mostrador do temporizador e alarme
+enum {
+    CZ_NONE, CZ_TMIN_UP, CZ_TMIN_DN, CZ_TSEC_UP, CZ_TSEC_DN, CZ_TGO, CZ_TRESET,
+    CZ_AH_UP, CZ_AH_DN, CZ_AM_UP, CZ_AM_DN, CZ_AON,
+};
+
 typedef struct {
-    int face;               // 0 paisagem, 1 digital retro, 2 previsão
+    int face;               // 0 paisagem, 1 digital retro, 2 previsão, 3 cidade, 4 temporizador/alarme
     int pal;                // cor do LCD: 0 âmbar, 1 verde, 2 ciano
     bool has_time;
     bool has_wx;
@@ -31,7 +42,16 @@ typedef struct {
     uint8_t hicon[6][256];
     uint16_t hpal[6][8];
     uint8_t hrole[6][8];
+    // temporizador (s): a contar se tend > 0 (fim em epoch local); em pausa se tleft > 0; senão tset
+    int tset, tleft;
+    int64_t tend, now;      // now: epoch local atual (para o restante)
+    int alh, alm;           // alarme diário
+    bool alon;
+    int hot;                // zona a ser tocada (realçada)
 } clock_state_t;
+
+// Zona do mostrador do temporizador em (x, y), ou CZ_NONE.
+int clockface_zone(const clock_state_t *st, int w, int h, int x, int y);
 
 // Desenha o mostrador por cima do que já está no buffer (no 0, o fundo da paisagem).
 void clockface_draw(uint16_t *buf, int stride_px, int w, int h, const clock_state_t *st, const struct tm *tm,

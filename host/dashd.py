@@ -237,7 +237,11 @@ class App:
         self.last_hello = 0.0
         self.page: dict[str, int] = {}   # página atual de cada tela com várias páginas (swipe)
         self.rotation = int(d.get("rotation", 1)) & 3
+        saved = self.load_state().get("rotation")   # escolhida no menu (Sistema > DashDeck)
+        if isinstance(saved, int):
+            self.rotation = saved & 3
         self.rot_sent = False
+        self.esp_info: dict = {}   # último hello do ESP (versão, memória, cartão)
         self.esp_w, self.esp_h = 172, 320
         self.bg_sent: str | None = None
         self.last_time = 0.0
@@ -254,6 +258,36 @@ class App:
         self.screen_off = int(d.get("screen_off", 0))                 # s sem toques na tela inicial
         self.icons_sent: set[str] = set()
         self._icon_src: dict[str, str] = {}
+
+    # ---- estado guardado (escolhas feitas no próprio DashDeck)
+    STATE = Path.home() / ".config" / "dashd" / "state.json"
+
+    def load_state(self) -> dict:
+        try:
+            return json.loads(self.STATE.read_text())
+        except (OSError, ValueError):
+            return {}
+
+    def save_state(self, **kv) -> None:
+        st = self.load_state()
+        st.update(kv)
+        try:
+            self.STATE.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.STATE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(st, indent=1))
+            tmp.replace(self.STATE)
+        except OSError as e:
+            log.warning("não foi possível gravar %s: %s", self.STATE, e)
+
+    def set_rotation(self, v: int) -> None:
+        """Muda a rotação do ESP: grava-a (passa à frente do config.toml) e o ESP reinicia."""
+        v &= 3
+        self.rotation = v
+        self.save_state(rotation=v)
+        log.info("rotação %d pedida no menu (o ESP reinicia)", v)
+        self.rot_sent = True
+        self.link.send({"t": "rot", "v": v})
+        self.esp_ready = False   # até ao hello seguinte, nada de telas para um ESP a reiniciar
 
     # ---- helpers
     def node(self) -> dict:
@@ -397,6 +431,9 @@ class App:
             have = {i["exec"] for i in xdg}
             extra = [i for i in items if (i.get("cmd") or "").split(" ")[0] not in have]
             items = (extra + xdg) if node.get("xdg_after") else (xdg + extra)
+            # telas com dados (ex.: Abertas) ficam à frente dos programas
+            items = [i for i in items if i.get("type") == "provider"] + \
+                    [i for i in items if i.get("type") != "provider"]
         return items
 
     # ---- render
@@ -555,8 +592,26 @@ class App:
             self.link.send({"t": "notify", "from": name, "text": text})
             self.notified = (node, m)
 
+    def clock_providers(self) -> list:
+        nodes = [n for n in self.cfg.get("dock", []) + self.cfg.get("menu", []) if n.get("provider") == "clock"]
+        return [self.provider(n) for n in nodes]
+
+    def clock_tick(self) -> None:
+        """Temporizador e alarme do relógio (a cada segundo, em qualquer tela)."""
+        for prov in self.clock_providers():
+            try:
+                prov.tick()
+            except Exception as e:
+                log.warning("relógio: %s", e)
+
     def open_notified(self) -> None:
-        """Toque no aviso: abre a mensagem (com o Responder) por cima do Meshtastic."""
+        """Toque no aviso: no alarme pára o som; na mensagem abre-a (com o Responder) por cima do Meshtastic."""
+        ringing = [p for p in self.clock_providers() if p.ringing]
+        if ringing:
+            for p in ringing:
+                p.stop_ring()
+            self.show(full=False)
+            return
         if not self.notified:
             return
         node, m = self.notified
@@ -702,6 +757,9 @@ class App:
             self.toast(*data)
         elif kind == "refresh":
             self.show(full=False)
+        elif kind == "notify":   # aviso pedido por um provider (alarme/temporizador do relógio)
+            if self.esp_ready:
+                self.link.send({"t": "notify", **data})
         elif kind == "msg":
             t = data.get("t")
             if t == "hello":
@@ -717,6 +775,7 @@ class App:
                     log.info("a pedir rotação %d (o ESP reinicia)", self.rotation)
                     self.link.send({"t": "rot", "v": self.rotation})
                     return
+                self.esp_info = dict(data)
                 self.esp_w, self.esp_h = int(data.get("w", 172)), int(data.get("h", 320))
                 self.esp_sd = data.get("sd", -1) >= 0   # cartão SD no ESP (ícones guardados entre arranques)
                 self.bg_sent = None
@@ -767,7 +826,7 @@ class App:
         import signal   # kill -USR1: pede ao ESP as estatísticas do toque e do desenho (aparecem no log)
         if threading.current_thread() is threading.main_thread():
             signal.signal(signal.SIGUSR1, lambda *_: self.link.send({"t": "stats"}))
-        last_ping = last_refresh = 0.0
+        last_ping = last_refresh = last_tick = 0.0
         while True:
             try:
                 kind, data = self.events.get(timeout=0.25)
@@ -781,6 +840,9 @@ class App:
                 last_ping = now
                 if now - self.last_time >= 600:   # o cristal do ESP desvia uns segundos por dia
                     self.send_time()
+            if now - last_tick >= 1:
+                last_tick = now
+                self.clock_tick()
             if self.esp_ready and now - self.last_dm_check >= 3:
                 self.last_dm_check = now
                 self.check_direct()

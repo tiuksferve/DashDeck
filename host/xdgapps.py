@@ -83,3 +83,38 @@ def apps(include: str = "Utility", exclude=("System", "Accessibility"), ttl: flo
     out.sort(key=lambda i: i["label"].lower())
     _cache[key] = (time.monotonic(), out)
     return out
+
+
+_wm_cache: tuple[float, dict[str, dict]] | None = None
+
+
+def by_app_id(app_id: str, ttl: float = 60) -> dict | None:
+    """O .desktop de uma janela (app_id do Wayland): pelo nome do ficheiro, pelo StartupWMClass ou
+    pelo executável. Devolve {"label", "icon"} ou None."""
+    global _wm_cache
+    if not app_id:
+        return None
+    if not _wm_cache or time.monotonic() - _wm_cache[0] > ttl:
+        idx: dict[str, dict] = {}
+        lang = os.environ.get("LANG", "").split(".")[0]
+        langs = ["pt_PT", "pt", lang, lang.split("_")[0]]
+        for d in DIRS:
+            if not d.is_dir():
+                continue
+            for f in d.glob("*.desktop"):
+                cp = configparser.ConfigParser(interpolation=None, strict=False)
+                cp.optionxform = str
+                try:
+                    cp.read(f, encoding="utf-8")
+                    sec = cp["Desktop Entry"]
+                except Exception:
+                    continue
+                info = {"label": _localized(sec, "Name", langs) or f.stem, "icon": sec.get("Icon", "")}
+                exe = Path((sec.get("Exec", "").split() or [""])[0].strip('"')).name
+                for k in (f.stem, f.stem.rsplit(".", 1)[-1], sec.get("StartupWMClass", ""), exe):
+                    if k:
+                        idx.setdefault(k.lower(), info)
+                idx[f.stem.lower()] = info   # o nome do ficheiro ganha
+        _wm_cache = (time.monotonic(), idx)
+    key = app_id.lower()
+    return _wm_cache[1].get(key) or _wm_cache[1].get(key.rsplit(".", 1)[-1])

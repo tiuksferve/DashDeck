@@ -47,6 +47,28 @@ static void blend(int x, int y, uint32_t c, int a)
     B[y * BS + x] = (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
 }
 
+// Fundo escuro translúcido atrás de um bloco de texto, com as bordas esbatidas (F px), para o texto
+// se ler sobre céu claro, neve ou nuvens sem tapar a paisagem. a = alfa no centro (0..256).
+#define SCRIM_F 16
+#define SCRIM_C 0x060A14
+#define SCRIM_A 85    // opacidade no centro (0..256): mais alto = sombra mais escura
+static void scrim(int x, int y, int w, int h, int a)
+{
+    const int F = SCRIM_F;
+    for (int j = y - F; j < y + h + F; j++) {
+        if (j < 0 || j >= BH) continue;
+        int dy = j < y ? y - j : (j >= y + h ? j - (y + h - 1) : 0);
+        for (int i = x - F; i < x + w + F; i++) {
+            if (i < 0 || i >= BW) continue;
+            int dx = i < x ? x - i : (i >= x + w ? i - (x + w - 1) : 0);
+            int d = dx > dy ? dx + dy / 2 : dy + dx / 2;   // distância aproximada (cantos redondos)
+            if (d >= F) continue;
+            int k = F - d;                                   // 1..F
+            blend(i, j, SCRIM_C, a * k * k / (F * F));       // queda suave
+        }
+    }
+}
+
 // ---------- fontes ----------
 
 typedef struct { char c; const char *r[7]; } g5_t;
@@ -127,6 +149,15 @@ static const g3_t *g3(char c)
     return &G3[sizeof(G3) / sizeof(G3[0]) - 1];
 }
 
+// Contorno de um "pixel" da fonte (bloco sc x sc): 1 px nas letras pequenas, 2 px a partir da escala 3,
+// mais uma sombra projetada para baixo e para a direita (destaca os números sobre fundos claros).
+static void outline_px(int x, int y, int sc, uint16_t out)
+{
+    int o = sc >= 3 ? 2 : 1, sh = sc >= 3 ? 2 : 1;
+    rect(x - o, y - o, sc + 2 * o, sc + 2 * o, out);
+    rect(x + sh, y + sh, sc + o, sc + o, out);
+}
+
 // texto 5x7 em escala s; out >= 0 desenha contorno de 1 px nessa cor. Devolve a largura.
 static int text5(const char *s, int x, int y, int sc, uint16_t col, int out)
 {
@@ -138,7 +169,7 @@ static int text5(const char *s, int x, int y, int sc, uint16_t col, int out)
             for (int r = 0; r < 7; r++)
                 for (int k = 0; k < gw; k++)
                     if (g->r[r][k] == '1') {
-                        if (pass == 0) rect(cx + k * sc - 1, y + r * sc - 1, sc + 2, sc + 2, (uint16_t)out);
+                        if (pass == 0) outline_px(cx + k * sc, y + r * sc, sc, (uint16_t)out);
                         else rect(cx + k * sc, y + r * sc, sc, sc, col);
                     }
             cx += (gw + 1) * sc;
@@ -164,7 +195,7 @@ static int text3(const char *s, int x, int y, int sc, uint16_t col, int out)
             for (int r = 0; r < 5; r++)
                 for (int k = 0; k < 3; k++)
                     if (g->r[r][k] == '1') {
-                        if (pass == 0) rect(cx + k * sc - 1, y + r * sc - 1, sc + 2, sc + 2, (uint16_t)out);
+                        if (pass == 0) outline_px(cx + k * sc, y + r * sc, sc, (uint16_t)out);
                         else rect(cx + k * sc, y + r * sc, sc, sc, col);
                     }
             cx += 4 * sc;
@@ -298,6 +329,11 @@ static void face_landscape(const clock_state_t *st, const struct tm *tm, float t
     const bool land = BW > BH;
     char buf[24];
     int x = 10;
+    scrim(10, 10, st->has_time ? 160 : 126, st->has_time ? 58 : 34, SCRIM_A);   // hora e data
+    if (st->has_wx) {
+        const int sx = land ? 198 : 10, sy = land ? 8 : 82;
+        scrim(sx + 2, sy + 2, 108, 46, SCRIM_A);                                       // tempo
+    }
     if (st->has_time) {
         snprintf(buf, sizeof(buf), "%02d", tm->tm_hour);
         x += text5(buf, x, 10, 5, ink, out) + 5;
@@ -339,6 +375,7 @@ static void face_forecast(const clock_state_t *st, const struct tm *tm, float t)
     const bool land = BW > BH;
     char buf[24];
     int x = 8;
+    scrim(8, 6, 100, 32, SCRIM_A);
     if (st->has_time) {
         snprintf(buf, sizeof(buf), "%02d:%02d", tm->tm_hour, tm->tm_min);
         x += text5(buf, x, 6, 3, ink, out) + 4;
@@ -350,6 +387,7 @@ static void face_forecast(const clock_state_t *st, const struct tm *tm, float t)
         text5("--:--", 8, 6, 3, ink, out);
     }
     if (!st->nh) {
+        scrim(10, BH - 22, tw5("SEM PREVISAO", 2) - 4, 14, SCRIM_A);
         text5("SEM PREVISAO", 8, BH - 20, 2, ink, out);
         return;
     }
@@ -484,6 +522,171 @@ static void face_retro(const clock_state_t *st, const struct tm *tm)
         }
 }
 
+// ---------- mostrador 4: temporizador e alarme ----------
+// Duas metades (lado a lado na horizontal, uma por cima da outra na vertical), cada uma com uma caixa
+// de 160 px: título, setas por cima e por baixo de cada par de dígitos, os dígitos, botões e uma linha de
+// estado. As zonas de toque saem da mesma geometria (tz_box), para o desenho e o toque coincidirem.
+
+typedef struct { int x, y, w, h; } crect_t;
+
+static void tz_origin(int w, int h, int half, int *bx, int *by)
+{
+    if (w > h) {
+        *bx = half * (w / 2) + (w / 2 - 160) / 2;
+        *by = (h - 160) / 2;
+    } else {
+        *bx = (w - 160) / 2;
+        *by = half * (h / 2) + (h / 2 - 160) / 2;
+    }
+}
+
+// Caixa da zona z (coordenadas do ecrã). Metade 0 = temporizador, 1 = alarme.
+static crect_t tz_box(int w, int h, int z)
+{
+    static const struct { int8_t half; uint8_t x, y, w, h; } Z[] = {
+        [CZ_TMIN_UP] = {0, 22, 18, 56, 26}, [CZ_TMIN_DN] = {0, 22, 80, 56, 26},
+        [CZ_TSEC_UP] = {0, 82, 18, 56, 26}, [CZ_TSEC_DN] = {0, 82, 80, 56, 26},
+        [CZ_TGO] = {0, 8, 110, 70, 30},     [CZ_TRESET] = {0, 82, 110, 70, 30},
+        [CZ_AH_UP] = {1, 22, 18, 56, 26},   [CZ_AH_DN] = {1, 22, 80, 56, 26},
+        [CZ_AM_UP] = {1, 82, 18, 56, 26},   [CZ_AM_DN] = {1, 82, 80, 56, 26},
+        [CZ_AON] = {1, 8, 110, 144, 30},
+    };
+    int bx, by;
+    tz_origin(w, h, Z[z].half, &bx, &by);
+    return (crect_t){bx + Z[z].x, by + Z[z].y, Z[z].w, Z[z].h};
+}
+
+static bool tz_running(const clock_state_t *st) { return st->tend > 0; }
+
+int clockface_zone(const clock_state_t *st, int w, int h, int x, int y)
+{
+    if (st->face != CLK_FACE_TIMER) return CZ_NONE;
+    for (int z = CZ_TMIN_UP; z <= CZ_AON; z++) {
+        if (tz_running(st) && z >= CZ_TMIN_UP && z <= CZ_TSEC_DN) continue;   // a contar: sem setas
+        if (st->tleft > 0 && z >= CZ_TMIN_UP && z <= CZ_TSEC_DN) continue;    // em pausa: idem
+        crect_t r = tz_box(w, h, z);
+        if (x >= r.x - 2 && x < r.x + r.w + 2 && y >= r.y - 2 && y < r.y + r.h + 2) return z;
+    }
+    return CZ_NONE;
+}
+
+static void tz_arrow(const clock_state_t *st, int z, bool up, uint32_t col, bool on)
+{
+    crect_t r = tz_box(BW, BH, z);
+    if (on && st->hot == z) {
+        for (int y = r.y; y < r.y + r.h; y++)
+            for (int x = r.x; x < r.x + r.w; x++) blend(x, y, col, 70);
+    }
+    int cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+    uint16_t c = c565(on ? col : 0x2A3346);
+    for (int k = 0; k < 7; k++) {   // triângulo de 13 x 7
+        int yy = up ? cy - 3 + k : cy + 3 - k;
+        rect(cx - k, yy, 2 * k + 1, 1, c);
+    }
+}
+
+static void tz_button(const clock_state_t *st, int z, uint32_t col, bool filled)
+{
+    crect_t r = tz_box(BW, BH, z);
+    bool hot = st->hot == z;
+    for (int y = r.y; y < r.y + r.h; y++)
+        for (int x = r.x; x < r.x + r.w; x++) blend(x, y, col, hot ? 150 : filled ? 90 : 30);
+    uint16_t e = c565(col);
+    rect(r.x, r.y, r.w, 2, e);
+    rect(r.x, r.y + r.h - 2, r.w, 2, e);
+    rect(r.x, r.y, 2, r.h, e);
+    rect(r.x + r.w - 2, r.y, 2, r.h, e);
+}
+
+static void tz_pair(int v, int x, int y, uint16_t col, uint16_t ghost)
+{
+    char d[8];
+    snprintf(d, sizeof(d), "%02d", (v < 0 ? -v : v) % 100);
+    text5("88", x, y, 4, ghost, -1);
+    text5(d, x, y, 4, col, -1);
+}
+
+static void face_timer(const clock_state_t *st, const struct tm *tm)
+{
+    const uint32_t CY = 0x5EF2FF, AM = 0xFFB000, BG = 0x0A0F1C;
+    rect(0, 0, BW, BH, c565(BG));
+    for (int y = 3; y < BH; y += 6)   // grelha de pontos discreta
+        for (int x = 3; x < BW; x += 6) put(x, y, c565(0x141B2C));
+    if (BW > BH) rect(BW / 2, 8, 1, BH - 16, c565(0x22304A));
+    else rect(8, BH / 2, BW - 16, 1, c565(0x22304A));
+    const uint16_t ghost = c565(0x18233A), ink = c565(0xFFFFFF), sub = c565(0x8B98A5);
+    char buf[32];
+    int bx, by;
+
+    // ---- temporizador
+    tz_origin(BW, BH, 0, &bx, &by);
+    bool run = tz_running(st), paused = !run && st->tleft > 0;
+    int left = run ? (int)(st->tend - st->now) : paused ? st->tleft : st->tset;
+    if (left < 0) left = 0;
+    text5("TEMPORIZADOR", bx + 6, by + 4, 1, c565(CY), -1);
+    bool edit = !run && !paused;
+    tz_arrow(st, CZ_TMIN_UP, true, CY, edit);
+    tz_arrow(st, CZ_TMIN_DN, false, CY, edit);
+    tz_arrow(st, CZ_TSEC_UP, true, CY, edit);
+    tz_arrow(st, CZ_TSEC_DN, false, CY, edit);
+    bool blink_off = paused && (st->now % 2);
+    uint16_t dc = blink_off ? c565(0x2E5A66) : run ? c565(CY) : ink;
+    tz_pair(left / 60, bx + 28, by + 47, dc, ghost);
+    text5(":", bx + 76, by + 47, 4, (run && st->now % 2) ? ghost : dc, -1);
+    tz_pair(left % 60, bx + 88, by + 47, dc, ghost);
+    // botão 1: iniciar / pausar / retomar (ícones); botão 2: zerar (quadrado)
+    tz_button(st, CZ_TGO, CY, run);
+    crect_t g = tz_box(BW, BH, CZ_TGO);
+    int gx = g.x + g.w / 2, gy = g.y + g.h / 2;
+    if (run) {
+        rect(gx - 7, gy - 8, 5, 16, c565(CY));
+        rect(gx + 2, gy - 8, 5, 16, c565(CY));
+    } else {
+        for (int k = 0; k < 9; k++) rect(gx - 5 + k, gy - 8 + k, 1, 17 - 2 * k, c565(CY));
+    }
+    tz_button(st, CZ_TRESET, CY, false);
+    crect_t rr = tz_box(BW, BH, CZ_TRESET);
+    rect(rr.x + rr.w / 2 - 7, rr.y + rr.h / 2 - 7, 14, 14, c565(CY));
+    if (run && st->has_time) {
+        time_t endt = (time_t)st->tend;
+        struct tm et;
+        gmtime_r(&endt, &et);
+        snprintf(buf, sizeof(buf), "TERMINA %02d:%02d", et.tm_hour, et.tm_min);
+    } else {
+        snprintf(buf, sizeof(buf), "%s", paused ? "EM PAUSA" : st->tset ? "PRONTO" : "ESCOLHA O TEMPO");
+    }
+    text5(buf, bx + 80 - tw5(buf, 1) / 2, by + 148, 1, run ? c565(CY) : sub, -1);
+
+    // ---- alarme
+    tz_origin(BW, BH, 1, &bx, &by);
+    text5("ALARME", bx + 6, by + 4, 1, c565(AM), -1);
+    if (st->has_time) {
+        snprintf(buf, sizeof(buf), "%02d:%02d", tm->tm_hour, tm->tm_min);
+        text5(buf, bx + 154 - tw5(buf, 1), by + 4, 1, sub, -1);
+    }
+    tz_arrow(st, CZ_AH_UP, true, AM, true);
+    tz_arrow(st, CZ_AH_DN, false, AM, true);
+    tz_arrow(st, CZ_AM_UP, true, AM, true);
+    tz_arrow(st, CZ_AM_DN, false, AM, true);
+    uint16_t ac = st->alon ? c565(AM) : c565(0x9A8A6A);
+    tz_pair(st->alh, bx + 28, by + 47, ac, ghost);
+    text5(":", bx + 76, by + 47, 4, ac, -1);
+    tz_pair(st->alm, bx + 88, by + 47, ac, ghost);
+    tz_button(st, CZ_AON, AM, st->alon);
+    crect_t ab = tz_box(BW, BH, CZ_AON);
+    const char *al = st->alon ? "DESLIGAR" : "LIGAR";
+    text5(al, ab.x + (ab.w - tw5(al, 2)) / 2, ab.y + 8, 2, st->alon ? ink : c565(AM), -1);
+    if (st->alon && st->has_time) {
+        int now_m = tm->tm_hour * 60 + tm->tm_min, at = st->alh * 60 + st->alm;
+        int d = (at - now_m + 1440) % 1440;
+        if (d == 0) d = 1440;
+        snprintf(buf, sizeof(buf), "TOCA EM %dH%02d", d / 60, d % 60);
+    } else {
+        snprintf(buf, sizeof(buf), "%s", st->alon ? "LIGADO" : "DESLIGADO");
+    }
+    text5(buf, bx + 80 - tw5(buf, 1) / 2, by + 148, 1, st->alon ? c565(AM) : sub, -1);
+}
+
 static void overlays(const clock_state_t *st)
 {
     if (st->show_bright) {
@@ -495,8 +698,8 @@ static void overlays(const clock_state_t *st)
             rect(x0 + 4, 140 - i * 12, 12, 9, c565(i < n ? 0xFFFFFF : 0x5A5A64));
     }
     if (st->show_dots) {
-        for (int i = 0; i < 3; i++)
-            rect(BW / 2 - 15 + i * 12, BH - 8, 6, 4, c565(i == st->face ? 0xFFFFFF : 0x6E6E78));
+        for (int i = 0; i < CLK_FACES; i++)
+            rect(BW / 2 - CLK_FACES * 6 + 3 + i * 12, BH - 8, 6, 4, c565(i == st->face ? 0xFFFFFF : 0x6E6E78));
     }
     if (st->show_exit) {   // caixa ao centro: o 2.º toque sai do relógio
         const char *l1 = "TOQUE DE NOVO", *l2 = "PARA SAIR";
@@ -516,7 +719,7 @@ static void overlays(const clock_state_t *st)
 
 bool clockface_animated(const clock_state_t *st)
 {
-    return (st->face == 0 || st->face == 2) && st->anim != CLK_ANIM_NONE;
+    return CLK_HAS_SCENE(st->face) && st->anim != CLK_ANIM_NONE;
 }
 
 void clockface_draw(uint16_t *buf, int stride_px, int w, int h, const clock_state_t *st, const struct tm *tm,
@@ -529,7 +732,8 @@ void clockface_draw(uint16_t *buf, int stride_px, int w, int h, const clock_stat
     float t = (float)(ms % 3600000u) / 1000.0f;
     if (st->face == 1) face_retro(st, tm);
     else if (st->face == 2) face_forecast(st, tm, t);
-    else face_landscape(st, tm, t);
+    else if (st->face == CLK_FACE_TIMER) face_timer(st, tm);
+    else face_landscape(st, tm, t);   // 0 paisagem e 3 cidade (muda só o fundo)
     overlays(st);
 }
 
