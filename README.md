@@ -56,7 +56,7 @@ Os detalhes de cada tela estão em [docs/uso.md](docs/uso.md).
 | Módulo | O que faz | Estado |
 |---|---|---|
 | Aplicações | Os programas de Acessórios do uConsole, lidos dos `.desktop` com o ícone real, mais Terminal, Gqrx, Arquivos e PyCharm | ok |
-| Meshtastic | Painel, Nós e Conversas (canais e diretas; cada uma abre as suas mensagens, verdes para RF e lilás para MQTT), com Responder em cada mensagem, Mensagem direta no detalhe do nó e o aviso animado de mensagem direta. As não lidas aparecem como selo vermelho no box. Os dados vêm pela API local do MeshDeckWeb | ok |
+| Meshtastic | Painel, Nós, Conversas e Mapa dos nós (canais e diretas; cada uma abre as suas mensagens, verdes para RF e lilás para MQTT), com Responder em cada mensagem, Mensagem direta no detalhe do nó e o aviso animado de mensagem direta. As não lidas aparecem como selo vermelho no box. Os dados vêm pela API local do MeshDeckWeb | ok |
 | GPS | GPS ao vivo pelo MeshDeckWeb (com o gpsmux, partilhado com o meshtasticd), posição pelo Meshtastic, ou NMEA direto do `/dev/ttyAMA0`. Página com o céu dos satélites | ok |
 | ADS-B | Liga e desliga o readsb. Lista de aeronaves, detalhe e mapa com trajetos, zoom e setas sobre o mapa, e seguir uma aeronave | ok |
 | AIS | Liga e desliga o AIS-catcher. Lista de navios, detalhe e o mesmo mapa com trajetos e seguir um navio | ok |

@@ -4,7 +4,6 @@
 
 | Item | Notas |
 |---|---|
-| **Mapa dos nós Meshtastic** | Reaproveitar o mapa do ADS-B com os nós que têm posição |
 | **Tela secundária de aplicações** | Uma página de informação para alguns programas abertos no uConsole (SDR++ e Gqrx: frequência e modo; PyGPSClient; etc.). É preciso escolher os programas e a forma de ler o estado de cada um |
 
 ## Ideias para depois

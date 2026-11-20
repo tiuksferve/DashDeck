@@ -49,8 +49,7 @@ mensagem, até 8 KB (descrito no cabeçalho de `firmware/main/ui.c` e em `docs/a
 - Nome mudado de DashOS para DashDeck (também no MeshDeckWeb, branch `rename-dashdeck`).
 
 ## Por fazer (por prioridade sugerida)
-1. **Mapa dos nós Meshtastic** (reaproveitar o mapa do ADS-B/AIS; verde RF, lilás MQTT; seguir um nó).
+1. **Mostrador de previsão por horas** no relógio (paisagem com outra imagem).
 2. **Atualizar o firmware pelo cartão SD** (o cartão já está montado em `/sd` desde a 0.17.0) (copiar o `.bin` para o cartão; o ESP grava-o em `ota_1` ao arrancar). Exige gravar esta funcionalidade uma vez pela USB.
-3. **Previsão por horas** no relógio (o Open-Meteo já dá os dados).
 4. Perfis de uso da AIO, mais cenas na paisagem, alarme/temporizador, volume e brilho do uConsole, rede (Wi-Fi/VPN), aplicações abertas, rotação pelo menu, cartão SD para fundos e ícones, histórico de mensagens no MeshDeckWeb.
 - Ainda por confirmar com uso real: o aviso "Ondas LoRa" com uma mensagem direta de verdade e a alternância das animações de arranque (só se testou com mensagens fictícias e imagens geradas no uConsole).

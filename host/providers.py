@@ -508,7 +508,7 @@ def bat_text(level) -> str:
 
 
 class MeshtasticProvider(Provider):
-    PAGES = ["Painel", "Nós", "Conversas"]
+    PAGES = ["Painel", "Nós", "Conversas", "Mapa"]
     # Fundo dos cards (sutil, sobre o C_CARD #18202A): verde = recebido por RF, lilás = via MQTT
     BG_RF, BG_MQTT, BG_DEST = "#16271F", "#241D33", "#172638"
     STATUS = {"sending": "a enviar", "ack": "entregue", "ack_implicit": "retransmitida",
@@ -527,6 +527,7 @@ class MeshtasticProvider(Provider):
         self._detail_node: str | None = None    # nó aberto (para a Mensagem direta)
         self._dm_seen: set | None = None         # diretas recebidas já conhecidas (para o aviso)
         self._conv_key: str = ""                 # conversa aberta ("ch:0" ou "dm:!id")
+        self.map = MeshMap(node, app, self)      # página Mapa
 
     def pages(self) -> int:
         return len(self.PAGES)
@@ -569,7 +570,7 @@ class MeshtasticProvider(Provider):
         title = f"Meshtastic · {self.PAGES[page]}"
         if d is None or not d.get("connected"):
             return {"title": title, **self._offline(d)}
-        out = [self._painel, self._nos, self._mensagens][page](d)
+        out = [self._painel, self._nos, self._mensagens, lambda _d: self.map.render_map()][page](d)
         out["title"] = title
         return out
 
@@ -769,6 +770,8 @@ class MeshtasticProvider(Provider):
         return ("Enviada", "ok") if ok else (f"Falhou: {err}", "err")
 
     def on_button(self, btn_id: str):
+        if btn_id in ("zin", "zout", "recenter", "unfollow") or btn_id.startswith(("pan_", "follow:")):
+            return self.map.on_button(btn_id)       # botões do mapa (e "Seguir no mapa" no detalhe do nó)
         if btn_id == "reply" and self._detail_msg:
             m = self._detail_msg
             return self._reply_screen(self._reply_dest(m), "resposta a " + ("mim" if m["outgoing"] else m["from"])[:12])
@@ -823,8 +826,12 @@ class MeshtasticProvider(Provider):
                 if pos:
                     rows.append(["Distância", f"{haversine_km(pos, (n['latitude'], n['longitude'])):.1f} km"])
             self._detail_node = item_id
+            btns = [{"id": "dm", "label": "Mensagem direta", "color": "ok"}]
+            if n.get("latitude") is not None:
+                btns.append({"id": "unfollow", "label": "Deixar de seguir", "color": "#30363D"} if self.map.follow == item_id
+                            else {"id": f"follow:{item_id}", "label": "Seguir no mapa", "color": "accent"})
             return {"id": f"node_{item_id}", "label": n.get("short_name") or item_id, "tpl": "kv", "rows": rows,
-                    "buttons": [{"id": "dm", "label": "Mensagem direta", "color": "ok"}]}
+                    "buttons": btns, "owner": self.node["id"]}
         if item_id in self._msgs:
             return self.message_detail(self._msgs[item_id])
         return None
@@ -1166,6 +1173,9 @@ class TargetMapProvider(Provider):
     NICE = [0.25, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]   # passos dos anéis (nm)
     TRACK_BUDGET = 2800        # caracteres de trajetos por tela (a linha JSON tem até 8 KB)
     LEGEND = ""
+    MAP_PAGE = 1               # página do mapa (o "Seguir no mapa" abre-a)
+    UNIT, UNIT_PER_NM = "nm", 1.0   # unidade dos anéis e distâncias (o Meshtastic usa km)
+    STATION_LABEL = "receptor"
 
     def __init__(self, node, app):
         super().__init__(node, app)
@@ -1297,7 +1307,7 @@ class TargetMapProvider(Provider):
     def _center(self, with_pos: list[dict]) -> tuple[tuple[float, float] | None, str]:
         st = self.station()
         if st:
-            return st, "receptor"
+            return st, self.STATION_LABEL
         for prov in self.app.providers.values():
             if isinstance(prov, GpsProvider) and prov.position():
                 return prov.position(), "GPS"
@@ -1334,17 +1344,24 @@ class TargetMapProvider(Provider):
         plot = {"w": W, "h": H, "center": True, "cross": False, "pts": []}
         out = {"tpl": "plot", "plot": plot, "buttons": []}
         if not self.load():
-            plot["msg"] = f"Sem dados\n{self.unit} {'a arrancar...' if self.active() else 'desligado'}"
-            if self.active():
-                out["buttons"] = [{"id": "stop", "label": f"Desligar {self.unit}", "color": "err",
-                                   "confirm": f"Desligar {self.unit}? O SDR fica livre."}]
-            else:
-                b = {"id": "start", "label": f"Ligar {self.unit}", "color": "ok"}
-                conf = self._start_confirm()
-                if conf:
-                    b["confirm"] = conf
-                out["buttons"] = [b]
-            return out
+            return self.no_data(out, plot)
+        return self._render_map(W, H, plot, out)
+
+    def no_data(self, out: dict, plot: dict) -> dict:
+        """Mapa sem dados: o estado do serviço e o botão para o ligar ou desligar."""
+        plot["msg"] = f"Sem dados\n{self.unit} {'a arrancar...' if self.active() else 'desligado'}"
+        if self.active():
+            out["buttons"] = [{"id": "stop", "label": f"Desligar {self.unit}", "color": "err",
+                               "confirm": f"Desligar {self.unit}? O SDR fica livre."}]
+        else:
+            b = {"id": "start", "label": f"Ligar {self.unit}", "color": "ok"}
+            conf = self._start_confirm()
+            if conf:
+                b["confirm"] = conf
+            out["buttons"] = [b]
+        return out
+
+    def _render_map(self, W: int, H: int, plot: dict, out: dict) -> dict:
         with_pos = [t for t in self.targets if t.get("lat") is not None and t.get("lon") is not None]
         ft = self.find(self.follow)
         fpos = None
@@ -1397,7 +1414,7 @@ class TargetMapProvider(Provider):
         plot["ctrl"] = [["zout", "tl", "\u2212"], ["zin", "tr", "+"], ["pan_l", "l", ""], ["pan_r", "r", ""],
                         ["pan_u", "t", ""], ["pan_d", "b", ""]]
         cx, cy = maptiles.world_px(lat0, lon0, z)
-        ppn = maptiles.px_per_nm(lat0, z)
+        ppn = maptiles.px_per_nm(lat0, z) / self.UNIT_PER_NM   # píxeis por unidade (nm ou km)
 
         def to_px(lat, lon):
             x, y = maptiles.world_px(lat, lon, z)
@@ -1406,7 +1423,7 @@ class TargetMapProvider(Provider):
         half_nm = min(W, H) / 2 / ppn
         step = max([n for n in self.NICE if 2 * n <= half_nm] or [self.NICE[0]])
         if not fpos or self._pan:
-            plot.update(rings=[round(step * ppn), round(2 * step * ppn)], rlabels=[f"{step:g}", f"{2 * step:g}nm"])
+            plot.update(rings=[round(step * ppn), round(2 * step * ppn)], rlabels=[f"{step:g}", f"{2 * step:g}{self.UNIT}"])
         else:
             plot["center"] = False
 
@@ -1486,7 +1503,7 @@ class TargetMapProvider(Provider):
                 rows.append(["Estado", "sem sinal" if fpos else "sem posição", "warn"])
         rings = not fpos or self._pan
         rows.append(["Zoom", f"{z}" + (" (auto)" if self.zoom is None and not fpos and not self._pan else "")
-                     + (f" · anel {step:g} nm" if rings else "")])
+                     + (f" · anel {step:g} {self.UNIT}" if rings else "")])
         if not fpos or self._pan:
             rows.append(["Centro", src, "warn" if src == "média" else None])
         rows.append(["No mapa", f"{len(plot['pts'])} de {len(self.targets)}"])
@@ -1494,7 +1511,7 @@ class TargetMapProvider(Provider):
             rows.append(["Fora do mapa", str(hidden), "sub"])
         if dist and not self.follow:
             d, t, *_ = min(dist, key=lambda x: x[0])
-            rows.append(["Mais próximo", f"{t['name']} {d:.1f} nm"])
+            rows.append(["Mais próximo", f"{t['name']} {d:.1f} {self.UNIT}"])
         if self.LEGEND:
             rows.append(["Cores", self.LEGEND, "sub"])
         rows.append(["Mapa", map_state, "sub"])
@@ -1533,7 +1550,7 @@ class TargetMapProvider(Provider):
         if btn_id.startswith("follow:"):
             self.follow = btn_id.split(":", 1)[1]
             self.zoom, self._view, self._pan = None, None, None
-            self.app.page[self.node["id"]] = 1          # abre o mapa
+            self.app.page[self.node["id"]] = self.MAP_PAGE   # abre o mapa
             t = self.find(self.follow)
             return ("back", f"Seguindo {t['name'] if t else self.follow}")
         if btn_id == "recenter":
@@ -1831,6 +1848,76 @@ class AisProvider(TargetMapProvider):
         rows.append(["Visto", fmt_ago(s.get("last_signal"))])
         rows.append(["Trajeto", f"{len(self.track(t['id']))} pontos", "sub"])
         return rows
+
+
+# ------------------------------------------------------------------ mapa dos nós Meshtastic
+
+class MeshMap(TargetMapProvider):
+    """Mapa dos nós Meshtastic com posição (página Mapa do Meshtastic), com o mesmo mapa do ADS-B e do AIS:
+    verde = ouvido por RF, lilás = por MQTT, cinza = inativo há mais de 2 h. Centro no nó local."""
+    NOUN, NOUN_PL = "nó", "nós"
+    UNIT_DEFAULT = ""
+    FOLLOW_ZOOM, IDLE_ZOOM, ZMAX = 13, 10, 16
+    LEGEND = "verde RF · lilás MQTT · cinza inativo"
+    MAP_PAGE = 3
+    UNIT, UNIT_PER_NM = "km", 1.852
+    STATION_LABEL = "nó local"
+
+    def __init__(self, node, app, mesh):
+        super().__init__(node, app)
+        self.mesh = mesh
+        self.tracks = Tracker(max_age=6 * 3600)   # os nós móveis deixam rasto enquanto o dashd corre
+        self._loaded = (0.0, False)
+
+    def load(self, force: bool = False) -> bool:
+        t, ok = self._loaded
+        if not force and time.monotonic() - t < 2:
+            return ok
+        d = self.mesh.br.dash()
+        if not d or not d.get("connected"):
+            self.targets = []
+            self._loaded = (time.monotonic(), False)
+            return False
+        out = []
+        for n in d.get("nodes", []):
+            lat, lon = n.get("latitude"), n.get("longitude")
+            if lat is None or lon is None:
+                continue
+            nid = n["id_string"]
+            self.tracks.add(nid, lat, lon)
+            out.append({"id": nid, "name": n.get("short_name") or nid, "lat": lat, "lon": lon, "heading": None,
+                        "label": True, "raw": n})
+        self.targets = out
+        self._loaded = (time.monotonic(), True)
+        return True
+
+    def station(self):
+        p = self.mesh.br.position()
+        return (p[0], p[1]) if p else None
+
+    def track(self, tid):
+        return self.tracks.get(tid)
+
+    def color(self, t):
+        n = t["raw"]
+        ago = time.time() - n["last_heard"] if n.get("last_heard") else None
+        if ago is None or ago > 7200:
+            return "#8B98A5"
+        return "#B392F0" if n.get("via_mqtt") else "#3FB950"
+
+    def follow_rows(self, t):
+        n = t["raw"]
+        rows = [["Via", "MQTT" if n.get("via_mqtt") else "RF"]]
+        if n.get("last_heard"):
+            rows.append(["Ouvido", fmt_ago(time.time() - n["last_heard"])])
+        pos = self.station()
+        if pos:
+            rows.append(["Distância", f"{haversine_km(pos, (t['lat'], t['lon'])):.1f} km"])
+        return rows
+
+    def no_data(self, out: dict, plot: dict) -> dict:
+        plot["msg"] = "MeshDeckWeb sem nó\nsem posições"
+        return out
 
 
 # ------------------------------------------------------------------ AIO v2

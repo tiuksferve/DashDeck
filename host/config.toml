@@ -45,7 +45,7 @@ color = "#67EA94"
 type = "provider"
 provider = "mesh"
 # Dados pela API local do MeshDeckWeb (127.0.0.1:8080): a API do meshtasticd só aceita um cliente.
-# Páginas (swipe): Painel · Nós · Conversas (toque abre a conversa; Responder na mensagem). Não lidas = selo vermelho.
+# Páginas (swipe): Painel · Nós · Conversas (toque abre a conversa; Responder na mensagem) · Mapa. Não lidas = selo vermelho.
 channel = 0                       # canal inicial das respostas rápidas (troca-se na tela)
 quick = ["OK", "A caminho", "Cheguei", "Preciso de ajuda", "Posição: {pos}"]
 start_cmd = "cd $HOME/PycharmProjects/MeshDeckWeb && nohup ./start.sh --connect >> $HOME/.config/meshdeck/server.log 2>&1 &"
