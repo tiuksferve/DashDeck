@@ -24,6 +24,7 @@
 //   {"t":"icon","id":"..","w":32,"h":32,"d":"base64 RGB565A8"} -> {"t":"iconack","id":..,"ok":..}
 //   {"t":"dock","items":[{"id","label","icon","img","color"}]}  barra fixa em baixo -> {"t":"dock","item":id}
 //   screen: "layout":"grid" (menu em boxes) e "dock":false (esconde o dock nesta tela)
+//   {"t":"icon","id":..,"probe":true} (sem dados): ok=true se o ícone já está no cartão SD
 //   {"t":"emoji","cp":0x100000+i,"w":15,"h":14,"d":"base64 RGB565A8"} -> {"t":"emojiack","cp":..,"ok":..}
 //      imagem do emoji que o host pôs no texto como o código privado cp (até 48)
 //   item de menu: "badge":"3" mostra um selo vermelho (ex.: mensagens não lidas); nos boxes,
@@ -518,9 +519,47 @@ static bool icon_to_sd(icon_t *slot, const char *id, int w, int h, const uint8_t
     return ok;
 }
 
+// O ícone já está no cartão (de um arranque anterior)? Se estiver, fica registado sem o host o reenviar.
+static bool icon_probe(const char *id)
+{
+    if (!s_sd_ok || !id[0]) return false;
+    size_t n = strlen(id);
+    const char *tail = n > 8 ? id + n - 8 : id;
+    char file[48];
+    snprintf(file, sizeof(file), SD_DIR "/%s.bin", tail);
+    struct stat st;
+    if (stat(file, &st) != 0 || st.st_size <= (off_t)sizeof(lv_image_header_t)) return false;
+    icon_t *slot = NULL;
+    for (int i = 0; i < ICON_MAX && !slot; i++)
+        if (ICON_USED(i) && !strcmp(s_icons[i].id, id)) slot = &s_icons[i];
+    for (int i = 0; i < ICON_MAX && !slot; i++)
+        if (!ICON_USED(i)) slot = &s_icons[i];
+    if (!slot) {
+        slot = &s_icons[s_icon_next];
+        s_icon_next = (s_icon_next + 1) % ICON_MAX;
+    }
+    if (slot->data) {
+        lv_image_cache_drop(&slot->dsc);
+        free(slot->data);
+        slot->data = NULL;
+    }
+    strlcpy(slot->id, id, sizeof(slot->id));
+    snprintf(slot->path, sizeof(slot->path), "S:dash/%s.bin", tail);
+    return true;
+}
+
 static void handle_icon(const cJSON *msg)
 {
     const char *id = jstr(msg, "id", "");
+    if (jbool(msg, "probe", false)) {
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddStringToObject(o, "t", "iconack");
+        cJSON_AddStringToObject(o, "id", id);
+        cJSON_AddBoolToObject(o, "ok", icon_probe(id));
+        link_send(o);
+        cJSON_Delete(o);
+        return;
+    }
     const cJSON *jw = cJSON_GetObjectItemCaseSensitive(msg, "w"), *jh = cJSON_GetObjectItemCaseSensitive(msg, "h");
     int w = cJSON_IsNumber(jw) ? jw->valueint : 0, h = cJSON_IsNumber(jh) ? jh->valueint : 0;
     bool ok = false;
@@ -1060,6 +1099,9 @@ static void icons_free_all(void)
 // Garante um bloco contíguo de `need` bytes, libertando os ícones se for preciso.
 static void make_room(size_t need)
 {
+    if (heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < need + 4096) {
+        lv_image_cache_drop(NULL);   // primeiro a cache de imagens (os ícones voltam a ler-se do cartão)
+    }
     if (heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < need + 4096) {
         bool any = false;
         for (int i = 0; i < ICON_MAX && !any; i++) any = s_icons[i].data != NULL;

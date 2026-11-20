@@ -244,7 +244,8 @@ class App:
         self._owners: set = set()   # providers com tela na pilha
         self.notified: tuple | None = None   # (nó do Meshtastic, mensagem) do último aviso, para o toque
         self.last_dm_check = 0.0
-        self.bg_hold = 0.0   # não reenviar o fundo antes disto (o aviso de mensagem está com a memória)
+        self.bg_hold = 0.0
+        self.esp_sd = False   # não reenviar o fundo antes disto (o aviso de mensagem está com a memória)
         self.last_tpl = ""
         self.dock_lost = False   # o ESP libertou os ícones e o dock (para caber o relógio)
         self.layout = d.get("layout", "grid")      # menus em "grid" (boxes) ou "cards"
@@ -294,6 +295,9 @@ class App:
             iid = it.get("img")
             if not iid or iid in self.icons_sent:
                 continue
+            if self.esp_sd and self._icon_on_card(iid):   # já está no cartão do ESP: não reenvia
+                self.icons_sent.add(iid)
+                continue
             data = icons.rgb565a8(self._icon_src[iid])
             while not self.link.acks.empty():
                 self.link.acks.get_nowait()
@@ -308,6 +312,17 @@ class App:
                 pass
             log.warning("ícone %s não confirmado", iid)
             it.pop("img")   # mostra o símbolo; tenta de novo na próxima vez
+
+    def _icon_on_card(self, iid: str) -> bool:
+        """Pergunta ao ESP se o ícone já está no cartão SD (de um arranque anterior)."""
+        while not self.link.acks.empty():
+            self.link.acks.get_nowait()
+        self.link.send({"t": "icon", "id": iid, "probe": True})
+        try:
+            ack = self.link.acks.get(timeout=1.0)
+            return ack.get("id") == iid and bool(ack.get("ok"))
+        except queue.Empty:
+            return False
 
     def send_emojis(self, scr: dict) -> None:
         """Envia (com confirmação) as imagens dos emojis desta tela que o ESP ainda não tem."""
@@ -698,6 +713,7 @@ class App:
                     self.link.send({"t": "rot", "v": self.rotation})
                     return
                 self.esp_w, self.esp_h = int(data.get("w", 172)), int(data.get("h", 320))
+                self.esp_sd = data.get("sd", -1) >= 0   # cartão SD no ESP (ícones guardados entre arranques)
                 self.bg_sent = None
                 self.icons_sent.clear()
                 EMOJI.clear()

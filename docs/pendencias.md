@@ -11,7 +11,7 @@
 - **Bateria própria do ESP (LiPo no pino VBAT):** ler o ADC do GPIO0 e mostrar o nível. Só faz sentido se a tela ficar solta do uConsole.
 - **Cartão SD do ESP:**
   - **Atualizar o firmware pelo cartão:** copiar o `.bin` para o cartão (com um leitor de cartões) e o ESP grava-o na partição `ota_1` ao arrancar, sem depender da USB. É preciso gravar esta funcionalidade uma vez pela USB.
-  - **Ícones já ficam no cartão** (0.17.0). Falta o dashd perguntar ao ESP quais já tem, para não os reenviar a cada arranque.
+  - **Ícones no cartão** (0.17.0), sem reenvio entre arranques (0.19.0).
 - **OTA pela USB:** as partições `ota_0` e `ota_1` já existem; faltaria o envio do firmware pelo protocolo, sem `idf.py`.
 - **Filtro por altitude** no ADS-B e por tipo no AIS.
 - **Guardar os trajetos do ADS-B** entre arranques do dashd (hoje ficam na memória).
@@ -62,6 +62,7 @@
 | 0.15.2 | Frase "TELA PEQUENA, GRANDES POSSIBILIDADES!" na animação Pixels (fonte com `!` e `,`) |
 | 0.15.3 | Tela de carregamento com 5 s no mínimo (a animação estica-se) |
 | 0.15.4 | A frase também no Nascer do sol |
+| 0.19.0 | LVGL no heap do sistema (+50 KB livres), cache de imagens de 48 KB (swipes sem ler o cartão), ícones já guardados no cartão não são reenviados |
 | 0.18.0 | Mostrador de previsão por horas no relógio (costa com farol) |
 | 0.17.0 | Cartão SD (ícones, e fundos quando falta RAM), buffer de ecrã reservado no arranque, aviso de mensagem por cima do relógio com a memória do fundo emprestada |
 | 0.16.0 | Aviso de mensagem direta (`notify`, animação "Ondas LoRa"); a animação de arranque passa a ser mesmo aleatória (entropia do ADC no arranque) |

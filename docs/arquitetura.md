@@ -50,9 +50,9 @@ está na placa) seria o próximo passo se um dia a tela ficar solta.
 **Partições (flash de 8 MB):** `nvs`, `otadata`, `phy`, `ota_0` e `ota_1` (3 MB cada) e `storage`
 (littlefs, 1,9 MB). As partições de OTA e de littlefs estão reservadas mas ainda não são usadas.
 
-**Memória:** cerca de 260 KB livres no arranque, organizados assim:
+**Memória:** o LVGL usa o heap do sistema (sem a reserva fixa de 64 KB), o que deixa cerca de 150 KB livres depois do buffer de ecrã. Organização:
 - **Buffer de ecrã reservado (110 KB):** reservado no arranque e reutilizado pela animação de arranque, pelo canvas do relógio e pelo dos mapas. Antes era pedido e devolvido a cada tela, o que fragmentava a memória até não haver um bloco contínuo para o relógio.
-- **Ícones no cartão SD:** com cartão, cada ícone é gravado em `/sd/dash/xxxxxxxx.bin` (cabeçalho de imagem do LVGL + RGB565A8) e o LVGL lê-o de `S:dash/...` (sistema de ficheiros stdio). Não gastam RAM e ficam no cartão entre arranques. Sem cartão, ficam na RAM (até 48 de 3 KB).
+- **Ícones no cartão SD:** com cartão, cada ícone é gravado em `/sd/dash/xxxxxxxx.bin` (cabeçalho de imagem do LVGL + RGB565A8) e o LVGL lê-o de `S:dash/...` (sistema de ficheiros stdio). Ficam no cartão entre arranques: o dashd pergunta primeiro (`icon` com `probe`) e só envia os que faltam. O LVGL guarda até 48 KB de imagens decodificadas (cache), para os swipes não lerem o cartão a cada quadro; o `make_room` esvazia essa cache quando é preciso espaço. Sem cartão, ficam na RAM (até 48 de 3 KB).
 - **Fundos:** o do relógio (8 bpp, 55 KB) e o dos mapas (4 bpp, ~20 KB) ficam na RAM. Se não houver RAM, vão para `/sd/dash/bg.bin` e são lidos do cartão a cada quadro (lento: 120+ ms; só como reserva).
 - **Emojis:** na RAM (até 48 de 630 B), porque o LVGL procura-os a cada letra desenhada.
 - **Aviso de mensagem:** canvas de 160×96 RGB565A8 (46 KB). Com o relógio aberto, usa emprestada a memória do fundo do relógio (o relógio fica parado por baixo) e o ESP avisa o host com `bgfreed` para o reenviar depois.
