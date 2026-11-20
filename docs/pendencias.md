@@ -29,6 +29,8 @@
 - **Texto:** as fontes têm ASCII e Latin-1 (português completo). Os emojis aparecem como imagens (até 48 diferentes ao mesmo tempo); outros alfabetos (grego, cirílico…) são removidos ou trocados.
 - **Relógio:** as nuvens, as estrelas e o reflexo do lago só mudam quando a cena é refeita (a cada 5 min); só a chuva, a neve e os relâmpagos são animados no ESP. Os gestos do relógio são medidos do toque ao soltar (24 px), sem o detetor do LVGL.
 - **Uma linha JSON tem até 8 KB.** Por isso a lista de nós mostra 30.
+- **Perfis da AIO:** aplicar um perfil só foi testado no caminho "já está ativo"; a sequência completa (parar, desligar, ligar, arrancar serviços) não foi corrida no hardware.
+- **Rede:** ligar a uma rede nova com palavra-passe é no uConsole (sem teclado no DashDeck). A página VPN só foi vista vazia (não há VPN configurada no uConsole).
 - **Mensagens:** o envio pela tela só foi testado com a interface falsa dos testes do MeshDeckWeb, não pela rede real.
 - **Segurança da ponte:** com `--local-api on`, qualquer processo do uConsole lê e envia mensagens pelo nó, sem login.
 - **`sudo -n`:** os botões de serviços precisam de sudo sem senha para o `systemctl`, e o ADS-B e o AIS também para o `fuser` e o `kill` (libertar o SDR).
@@ -62,6 +64,8 @@
 | 0.15.2 | Frase "TELA PEQUENA, GRANDES POSSIBILIDADES!" na animação Pixels (fonte com `!` e `,`) |
 | 0.15.3 | Tela de carregamento com 5 s no mínimo (a animação estica-se) |
 | 0.15.4 | A frase também no Nascer do sol |
+| 0.21.0 | Desenho mais rápido: build `-O2` (era `-Og`) e `memcpy` da biblioteca C; as atualizações só mudam o que mudou (texto, cor, imagem, botões), em vez de refazer tudo e reabrir os ícones do cartão (bloqueavam o ecrã até 267 ms a cada 2 s; agora até 2,4 ms); os ícones leem-se do cartão fora do lock do LVGL; comandos de medição `bench` e `stats` |
+| 0.20.0 | Ícones com cópia na RAM enquanto há memória (swipes e animações sem ler o cartão), 96 lugares de ícones sem substituir os do dock (o ícone do Relógio desaparecia), `iconlost`, cache de imagens de 32 KB |
 | 0.19.0 | LVGL no heap do sistema (+50 KB livres), cache de imagens de 48 KB (swipes sem ler o cartão), ícones já guardados no cartão não são reenviados |
 | 0.18.0 | Mostrador de previsão por horas no relógio (costa com farol) |
 | 0.17.0 | Cartão SD (ícones, e fundos quando falta RAM), buffer de ecrã reservado no arranque, aviso de mensagem por cima do relógio com a memória do fundo emprestada |

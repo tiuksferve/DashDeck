@@ -102,6 +102,37 @@ Interruptores da placa AIO v2 pelo `aiov2_ctl` (a aplicação AIO v2 Controller)
 | Opção | Padrão | Descrição |
 |---|---|---|
 | `cmd` | `/usr/local/bin/aiov2_ctl` | Caminho do aiov2_ctl. O utilizador precisa de estar no grupo `gpio` (o `pinctrl` não usa sudo); o LoRa usa `sudo -n systemctl` para o meshtasticd |
+| `profiles` | Meshtastic, ADS-B, AIS, Poupança | Perfis de uso, em `[[menu.profiles]]` (ver abaixo) |
+
+Cada perfil:
+
+```toml
+  [[menu.profiles]]
+  id = "adsb"
+  label = "ADS-B"
+  img = "emoji:✈"
+  on = ["GPS", "SDR"]        # recursos a ligar (GPS LORA SDR USB)
+  off = []                   # recursos a desligar
+  start = ["readsb"]         # unidades systemd a ligar (com grupo, param as outras do grupo)
+  stop = []                  # unidades systemd a parar
+```
+
+Ao aplicar, a ordem é: parar serviços, desligar, ligar e, por fim, ligar os serviços (com 3 s de espera
+depois de dar energia ao SDR ou ao USB, para o dongle aparecer). O que já está como no perfil não é mexido.
+
+### `net`
+Rede pelo NetworkManager (`nmcli`; ver [uso.md](uso.md#rede)). Sem opções. O utilizador precisa de
+poder controlar a rede sem palavra-passe (no Raspberry Pi OS, os grupos `netdev` ou `sudo` já podem;
+confirme com `nmcli general permissions`). O Tailscale entra se o comando `tailscale` existir.
+
+### `console`
+Volume e brilho do ecrã do uConsole (ver [uso.md](uso.md#som)); no config de origem está no dock.
+
+| Opção | Padrão | Descrição |
+|---|---|---|
+| `volume_step` | `5` | % por toque no - e no + da página Som (`wpctl` no PipeWire) |
+| `volume_max` | `100` | Limite do + |
+| `backlight` | o primeiro de `/sys/class/backlight` | Pasta do backlight. A escrita precisa do grupo `video`; sem permissão, tenta o `brightnessctl` |
 
 ### `clock`
 Relógio em ecrã inteiro (ver [uso.md](uso.md#relógio)). Pode ser um `[[menu]]` ou um `[[dock]]`; no config de origem está no dock, no lugar do Terminal.

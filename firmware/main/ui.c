@@ -115,6 +115,7 @@ static uint8_t *s_cmem;
 static uint8_t *s_arena;
 static size_t s_arena_size;
 static void boot_end(void);
+static void ts_hook(void);
 static lv_obj_t *s_boot;
 static int32_t s_cw, s_ch;
 // Imagem de fundo (4 bpp + paleta de 16, ou 8 bpp + paleta de 256 no relógio)
@@ -180,13 +181,16 @@ static lv_obj_t *s_badge[MAX_ITEMS];             // selo vermelho no canto (menu
 static char s_btn_ids[MAX_BTNS][ID_LEN];
 
 // Ícones de aplicações (RGB565A8) enviados pelo host
-#define ICON_MAX 48
+#define ICON_MAX 96
 #define ICON_PX  48
+// Ícones ficam também na RAM (desenho rápido, sem ler o cartão no barramento do display) enquanto
+// sobrar pelo menos isto de heap; os outros desenham-se do cartão através da cache de imagens.
+#define ICON_RAM_RESERVE (80 * 1024)
 typedef struct {
     char id[24];
     lv_image_dsc_t dsc;
-    uint8_t *data;      // na RAM (sem cartão SD)
-    char path[24];      // no cartão: "S:dash/xxxxxxxx.bin" (não gasta RAM)
+    uint8_t *data;      // cópia na RAM (se houver memória), usada em vez do cartão
+    char path[24];      // no cartão: "S:dash/xxxxxxxx.bin" (persiste entre arranques)
 } icon_t;
 #define ICON_USED(i) (s_icons[i].data || s_icons[i].path[0])
 static bool s_sd_ok;    // cartão SD montado (ícones e fundos grandes vão para lá)
@@ -201,6 +205,7 @@ static void build_ctrl(const cJSON *ctrl);
 
 static lv_obj_t *s_dock;
 static char s_dock_ids[DOCK_MAX][ID_LEN];
+static char s_dock_imgs[DOCK_MAX][24];   // ícones do dock: nunca são substituídos por outros
 static bool s_dock_on;      // há itens no dock
 static bool s_grid;         // menu atual em boxes
 static bool s_hgrid;        // boxes numa fileira com scroll lateral (horizontal)
@@ -493,9 +498,59 @@ static const void *icon_find(const char *id)
     if (!id || !id[0]) return NULL;
     for (int i = 0; i < ICON_MAX; i++) {
         if (ICON_USED(i) && !strcmp(s_icons[i].id, id))
-            return s_icons[i].path[0] ? (const void *)s_icons[i].path : (const void *)&s_icons[i].dsc;
+            return s_icons[i].data ? (const void *)&s_icons[i].dsc : (const void *)s_icons[i].path;
     }
     return NULL;
+}
+
+static void icon_set_ram(icon_t *slot, uint8_t *buf, int w, int h, size_t size)
+{
+    memset(&slot->dsc, 0, sizeof(slot->dsc));
+    slot->dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+    slot->dsc.header.cf = LV_COLOR_FORMAT_RGB565A8;
+    slot->dsc.header.w = w;
+    slot->dsc.header.h = h;
+    slot->dsc.header.stride = w * 2;
+    slot->dsc.data_size = size;
+    slot->dsc.data = buf;
+    slot->data = buf;
+}
+
+static bool icon_ram_ok(size_t size)
+{
+    return esp_get_free_heap_size() > ICON_RAM_RESERVE + size;
+}
+
+// Lugar para o ícone `id`: o que já o tem, um livre, ou (cheio) o seguinte em rotação que não seja
+// do dock. O ícone substituído é comunicado ao host ({"t":"iconlost"}) para ele o voltar a enviar.
+static icon_t *icon_slot(const char *id)
+{
+    for (int i = 0; i < ICON_MAX; i++)
+        if (ICON_USED(i) && !strcmp(s_icons[i].id, id)) return &s_icons[i];
+    for (int i = 0; i < ICON_MAX; i++)
+        if (!ICON_USED(i)) return &s_icons[i];
+    icon_t *slot = NULL;
+    for (int k = 0; k < ICON_MAX && !slot; k++) {
+        icon_t *c = &s_icons[s_icon_next];
+        s_icon_next = (s_icon_next + 1) % ICON_MAX;
+        bool dock = false;
+        for (int d = 0; d < DOCK_MAX && !dock; d++) dock = s_dock_imgs[d][0] && !strcmp(s_dock_imgs[d], c->id);
+        if (!dock) slot = c;
+    }
+    if (!slot) slot = &s_icons[0];
+    link_send_event("iconlost", "id", slot->id, NULL, NULL);
+    return slot;
+}
+
+static void icon_clear(icon_t *slot)
+{
+    if (slot->data) {
+        lv_image_cache_drop(&slot->dsc);
+        free(slot->data);
+        slot->data = NULL;
+    }
+    if (slot->path[0]) lv_image_cache_drop(slot->path);
+    slot->path[0] = '\0';
 }
 
 // Grava o ícone como imagem do LVGL (cabeçalho + RGB565A8) no cartão. Devolve false se falhar.
@@ -520,6 +575,9 @@ static bool icon_to_sd(icon_t *slot, const char *id, int w, int h, const uint8_t
 }
 
 // O ícone já está no cartão (de um arranque anterior)? Se estiver, fica registado sem o host o reenviar.
+// O ícone já está no cartão (de um arranque anterior)? Se estiver, fica registado sem o host o reenviar.
+// A leitura do cartão faz-se sem o lock do LVGL (o ecrã continua a desenhar); só o registo o usa.
+// Corre na tarefa da ligação, a única que muda os lugares dos ícones fora do LVGL.
 static bool icon_probe(const char *id)
 {
     if (!s_sd_ok || !id[0]) return false;
@@ -529,37 +587,41 @@ static bool icon_probe(const char *id)
     snprintf(file, sizeof(file), SD_DIR "/%s.bin", tail);
     struct stat st;
     if (stat(file, &st) != 0 || st.st_size <= (off_t)sizeof(lv_image_header_t)) return false;
-    icon_t *slot = NULL;
-    for (int i = 0; i < ICON_MAX && !slot; i++)
-        if (ICON_USED(i) && !strcmp(s_icons[i].id, id)) slot = &s_icons[i];
-    for (int i = 0; i < ICON_MAX && !slot; i++)
-        if (!ICON_USED(i)) slot = &s_icons[i];
-    if (!slot) {
-        slot = &s_icons[s_icon_next];
-        s_icon_next = (s_icon_next + 1) % ICON_MAX;
+    bool in_ram = false;
+    for (int i = 0; i < ICON_MAX && !in_ram; i++)
+        in_ram = s_icons[i].data && !strcmp(s_icons[i].id, id);
+    if (in_ram) return true;
+    // cópia na RAM, se houver memória: desenhar do cartão atrasa o display (mesmo barramento SPI)
+    size_t size = (size_t)st.st_size - sizeof(lv_image_header_t);
+    uint8_t *buf = NULL;
+    lv_image_header_t hdr = {0};
+    if (icon_ram_ok(size)) {
+        FILE *f = fopen(file, "rb");
+        buf = f ? malloc(size) : NULL;
+        if (!(f && buf && fread(&hdr, sizeof(hdr), 1, f) == 1 && fread(buf, 1, size, f) == size &&
+              hdr.magic == LV_IMAGE_HEADER_MAGIC && (size_t)hdr.w * hdr.h * 3 == size)) {
+            free(buf);
+            buf = NULL;
+        }
+        if (f) fclose(f);
     }
-    if (slot->data) {
-        lv_image_cache_drop(&slot->dsc);
-        free(slot->data);
-        slot->data = NULL;
+    if (!lvgl_port_lock(1000)) {
+        free(buf);
+        return false;
     }
+    icon_t *slot = icon_slot(id);
+    icon_clear(slot);
     strlcpy(slot->id, id, sizeof(slot->id));
     snprintf(slot->path, sizeof(slot->path), "S:dash/%s.bin", tail);
+    if (buf) icon_set_ram(slot, buf, hdr.w, hdr.h, size);
+    lvgl_port_unlock();
     return true;
 }
 
 static void handle_icon(const cJSON *msg)
 {
     const char *id = jstr(msg, "id", "");
-    if (jbool(msg, "probe", false)) {
-        cJSON *o = cJSON_CreateObject();
-        cJSON_AddStringToObject(o, "t", "iconack");
-        cJSON_AddStringToObject(o, "id", id);
-        cJSON_AddBoolToObject(o, "ok", icon_probe(id));
-        link_send(o);
-        cJSON_Delete(o);
-        return;
-    }
+    // (o "probe" trata-se em ui_handle, fora do lock do LVGL)
     const cJSON *jw = cJSON_GetObjectItemCaseSensitive(msg, "w"), *jh = cJSON_GetObjectItemCaseSensitive(msg, "h");
     int w = cJSON_IsNumber(jw) ? jw->valueint : 0, h = cJSON_IsNumber(jh) ? jh->valueint : 0;
     bool ok = false;
@@ -568,39 +630,16 @@ static void handle_icon(const cJSON *msg)
         uint8_t *buf = malloc(size);
         const char *d = jstr(msg, "d", "");
         if (buf && mbedtls_base64_decode(buf, size, &olen, (const unsigned char *)d, strlen(d)) == 0 && olen == size) {
-            icon_t *slot = NULL;
-            for (int i = 0; i < ICON_MAX && !slot; i++) {
-                if (ICON_USED(i) && !strcmp(s_icons[i].id, id)) slot = &s_icons[i];
-            }
-            for (int i = 0; i < ICON_MAX && !slot; i++) {
-                if (!ICON_USED(i)) slot = &s_icons[i];
-            }
-            if (!slot) {                     // cheio: substitui de forma rotativa
-                slot = &s_icons[s_icon_next];
-                s_icon_next = (s_icon_next + 1) % ICON_MAX;
-            }
-            if (slot->data) {
-                lv_image_cache_drop(&slot->dsc);
-                free(slot->data);
-                slot->data = NULL;
-            }
-            if (slot->path[0]) lv_image_cache_drop(slot->path);
-            slot->path[0] = '\0';
+            icon_t *slot = icon_slot(id);
+            icon_clear(slot);
             strlcpy(slot->id, id, sizeof(slot->id));
-            if (s_sd_ok && icon_to_sd(slot, id, w, h, buf, size)) {   // no cartão: a RAM fica livre
+            bool on_sd = s_sd_ok && icon_to_sd(slot, id, w, h, buf, size);
+            if (on_sd && !icon_ram_ok(size)) {   // sem memória: fica só no cartão
                 free(buf);
                 ok = true;
                 goto ack;
             }
-            memset(&slot->dsc, 0, sizeof(slot->dsc));
-            slot->dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
-            slot->dsc.header.cf = LV_COLOR_FORMAT_RGB565A8;
-            slot->dsc.header.w = w;
-            slot->dsc.header.h = h;
-            slot->dsc.header.stride = w * 2;
-            slot->dsc.data_size = size;
-            slot->dsc.data = buf;
-            slot->data = buf;
+            icon_set_ram(slot, buf, w, h, size);
             ok = true;
         } else {
             free(buf);
@@ -667,13 +706,48 @@ static void build_menu_item(int i, const cJSON *it)
     make_badge(card, i, it);
 }
 
+// Mudanças só quando o valor é outro: refazer texto, cor ou imagem iguais invalida e refaz o layout,
+// e uma imagem do cartão voltava a ser aberta e lida no SD. Com atualizações a cada 2 s isto
+// bloqueava o LVGL até 270 ms a meio dos swipes.
+static void set_text(lv_obj_t *o, const char *t)
+{
+    const char *cur = lv_label_get_text(o);
+    if (!cur || strcmp(cur, t)) lv_label_set_text(o, t);
+}
+
+static void set_text_color(lv_obj_t *o, lv_color_t c)
+{
+    if (!lv_color_eq(lv_obj_get_style_text_color(o, 0), c)) lv_obj_set_style_text_color(o, c, 0);
+}
+
+static void set_bg_color(lv_obj_t *o, lv_color_t c)
+{
+    if (!lv_color_eq(lv_obj_get_style_bg_color(o, 0), c)) lv_obj_set_style_bg_color(o, c, 0);
+}
+
+static void set_hidden(lv_obj_t *o, bool hide)
+{
+    if (lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN) != hide) {
+        if (hide) lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_remove_flag(o, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void set_img(lv_obj_t *o, const void *src)
+{
+    const void *cur = lv_image_get_src(o);
+    if (cur == src) return;
+    if (cur && lv_image_src_get_type(src) == LV_IMAGE_SRC_FILE && lv_image_src_get_type(cur) == LV_IMAGE_SRC_FILE &&
+        !strcmp(cur, src)) return;
+    lv_image_set_src(o, src);
+}
+
 static void set_badge(int i, const cJSON *it)
 {
     const char *b = jstr(it, "badge", "");
     if (!s_badge[i]) return;
-    lv_label_set_text(lv_obj_get_child(s_badge[i], 0), b);
-    if (b[0]) lv_obj_remove_flag(s_badge[i], LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_add_flag(s_badge[i], LV_OBJ_FLAG_HIDDEN);
+    set_text(lv_obj_get_child(s_badge[i], 0), b);
+    set_hidden(s_badge[i], !b[0]);
 }
 
 static void make_badge(lv_obj_t *card, int i, const cJSON *it)
@@ -717,8 +791,8 @@ static lv_obj_t *icon_widget(lv_obj_t *parent, const cJSON *it, int i, const lv_
 // Box com "bg" (fundo) e "sub_color" (cor da linha de baixo), ex.: interruptores ligado/desligado.
 static void tile_style(lv_obj_t *card, lv_obj_t *sub, const cJSON *it)
 {
-    lv_obj_set_style_bg_color(card, parse_color(jstr(it, "bg", NULL), C_CARD), 0);
-    lv_obj_set_style_text_color(sub, parse_color(jstr(it, "sub_color", NULL), C_SUB), 0);
+    set_bg_color(card, parse_color(jstr(it, "bg", NULL), C_CARD));
+    set_text_color(sub, parse_color(jstr(it, "sub_color", NULL), C_SUB));
 }
 
 static void build_tile(int i, const cJSON *it)
@@ -774,17 +848,16 @@ static void update_menu_item(int i, const cJSON *it)
 {
     set_badge(i, it);
     if (s_grid) tile_style(lv_obj_get_parent(s_lbl_a[i]), s_lbl_b[i], it);
-    lv_label_set_text(s_lbl_a[i], jstr(it, "label", "?"));
+    set_text(s_lbl_a[i], jstr(it, "label", "?"));
     const char *sub = jstr(it, "sub", "");
-    lv_label_set_text(s_lbl_b[i], sub);
-    if (sub[0]) lv_obj_remove_flag(s_lbl_b[i], LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_add_flag(s_lbl_b[i], LV_OBJ_FLAG_HIDDEN);
+    set_text(s_lbl_b[i], sub);
+    set_hidden(s_lbl_b[i], !sub[0]);
     const void *img = icon_find(jstr(it, "img", NULL));
     if (s_is_img[i]) {
-        if (img) lv_image_set_src(s_lbl_c[i], img);
+        if (img) set_img(s_lbl_c[i], img);
     } else {
-        lv_label_set_text(s_lbl_c[i], icon_symbol(jstr(it, "icon", NULL)));
-        lv_obj_set_style_text_color(s_lbl_c[i], parse_color(jstr(it, "color", NULL), C_ACCENT), 0);
+        set_text(s_lbl_c[i], icon_symbol(jstr(it, "icon", NULL)));
+        set_text_color(s_lbl_c[i], parse_color(jstr(it, "color", NULL), C_ACCENT));
     }
 }
 
@@ -825,12 +898,12 @@ static void build_list_item(int i, const cJSON *it)
 
 static void update_list_item(int i, const cJSON *it)
 {
-    lv_label_set_text(s_lbl_a[i], jstr(it, "label", ""));
-    lv_obj_set_style_text_color(s_lbl_a[i], parse_color(jstr(it, "color", NULL), C_TEXT), 0);
-    lv_label_set_text(s_lbl_b[i], jstr(it, "sub", ""));
-    lv_label_set_text(s_lbl_c[i], jstr(it, "right", ""));
+    set_text(s_lbl_a[i], jstr(it, "label", ""));
+    set_text_color(s_lbl_a[i], parse_color(jstr(it, "color", NULL), C_TEXT));
+    set_text(s_lbl_b[i], jstr(it, "sub", ""));
+    set_text(s_lbl_c[i], jstr(it, "right", ""));
     lv_obj_t *row = lv_obj_get_parent(s_lbl_c[i]);
-    lv_obj_set_style_bg_color(row, parse_color(jstr(it, "bg", NULL), C_CARD), 0);
+    set_bg_color(row, parse_color(jstr(it, "bg", NULL), C_CARD));
 }
 
 static void build_kv_row(int i, const cJSON *r)
@@ -854,9 +927,9 @@ static void build_kv_row(int i, const cJSON *r)
 static void update_kv_row(int i, const cJSON *r)
 {
     const cJSON *k = cJSON_GetArrayItem(r, 0), *v = cJSON_GetArrayItem(r, 1), *c = cJSON_GetArrayItem(r, 2);
-    lv_label_set_text(s_lbl_a[i], cJSON_IsString(k) ? k->valuestring : "");
-    lv_label_set_text(s_lbl_b[i], cJSON_IsString(v) ? v->valuestring : "");
-    lv_obj_set_style_text_color(s_lbl_b[i], parse_color(cJSON_IsString(c) ? c->valuestring : NULL, C_TEXT), 0);
+    set_text(s_lbl_a[i], cJSON_IsString(k) ? k->valuestring : "");
+    set_text(s_lbl_b[i], cJSON_IsString(v) ? v->valuestring : "");
+    set_text_color(s_lbl_b[i], parse_color(cJSON_IsString(c) ? c->valuestring : NULL, C_TEXT));
 }
 
 static void log_set_lines(const cJSON *lines, bool append)
@@ -897,8 +970,24 @@ static void log_set_lines(const cJSON *lines, bool append)
     lv_obj_scroll_to_y(s_content, LV_COORD_MAX, LV_ANIM_OFF);
 }
 
+static uint32_t s_btn_sig;   // assinatura dos botões atuais (num update iguais não se refazem)
+
+static uint32_t fnv(uint32_t h, const char *t)
+{
+    for (; *t; t++) h = (h ^ (uint8_t)*t) * 16777619u;
+    return (h ^ 0xFF) * 16777619u;
+}
+
 static void build_buttons(const cJSON *btns)
 {
+    uint32_t sig = 2166136261u;
+    const cJSON *bb;
+    cJSON_ArrayForEach(bb, btns) {
+        sig = fnv(fnv(fnv(fnv(sig, jstr(bb, "id", "")), jstr(bb, "label", "")), jstr(bb, "color", "")),
+                  jstr(bb, "confirm", ""));
+    }
+    if (sig == s_btn_sig && lv_obj_get_child_count(s_btns) == (uint32_t)cJSON_GetArraySize(btns)) return;
+    s_btn_sig = sig;
     lv_obj_clean(s_btns);
     memset(s_btn_ids, 0, sizeof(s_btn_ids));
     memset(s_btn_confirm, 0, sizeof(s_btn_confirm));
@@ -1884,7 +1973,7 @@ static void apply_body(const cJSON *msg, bool rebuild)
             lv_obj_set_width(s_log_lbl, LV_PCT(100));
             lv_label_set_long_mode(s_log_lbl, LV_LABEL_LONG_WRAP);
         } else if (txt) {
-            lv_label_set_text(s_log_lbl, txt);
+            set_text(s_log_lbl, txt);
         }
     }
 
@@ -1914,11 +2003,13 @@ static void build_dock(const cJSON *items)
 {
     lv_obj_clean(s_dock);
     memset(s_dock_ids, 0, sizeof(s_dock_ids));
+    memset(s_dock_imgs, 0, sizeof(s_dock_imgs));
     int n = 0;
     const cJSON *it;
     cJSON_ArrayForEach(it, items) {
         if (n >= DOCK_MAX) break;
         strlcpy(s_dock_ids[n], jstr(it, "id", ""), ID_LEN);
+        strlcpy(s_dock_imgs[n], jstr(it, "img", ""), sizeof(s_dock_imgs[n]));
         lv_obj_t *b = plain_box(s_dock);
         lv_obj_set_size(b, LV_SIZE_CONTENT, DOCK_H - 4);
         lv_obj_set_flex_grow(b, 1);
@@ -2427,8 +2518,151 @@ void ui_init(lv_display_t *disp)
     lv_timer_create(housekeeping_cb, 500, NULL);
     lv_timer_create(button_poll_cb, 40, NULL);
 
+    ts_hook();
     lvgl_port_unlock();
     send_hello();
+}
+
+// ---------- medição do desenho ({"t":"bench"}) ----------
+// Rola a tela atual para os lados (ida e volta, 2 s) e mede cada atualização do ecrã: quantas houve,
+// a média e o pior tempo (desenho + envio ao display). Responde {"t":"bench","frames",..}.
+static int64_t s_bn_t0, s_bn_start, s_bn_sum, s_bn_max;
+static int s_bn_frames;
+static bool s_bn_on;
+
+// Estatísticas com o dedo no ecrã ({"t":"stats"} devolve e zera): leituras do toque por segundo e
+// tempo de cada atualização do ecrã enquanto há toque. Servem para ver se a lentidão vem do toque.
+static lv_indev_read_cb_t s_ts_orig;
+static int64_t s_ts_down, s_ts_time, s_ts_last, s_ts_gap_max;
+static int s_ts_reads, s_ts_presses, s_ts_frames;
+static int64_t s_ts_fsum, s_ts_fmax, s_ts_f0;
+static bool s_ts_pressed;
+static int64_t s_lock_max;      // maior tempo de uma mensagem com o LVGL bloqueado
+static char s_lock_type[12];
+
+static void ts_read(lv_indev_t *indev, lv_indev_data_t *data)
+{
+    s_ts_orig(indev, data);
+    int64_t now = esp_timer_get_time();
+    bool p = data->state == LV_INDEV_STATE_PRESSED;
+    if (p && !s_ts_pressed) {
+        s_ts_down = now;
+        s_ts_presses++;
+    } else if (p) {
+        if (now - s_ts_last > s_ts_gap_max) s_ts_gap_max = now - s_ts_last;
+    } else if (s_ts_pressed) {
+        s_ts_time += now - s_ts_down;
+    }
+    if (p) {
+        s_ts_reads++;
+        s_ts_last = now;
+    }
+    s_ts_pressed = p;
+}
+
+static void ts_frame(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_REFR_START) {
+        s_ts_f0 = s_ts_pressed ? esp_timer_get_time() : 0;
+    } else if (s_ts_f0) {
+        int64_t d = esp_timer_get_time() - s_ts_f0;
+        s_ts_f0 = 0;
+        s_ts_frames++;
+        s_ts_fsum += d;
+        if (d > s_ts_fmax) s_ts_fmax = d;
+    }
+}
+
+static void ts_hook(void)
+{
+    lv_indev_t *in = lv_indev_get_next(NULL);
+    if (!in || s_ts_orig) return;
+    s_ts_orig = lv_indev_get_read_cb(in);
+    lv_indev_set_read_cb(in, ts_read);
+    lv_display_add_event_cb(lv_display_get_default(), ts_frame, LV_EVENT_REFR_START, NULL);
+    lv_display_add_event_cb(lv_display_get_default(), ts_frame, LV_EVENT_REFR_READY, NULL);
+}
+
+static void ts_report(void)
+{
+    double secs = s_ts_time / 1e6;
+    char buf[200];
+    snprintf(buf, sizeof(buf), "{\"t\":\"stats\",\"presses\":%d,\"press_s\":%.2f,\"reads_per_s\":%.1f,"
+             "\"gap_max_ms\":%.1f,\"frames\":%d,\"frame_avg_ms\":%.1f,\"frame_max_ms\":%.1f,"
+             "\"lock_max_ms\":%.1f,\"lock_type\":\"%s\"}",
+             s_ts_presses, secs, secs > 0 ? s_ts_reads / secs : 0.0, s_ts_gap_max / 1000.0, s_ts_frames,
+             s_ts_frames ? s_ts_fsum / 1000.0 / s_ts_frames : 0.0, s_ts_fmax / 1000.0, s_lock_max / 1000.0,
+             s_lock_type);
+    s_lock_max = 0;
+    s_ts_reads = s_ts_presses = s_ts_frames = 0;
+    s_ts_time = s_ts_gap_max = s_ts_fsum = s_ts_fmax = 0;
+    cJSON *o = cJSON_Parse(buf);
+    if (o) {
+        link_send(o);
+        cJSON_Delete(o);
+    }
+}
+
+static void bench_ev(lv_event_t *e)
+{
+    if (!s_bn_on) return;
+    if (lv_event_get_code(e) == LV_EVENT_REFR_START) {
+        s_bn_t0 = esp_timer_get_time();
+    } else if (s_bn_t0) {
+        int64_t d = esp_timer_get_time() - s_bn_t0;
+        s_bn_t0 = 0;
+        s_bn_sum += d;
+        if (d > s_bn_max) s_bn_max = d;
+        s_bn_frames++;
+    }
+}
+
+static void bench_scroll(void *obj, int32_t v)
+{
+    lv_obj_scroll_to_x(obj, v, LV_ANIM_OFF);
+}
+
+static void bench_done(lv_timer_t *t)
+{
+    s_bn_on = false;
+    int64_t total = esp_timer_get_time() - s_bn_start;
+    char buf[160];
+    snprintf(buf, sizeof(buf), "{\"t\":\"bench\",\"frames\":%d,\"avg_ms\":%.1f,\"max_ms\":%.1f,\"fps\":%.1f,\"heap\":%u}",
+             s_bn_frames, s_bn_frames ? s_bn_sum / 1000.0 / s_bn_frames : 0.0, s_bn_max / 1000.0,
+             s_bn_frames * 1e6 / (double)total, (unsigned)esp_get_free_heap_size());
+    cJSON *o = cJSON_Parse(buf);
+    if (o) {
+        link_send(o);
+        cJSON_Delete(o);
+    }
+    lv_timer_delete(t);
+}
+
+static void bench_start(void)
+{
+    static bool hooked;
+    lv_display_t *d = lv_display_get_default();
+    if (!hooked) {
+        lv_display_add_event_cb(d, bench_ev, LV_EVENT_REFR_START, NULL);
+        lv_display_add_event_cb(d, bench_ev, LV_EVENT_REFR_READY, NULL);
+        hooked = true;
+    }
+    lv_obj_update_layout(s_content);
+    int32_t w = lv_obj_get_scroll_right(s_content) + lv_obj_get_scroll_x(s_content);
+    if (w > 330) w = 330;
+    s_bn_frames = 0;
+    s_bn_sum = s_bn_max = s_bn_t0 = 0;
+    s_bn_start = esp_timer_get_time();
+    s_bn_on = true;
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, s_content);
+    lv_anim_set_exec_cb(&a, bench_scroll);
+    lv_anim_set_values(&a, 0, w > 0 ? w : 0);
+    lv_anim_set_duration(&a, 1000);
+    lv_anim_set_playback_duration(&a, 1000);
+    lv_anim_start(&a);
+    lv_timer_create(bench_done, 2100, NULL);
 }
 
 void ui_handle(const cJSON *msg)
@@ -2438,6 +2672,29 @@ void ui_handle(const cJSON *msg)
     // Mensagens que não mexem no LVGL
     if (!strcmp(t, "ping")) {
         link_send_event("pong", NULL, NULL, NULL, NULL);
+        return;
+    }
+    if (!strcmp(t, "icon") && jbool(msg, "probe", false)) {
+        const char *id = jstr(msg, "id", "");
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddStringToObject(o, "t", "iconack");
+        cJSON_AddStringToObject(o, "id", id);
+        cJSON_AddBoolToObject(o, "ok", icon_probe(id));
+        link_send(o);
+        cJSON_Delete(o);
+        return;
+    }
+    if (!strcmp(t, "stats")) {
+        lvgl_port_lock(0);
+        ts_hook();
+        ts_report();
+        lvgl_port_unlock();
+        return;
+    }
+    if (!strcmp(t, "bench")) {
+        lvgl_port_lock(0);
+        bench_start();
+        lvgl_port_unlock();
         return;
     }
     if (!strcmp(t, "hello?")) {
@@ -2483,6 +2740,7 @@ void ui_handle(const cJSON *msg)
         ESP_LOGW(TAG, "lock LVGL timeout (%s)", t);
         return;
     }
+    int64_t lock_t0 = esp_timer_get_time();
     if (!strcmp(t, "screen")) {
         render_screen(msg);
     } else if (!strcmp(t, "update")) {
@@ -2490,7 +2748,7 @@ void ui_handle(const cJSON *msg)
             set_pager(msg);
             apply_body(msg, false);
             const char *title = jstr(msg, "title", NULL);
-            if (title) lv_label_set_text(s_title, title);
+            if (title) set_text(s_title, title);
         }
     } else if (!strcmp(t, "notify")) {
         ntf_show(msg);
@@ -2505,7 +2763,7 @@ void ui_handle(const cJSON *msg)
             s_has_time = true;
         }
     } else if (!strcmp(t, "status")) {
-        lv_label_set_text(s_status, jstr(msg, "text", ""));
+        set_text(s_status, jstr(msg, "text", ""));
     } else if (!strcmp(t, "dock")) {
         build_dock(cJSON_GetObjectItemCaseSensitive(msg, "items"));
         layout_content(s_has_screen ? s_dock_want : true);
@@ -2517,6 +2775,11 @@ void ui_handle(const cJSON *msg)
         show_toast(jstr(msg, "text", ""), jstr(msg, "level", "info"));
     } else {
         ESP_LOGW(TAG, "tipo desconhecido: %s", t);
+    }
+    int64_t held = esp_timer_get_time() - lock_t0;
+    if (held > s_lock_max) {
+        s_lock_max = held;
+        strlcpy(s_lock_type, t, sizeof(s_lock_type));
     }
     lvgl_port_unlock();
 }

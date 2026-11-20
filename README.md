@@ -42,11 +42,11 @@ systemctl --user status dashd -n 30 --no-pager   # últimas linhas do log
 
 ## Na tela
 
-- **Menu inicial em boxes com scroll lateral**: AIO v2, Meshtastic, GPS, ADS-B, AIS, SDR, Aplicações, Serviços e Sistema.
+- **Menu inicial em boxes com scroll lateral**: AIO v2, Meshtastic, GPS, ADS-B, AIS, SDR, Rede, Aplicações, Serviços e Sistema.
 - **Barra de cima**: botão ←, título, pontos de página, hora, bateria do uConsole e ícone da ligação USB (verde ou vermelho).
-- **Dock** (na tela inicial e em Aplicações): Início, Relógio, Captura, Brilho e Bloquear.
+- **Dock** (na tela inicial e em Aplicações): Início, Relógio, Captura, Brilho, Som e Bloquear.
 - **Ecrã apagado** após 3 min sem toques na tela inicial; um toque liga-o.
-- **Swipe para os lados** nas telas com várias páginas (GPS, ADS-B, AIS, Meshtastic).
+- **Swipe para os lados** nas telas com várias páginas (GPS, ADS-B, AIS, Meshtastic, Rede).
 - **Para voltar**: o botão ← no topo, o **botão BOOT** da placa ou o Início no dock.
 
 Os detalhes de cada tela estão em [docs/uso.md](docs/uso.md).
@@ -60,8 +60,10 @@ Os detalhes de cada tela estão em [docs/uso.md](docs/uso.md).
 | GPS | GPS ao vivo pelo MeshDeckWeb (com o gpsmux, partilhado com o meshtasticd), posição pelo Meshtastic, ou NMEA direto do `/dev/ttyAMA0`. Página com o céu dos satélites | ok |
 | ADS-B | Liga e desliga o readsb. Lista de aeronaves, detalhe e mapa com trajetos, zoom e setas sobre o mapa, e seguir uma aeronave | ok |
 | AIS | Liga e desliga o AIS-catcher. Lista de navios, detalhe e o mesmo mapa com trajetos e seguir um navio | ok |
-| AIO v2 | Interruptores GPS, LoRa, SDR e USB da placa AIO v2 (pelo `aiov2_ctl`), com informação ao vivo de cada um, a energia da bateria e a medição do consumo por recurso | ok |
+| AIO v2 | Interruptores GPS, LoRa, SDR e USB da placa AIO v2 (pelo `aiov2_ctl`), com informação ao vivo de cada um, perfis de uso num toque (Meshtastic, ADS-B, AIS, Poupança), a energia da bateria e a medição do consumo por recurso | ok |
 | SDR | Monitor do RTL-SDR: alimentação, dongle, quem o usa, frequência, histórico e "Libertar SDR" | ok |
+| Rede | Wi-Fi (estado, sinal, Internet, IP), redes ao alcance (as guardadas ligam-se com um toque) e VPN (NetworkManager e Tailscale) | ok |
+| Som | Volume e brilho do ecrã do uConsole, pelo dock | ok |
 | Serviços | Ligar, parar e reiniciar unidades systemd, com o grupo exclusivo `sdr` (um só uso do RTL-SDR) | ok |
 | Sistema | CPU, temperatura, RAM, disco, bateria e IPs | ok |
 | Relógio | Ecrã inteiro em pixel art: paisagem que segue o sol e o tempo, ou digital retro; previsão do dia (Open-Meteo); swipe troca o mostrador e muda o brilho | ok |

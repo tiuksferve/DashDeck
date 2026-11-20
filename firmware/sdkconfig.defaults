@@ -28,5 +28,9 @@ CONFIG_LV_FS_STDIO_PATH="/sd/"
 # O LVGL usa o heap do sistema (sem a reserva fixa de 64 KB) e guarda até 48 KB de imagens decodificadas
 # (os ícones lidos do cartão SD não voltam a ser lidos a cada redesenho)
 CONFIG_LV_USE_CLIB_MALLOC=y
-CONFIG_LV_CACHE_DEF_SIZE=49152
+CONFIG_LV_CACHE_DEF_SIZE=32768
 CONFIG_LV_IMAGE_HEADER_CACHE_DEF_CNT=48
+
+# -O2: o desenho do LVGL em software fica bem mais rápido do que com -Og
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+CONFIG_LV_USE_CLIB_STRING=y

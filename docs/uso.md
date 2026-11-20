@@ -22,6 +22,7 @@ parado, a barra mostra "offline".
 - **Relógio:** abre o modo relógio (ver [Relógio](#relógio)). O Terminal continua em Aplicações.
 - **Captura:** grava uma captura da tela do uConsole em `~/Pictures/captura-AAAAMMDD-HHMMSS.png`.
 - **Brilho:** alterna o brilho da tela do ESP entre 25, 50, 75 e 100%.
+- **Som:** volume e brilho do ecrã do uConsole (ver [Som](#som)).
 - **Bloquear:** bloqueia o uConsole com o `swaylock`, o mesmo do atalho Ctrl+Alt+L.
 
 **Ecrã apagado:** depois de 3 min sem toques na tela inicial, o ecrã apaga-se. Um toque em qualquer sítio (ou o BOOT) volta a ligá-lo; esse toque não abre nada. Nas outras telas e no relógio, o ecrã nunca se apaga.
@@ -154,6 +155,7 @@ Os interruptores da placa AIO v2, como na aplicação **AIO v2 Controller**: um 
 - Enquanto muda, o box mostra "a mudar..."; o resultado aparece num aviso.
 - O estado é lido a cada 5 s, por isso também mostra o que for mudado na aplicação do uConsole.
 - No menu, o box AIO v2 mostra os recursos ligados.
+- **Perfis** (box antes da Energia): um toque põe vários recursos e serviços como ficam no perfil. Os de origem são **Meshtastic** (GPS e LoRa ligados, SDR desligado, ADS-B e AIS parados), **ADS-B** (GPS e SDR ligados, readsb ligado), **AIS** (GPS e SDR ligados, AIS-catcher ligado) e **Poupança** (tudo desligado). O perfil que corresponde ao estado atual aparece a verde como "Ativo"; os outros dizem quantas mudanças fazem e pedem confirmação com a lista ("ADS-B: liga SDR; liga readsb?"). O USB não entra nos perfis de origem. O box Perfis mostra o perfil ativo, ou "personalizado". Os perfis mudam-se no `config.toml` ([configuracao.md](configuracao.md#aio)).
 
 ### SDR
 Monitor do RTL-SDR, para saber se está livre para outros programas.
@@ -163,6 +165,22 @@ Monitor do RTL-SDR, para saber se está livre para outros programas.
 - **Histórico:** as últimas vezes que um programa abriu ou libertou o SDR.
 - **Libertar SDR** (com confirmação): pára o serviço que o tem aberto (por exemplo o ais-catcher, que senão se reiniciava sozinho) ou fecha o programa.
 - No menu principal, o box SDR mostra "livre" ou quem o está a usar.
+
+### Rede
+Rede do uConsole pelo NetworkManager, em três páginas (swipe):
+
+- **Wi-Fi:** rede ligada, sinal e canal, se há Internet, IP, gateway e a VPN ligada. Botões **Procurar** (atualiza a lista de redes) e **Desligar Wi-Fi** (com confirmação; o uConsole fica sem rede) ou **Ligar Wi-Fi**.
+- **Redes:** a rede ligada (a verde), depois as guardadas e as outras, por sinal. As guardadas fora de alcance também aparecem (por exemplo o hotspot do telemóvel). Tocar numa guardada ou numa aberta liga-se a ela; na ligada, desliga. Uma rede nova com palavra-passe tem de ser ligada uma vez no uConsole (o DashDeck não tem teclado); depois fica guardada.
+- **VPN:** as ligações VPN e WireGuard do NetworkManager e o Tailscale (se estiver instalado). Um toque liga ou desliga, com confirmação.
+- No menu, o box Rede mostra a rede e o sinal, e "· VPN" com uma VPN ligada.
+
+### Som
+Aberto pelo **Som** no dock: volume do uConsole (PipeWire) e brilho do ecrã do uConsole.
+
+- Duas páginas (swipe), com três botões cada, para caberem no ecrã:
+  - **Som:** **-** e **+** mudam o volume 5%; **Mudo** corta o som (o botão passa a **Som**). O **+** também tira o mudo.
+  - **Ecrã:** **-** e **+** mudam um nível do brilho do ecrã do uConsole (0 a 9); **Máx** põe no máximo.
+- O **Brilho** do dock continua a ser o do ecrã do DashDeck.
 
 ### Serviços
 - Cada serviço mostra o estado (ativo, parado, falhou), desde quando, o PID, a memória e o grupo, com os botões **Ligar**, **Parar** (com confirmação) e **Reiniciar**.

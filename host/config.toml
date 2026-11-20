@@ -36,6 +36,38 @@ provider = "aio"
 # Interruptores da placa AIO v2 (GPS, LoRa, SDR, USB) pelo aiov2_ctl. Tocar liga; desligar pede
 # confirmação. Desligar o LoRa pára o meshtasticd (como na aplicação).
 # cmd = "/usr/local/bin/aiov2_ctl"
+# Perfis (box "Perfis"): um toque põe os recursos (on/off: GPS LORA SDR USB) e os serviços
+# (start/stop: unidades systemd) como no perfil; pede confirmação com o que vai mudar.
+# O perfil que já corresponde ao estado atual aparece como "Ativo". Sem perfis aqui, usa estes mesmos.
+
+  [[menu.profiles]]
+  id = "mesh"
+  label = "Meshtastic"
+  img = "emoji:📶"
+  on = ["GPS", "LORA"]
+  off = ["SDR"]
+  stop = ["readsb", "ais-catcher"]
+
+  [[menu.profiles]]
+  id = "adsb"
+  label = "ADS-B"
+  img = "emoji:✈"
+  on = ["GPS", "SDR"]
+  start = ["readsb"]          # do grupo "sdr": pára o ais-catcher
+
+  [[menu.profiles]]
+  id = "ais"
+  label = "AIS"
+  img = "emoji:🚢"
+  on = ["GPS", "SDR"]
+  start = ["ais-catcher"]
+
+  [[menu.profiles]]
+  id = "eco"
+  label = "Poupança"
+  img = "emoji:🔋"
+  off = ["GPS", "LORA", "SDR", "USB"]
+  stop = ["readsb", "ais-catcher"]
 
 [[menu]]
 id = "mesh"
@@ -101,6 +133,17 @@ type = "provider"
 provider = "sdr"
 # Monitor do RTL-SDR: alimentação na AIO, dongle, quem o usa, frequência, há quanto tempo e o histórico.
 # "Libertar SDR" pára o serviço (ou fecha o programa) que o tem aberto.
+
+[[menu]]
+id = "net"
+label = "Rede"
+icon = "wifi"
+color = "#58A6FF"
+type = "provider"
+provider = "net"
+# Pelo NetworkManager. Páginas (swipe): Wi-Fi (estado, Procurar, ligar/desligar o Wi-Fi) ·
+# Redes (as guardadas e as abertas ligam-se com um toque; uma rede nova com palavra-passe liga-se
+# uma vez no uConsole) · VPN (ligações VPN/WireGuard do NetworkManager e o Tailscale, se existir).
 
 [[menu]]
 id = "apps"
@@ -229,6 +272,18 @@ label = "Brilho"
 icon = "charge"
 type = "backlight"
 levels = [25, 50, 75, 100]
+
+[[dock]]
+id = "console"
+label = "Som"
+icon = "audio"
+img = "emoji:🔊"
+type = "provider"
+provider = "console"
+# Volume (PipeWire) e brilho do ecrã do uConsole. O "Brilho" ao lado é o do DashDeck.
+volume_step = 5           # % por toque
+volume_max = 100          # limite do Vol +
+# backlight = "/sys/class/backlight/backlight@0"   # por omissão, o primeiro que existir
 
 [[dock]]
 id = "lock"

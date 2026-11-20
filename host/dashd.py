@@ -429,6 +429,17 @@ class App:
         v["sub"] = sub
         return v
 
+    def _item_imgs(self, scr: dict) -> None:
+        """Imagens dos itens de um provider ("emoji:…", ícone do tema, .png) -> ids de ícone."""
+        for v in scr.get("items", []):
+            src = v.get("img")
+            if src and src not in self._icon_src:   # ainda não é um id de ícone
+                if icons.rgb565a8(src):
+                    v["img"] = icons.icon_id(src)
+                    self._icon_src[v["img"]] = src
+                else:
+                    v.pop("img")
+
     def build(self, node: dict) -> dict:
         t = node.get("type")
         scr = {"id": node["id"], "title": node.get("label", node["id"]), "back": len(self.stack) > 1}
@@ -464,20 +475,14 @@ class App:
             n = max(1, prov.pages())
             pg = min(self.page.get(node["id"], 0), n - 1)
             scr.update(prov.render(pg))
-            for v in scr.get("items", []):   # imagens dos itens do provider ("emoji:…", ícone do tema)
-                src = v.get("img")
-                if src and src not in self._icon_src:   # ainda não é um id de ícone
-                    if icons.rgb565a8(src):
-                        v["img"] = icons.icon_id(src)
-                        self._icon_src[v["img"]] = src
-                    else:
-                        v.pop("img")
+            self._item_imgs(scr)
             if n > 1:
                 scr.update(pages=n, page=pg)
         elif t == "detail":
             prov = self.providers.get(node.get("owner"))
             if node.get("dynamic") and prov and hasattr(prov, "render_detail"):
                 scr.update(prov.render_detail(node["dynamic"]))   # refeito a cada atualização
+                self._item_imgs(scr)
             else:
                 scr.update({k: v for k, v in node.items() if k in ("tpl", "rows", "items", "lines", "text", "buttons")})
         elif t == "text":
@@ -743,6 +748,10 @@ class App:
                 self.bg_hold = time.monotonic() + 6
             elif t == "notify" and data.get("act") == "open":
                 self.open_notified()
+            elif t in ("stats", "bench"):   # medições de desempenho (kill -USR1 <pid do dashd>)
+                log.info("ESP %s: %s", t, {k: v for k, v in data.items() if k != "t"})
+            elif t == "iconlost":   # o ESP precisou do lugar deste ícone: reenvia quando for preciso
+                self.icons_sent.discard(data.get("id"))
             elif t == "iconsfreed":   # o relógio precisou da memória dos ícones
                 self.icons_sent.clear()
                 EMOJI.clear()
@@ -755,6 +764,9 @@ class App:
                     self.show(full=False)
 
     def run(self) -> None:
+        import signal   # kill -USR1: pede ao ESP as estatísticas do toque e do desenho (aparecem no log)
+        if threading.current_thread() is threading.main_thread():
+            signal.signal(signal.SIGUSR1, lambda *_: self.link.send({"t": "stats"}))
         last_ping = last_refresh = 0.0
         while True:
             try:

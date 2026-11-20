@@ -52,7 +52,7 @@ está na placa) seria o próximo passo se um dia a tela ficar solta.
 
 **Memória:** o LVGL usa o heap do sistema (sem a reserva fixa de 64 KB), o que deixa cerca de 150 KB livres depois do buffer de ecrã. Organização:
 - **Buffer de ecrã reservado (110 KB):** reservado no arranque e reutilizado pela animação de arranque, pelo canvas do relógio e pelo dos mapas. Antes era pedido e devolvido a cada tela, o que fragmentava a memória até não haver um bloco contínuo para o relógio.
-- **Ícones no cartão SD:** com cartão, cada ícone é gravado em `/sd/dash/xxxxxxxx.bin` (cabeçalho de imagem do LVGL + RGB565A8) e o LVGL lê-o de `S:dash/...` (sistema de ficheiros stdio). Ficam no cartão entre arranques: o dashd pergunta primeiro (`icon` com `probe`) e só envia os que faltam. O LVGL guarda até 48 KB de imagens decodificadas (cache), para os swipes não lerem o cartão a cada quadro; o `make_room` esvazia essa cache quando é preciso espaço. Sem cartão, ficam na RAM (até 48 de 3 KB).
+- **Ícones no cartão SD:** com cartão, cada ícone é gravado em `/sd/dash/xxxxxxxx.bin` (cabeçalho de imagem do LVGL + RGB565A8) e o LVGL lê-o de `S:dash/...` (sistema de ficheiros stdio). Ficam no cartão entre arranques: o dashd pergunta primeiro (`icon` com `probe`) e só envia os que faltam. Enquanto sobrarem mais de 80 KB de heap, cada ícone fica também com uma cópia na RAM (os primeiros a chegar: dock, menu inicial), desenhada sem ler o cartão, que partilha o barramento SPI com o display. Os restantes desenham-se do cartão através da cache de imagens do LVGL (32 KB). O `make_room` esvazia a cache e depois as cópias na RAM quando o relógio precisa de espaço; o dashd volta a perguntar (`iconsfreed`) e as cópias regressam. Há 96 lugares; quando enchem, o ESP substitui por rotação um que não seja do dock e avisa com `{"t":"iconlost","id":..}`. Sem cartão, ficam só na RAM.
 - **Fundos:** o do relógio (8 bpp, 55 KB) e o dos mapas (4 bpp, ~20 KB) ficam na RAM. Se não houver RAM, vão para `/sd/dash/bg.bin` e são lidos do cartão a cada quadro (lento: 120+ ms; só como reserva).
 - **Emojis:** na RAM (até 48 de 630 B), porque o LVGL procura-os a cada letra desenhada.
 - **Aviso de mensagem:** canvas de 160×96 RGB565A8 (46 KB). Com o relógio aberto, usa emprestada a memória do fundo do relógio (o relógio fica parado por baixo) e o ESP avisa o host com `bgfreed` para o reenviar depois.
@@ -135,6 +135,9 @@ está na placa) seria o próximo passo se um dia a tela ficar solta.
 | `dock` | `item` | Botão do dock |
 | `clock` | `face` ou `bl` (texto) | Gesto no relógio, já aplicado pelo ESP; o host guarda a escolha |
 | `iconsfreed` | — | O relógio libertou os ícones e o dock; o host volta a enviá-los |
+| `stats` | toque, quadros, `lock_max_ms`, `lock_type` | Resposta a `{"t":"stats"}` (o dashd pede-a com SIGUSR1 e escreve-a no log) |
+| `bench` | `frames`, `avg_ms`, `max_ms`, `fps` | Resposta a `{"t":"bench"}`: rola a tela atual 2 s e mede cada quadro |
+| `iconlost` | `id` | O ESP precisou do lugar deste ícone (96 ocupados); o host volta a enviá-lo quando for preciso |
 | `pong`, `iconack`, `bgack` | — | Respostas |
 | linhas `# ...` | — | Logs do ESP-IDF (o dashd mostra-os com `-v`) |
 

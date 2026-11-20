@@ -1936,9 +1936,102 @@ class AioProvider(Provider):
         ("USB", "USB", "emoji:🔌", "as portas USB da placa ficam sem energia"),
     ]
     ON_BG, OFF_BG = "#163A24", "#18202A"
+    # Perfis de uso: um toque põe os recursos e os serviços como ficam no perfil. O USB não entra nos
+    # perfis por omissão (com ele ligado, a ligação ao DashDeck perde dados). Substituídos por
+    # [[menu.profiles]] no config.toml.
+    DEFAULT_PROFILES = [
+        {"id": "mesh", "label": "Meshtastic", "img": "emoji:📶", "on": ["GPS", "LORA"], "off": ["SDR"],
+         "stop": ["readsb", "ais-catcher"]},
+        {"id": "adsb", "label": "ADS-B", "img": "emoji:✈", "on": ["GPS", "SDR"], "start": ["readsb"]},
+        {"id": "ais", "label": "AIS", "img": "emoji:🚢", "on": ["GPS", "SDR"], "start": ["ais-catcher"]},
+        {"id": "eco", "label": "Poupança", "img": "emoji:🔋", "off": ["GPS", "LORA", "SDR", "USB"],
+         "stop": ["readsb", "ais-catcher"]},
+    ]
     POWER_FILE = Path.home() / ".config" / "dashd" / "aio_power.json"
     BAT = Path("/sys/class/power_supply/axp20x-battery")
     AC = Path("/sys/class/power_supply/axp22x-ac/online")
+
+    # ---- perfis
+    def _profile(self, pid: str) -> dict | None:
+        return next((p for p in self.profiles if p["id"] == pid), None)
+
+    def _changes(self, prof: dict) -> dict[str, list[str]]:
+        """O que aplicar o perfil muda agora (recursos a ligar/desligar, serviços a ligar/parar)."""
+        lbl = {f[0]: f[1] for f in self.FEATURES}
+        ch = {"on": [lbl.get(f, f) for f in prof.get("on", []) if not self.state.get(f)],
+              "off": [lbl.get(f, f) for f in prof.get("off", []) if self.state.get(f)],
+              "start": [u for u in prof.get("start", []) if not self._units.get(u)],
+              "stop": [u for u in prof.get("stop", []) if self._units.get(u)]}
+        return {k: v for k, v in ch.items() if v}
+
+    def active_profile(self) -> dict | None:
+        if not self.state:
+            return None
+        return next((p for p in self.profiles if not self._changes(p)), None)
+
+    def _apply(self, prof: dict) -> None:
+        """Numa thread: pára serviços, desliga, liga e por fim liga os serviços (o SDR precisa de energia
+        antes do readsb). O LoRa pelo aiov2_ctl já liga/pára o meshtasticd."""
+        groups = {u: g for g, us in self.app.service_groups().items() for u in us}
+        ok = True
+        try:
+            for u in prof.get("stop", []):
+                if unit_active(u):
+                    self.app.service_action("stop", u)
+            powered = False
+            for want, feats in ((False, prof.get("off", [])), (True, prof.get("on", []))):
+                for f in feats:
+                    if self.state.get(f) == want:
+                        continue
+                    try:
+                        r = self._run(f, "on" if want else "off", timeout=40)
+                        ok &= r.returncode == 0
+                    except (OSError, subprocess.TimeoutExpired) as e:
+                        ok = False
+                        log.warning("perfil %s: %s %s: %s", prof["id"], f, want, e)
+                    powered |= want and f in ("SDR", "USB")
+                    self._read()
+                    self.app.events.put(("refresh", None))
+            if powered and prof.get("start"):
+                time.sleep(3)   # o dongle tem de aparecer no USB antes do serviço o abrir
+            for u in prof.get("start", []):
+                if not unit_active(u):
+                    self.app.service_action("start", u, groups.get(u))
+        finally:
+            self.applying = None
+            self._read()
+            self._read_units()
+        self.app.events.put(("toast", (f"Perfil {prof['label']} aplicado" if ok
+                                       else f"Perfil {prof['label']}: houve falhas", "ok" if ok else "err")))
+        self.app.events.put(("refresh", None))
+
+    def _read_units(self) -> None:
+        units = {u for p in self.profiles for k in ("start", "stop") for u in p.get(k, [])}
+        self._units = {u: unit_active(u) for u in units}
+
+    def _profiles_screen(self) -> dict:
+        act = self.active_profile()
+        items = []
+        for p in self.profiles:
+            ch = self._changes(p)
+            parts = []
+            for k, word in (("on", "liga"), ("off", "desliga"), ("start", "liga"), ("stop", "pára")):
+                if ch.get(k):
+                    parts.append(f"{word} {', '.join(ch[k])}")
+            it = {"id": f"p:{p['id']}", "label": p["label"], "img": p.get("img", "emoji:🎛"), "icon": "power",
+                  "bg": self.ON_BG if p is act else self.OFF_BG}
+            if self.applying == p["id"]:
+                it.update(sub="a aplicar...", sub_color="#D29922")
+            elif p is act:
+                it.update(sub="Ativo", sub_color="#3FB950")
+            else:
+                n = sum(len(v) for v in ch.values())
+                ask = f"{p['label']}: " + "; ".join(parts) + "?"
+                if len(ask.encode()) > 78:   # o ESP guarda até 80 bytes por confirmação
+                    ask = f"Aplicar o perfil {p['label']}? ({n} mudanças)"
+                it.update(sub=f"{n} mudança{'s' if n != 1 else ''}", sub_color="#8B98A5", confirm=ask)
+            items.append(it)
+        return {"tpl": "menu", "layout": "grid", "items": items}
 
     # ---- energia
     def battery(self) -> dict:
@@ -2003,6 +2096,11 @@ class AioProvider(Provider):
         return ""
 
     def render_detail(self, kind: str) -> dict:
+        if kind == "profiles":
+            return self._profiles_screen()
+        return self._power_screen()
+
+    def _power_screen(self) -> dict:
         """Energia: bateria agora e o consumo de cada recurso (medido), com os botões Medir."""
         b = self.battery()
         st = {"Discharging": "a descarregar", "Charging": "a carregar", "Full": "cheia",
@@ -2044,6 +2142,10 @@ class AioProvider(Provider):
         self.error = ""
         self.measured: dict[str, dict] = {}   # recurso -> {"w": Δ W, "t": hora} (medições guardadas)
         self.measuring: str | None = None
+        self.profiles = [dict(p, id=str(p.get("id") or p.get("label", i))) for i, p in
+                         enumerate(node.get("profiles") or self.DEFAULT_PROFILES)]
+        self.applying: str | None = None
+        self._units: dict[str, bool] = {}
         try:
             self.measured = json.loads(self.POWER_FILE.read_text())
         except (OSError, ValueError):
@@ -2074,6 +2176,7 @@ class AioProvider(Provider):
     def _poll(self) -> None:
         while True:
             self._read()
+            self._read_units()
             self.app.events.put(("refresh", None))
             self._wake.wait(5)
             self._wake.clear()
@@ -2120,6 +2223,11 @@ class AioProvider(Provider):
                 if feat == "USB":   # com o USB da AIO ligado, a ligação ao ESP perde dados (testado)
                     it["confirm"] = "Ligar o USB da AIO? A ligação ao DashDeck pode falhar com ele ligado."
             items.append(it)
+        act = self.active_profile()
+        items.append({"id": "profiles", "label": "Perfis\n" + (act["label"] if act else "personalizado"),
+                      "img": "emoji:🎛", "icon": "list", "bg": self.OFF_BG,
+                      "sub": "a aplicar..." if self.applying else f"{len(self.profiles)} perfis",
+                      "sub_color": "#D29922" if self.applying else "#8B98A5"})
         b = self.battery()
         pw = f"{b['w']:.1f} W".replace(".", ",") if b["w"] is not None else "?"
         items.append({"id": "power", "label": f"Energia\n{b['pct']}% · {pw}", "img": "emoji:🔋", "icon": "charge",
@@ -2135,6 +2243,18 @@ class AioProvider(Provider):
         if item_id == "power":
             return {"id": "aio_power", "label": "Energia", "dynamic": "power", "owner": self.node["id"],
                     **self.render_detail("power")}
+        if item_id == "profiles":
+            return {"id": "aio_profiles", "label": "Perfis", "dynamic": "profiles", "owner": self.node["id"],
+                    **self.render_detail("profiles")}
+        if item_id.startswith("p:"):
+            prof = self._profile(item_id[2:])
+            if not prof or self.applying or self.busy:
+                return ("Aguarde: há uma mudança em curso", "warn") if prof else None
+            if not self._changes(prof):
+                return (f"Perfil {prof['label']} já está ativo", "info")
+            self.applying = prof["id"]
+            threading.Thread(target=self._apply, args=(prof,), daemon=True, name="aio-perfil").start()
+            return (f"A aplicar {prof['label']}...", "info")
         if item_id not in self.state or item_id in self.busy:
             return None
         on = not self.state[item_id]
@@ -2248,8 +2368,388 @@ class ClockProvider(Provider):
         return scr
 
 
+# ------------------------------------------------------------------ rede
+
+def nm(*args, timeout=10) -> subprocess.CompletedProcess:
+    return subprocess.run(["nmcli", *args], capture_output=True, text=True, timeout=timeout)
+
+
+def nm_fields(line: str) -> list[str]:
+    """Campos de uma linha do nmcli -t (':' separa, '\:' é um ':' dentro do valor)."""
+    return [f.replace("\0", ":") for f in line.replace("\\:", "\0").split(":")]
+
+
+class NetworkProvider(Provider):
+    """Rede pelo NetworkManager (nmcli): Wi-Fi atual, redes ao alcance (as guardadas ligam-se com um toque)
+    e VPN (ligações vpn/wireguard do NetworkManager e o Tailscale, se existir). Uma rede nova com
+    palavra-passe tem de ser ligada no uConsole (não há teclado no DashDeck)."""
+    PAGES = ["Wi-Fi", "Redes", "VPN"]
+    ON_BG, OFF_BG = "#163A24", "#18202A"
+
+    def __init__(self, node, app):
+        super().__init__(node, app)
+        self.info: dict = {}
+        self.nets: list[dict] = []
+        self.vpns: list[dict] = []
+        self.busy = ""          # ação em curso (texto para o ecrã)
+        self.error = ""
+        self._wake = threading.Event()
+        threading.Thread(target=self._poll, daemon=True, name="net").start()
+
+    def pages(self) -> int:
+        return len(self.PAGES)
+
+    # ---- leitura
+    def _read(self) -> None:
+        try:
+            info = {"wifi": nm("radio", "wifi").stdout.strip() == "enabled",
+                    "conn": nm("networking", "connectivity").stdout.strip()}
+            for line in nm("-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device").stdout.splitlines():
+                dev, typ, state, con = (nm_fields(line) + ["", "", "", ""])[:4]
+                if typ == "wifi" and "dev" not in info:
+                    info.update(dev=dev, state=state, ssid=con if state == "connected" else "")
+                elif typ == "ethernet" and state == "connected":
+                    info["eth"] = con
+            if info.get("dev"):
+                for line in nm("-t", "-f", "IP4.ADDRESS,IP4.GATEWAY", "device", "show", info["dev"]).stdout.splitlines():
+                    k, _, v = line.partition(":")
+                    if k.startswith("IP4.ADDRESS") and "ip" not in info:
+                        info["ip"] = v.split("/")[0]
+                    elif k == "IP4.GATEWAY" and v:
+                        info["gw"] = v
+            saved = {}
+            vpns = []
+            for line in nm("-t", "-f", "NAME,UUID,TYPE,ACTIVE", "connection").stdout.splitlines():
+                name, uuid, typ, active = (nm_fields(line) + ["", "", "", ""])[:4]
+                if typ == "802-11-wireless":
+                    saved[name] = uuid
+                elif typ in ("vpn", "wireguard"):
+                    vpns.append({"name": name, "uuid": uuid, "kind": "WireGuard" if typ == "wireguard" else "VPN",
+                                 "on": active == "yes"})
+            ts = shutil.which("tailscale")
+            if ts:
+                try:
+                    st = json.loads(subprocess.run([ts, "status", "--json"], capture_output=True, text=True,
+                                                   timeout=5).stdout or "{}")
+                    vpns.append({"name": "Tailscale", "uuid": "tailscale", "kind": "Tailscale",
+                                 "on": st.get("BackendState") == "Running",
+                                 "ip": next(iter(st.get("TailscaleIPs") or []), "")})
+                except (OSError, ValueError, subprocess.TimeoutExpired):
+                    pass
+            nets: dict[str, dict] = {}
+            for line in nm("-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY,CHAN", "device", "wifi", "list",
+                           "--rescan", "no").stdout.splitlines():
+                use, ssid, sig, sec, chan = (nm_fields(line) + ["", "", "", "", ""])[:5]
+                if not ssid:
+                    continue
+                n = nets.get(ssid)
+                sig = int(sig) if sig.isdigit() else 0
+                if n is None or sig > n["signal"] or use == "*":
+                    nets[ssid] = {"ssid": ssid, "signal": sig, "sec": sec.strip() or "aberta", "chan": chan,
+                                  "inuse": use == "*" or (n or {}).get("inuse", False), "saved": ssid in saved}
+                    if ssid == info.get("ssid"):
+                        info["signal"], info["chan"], info["sec"] = sig, chan, sec
+            for name in saved:   # guardadas fora de alcance (ex.: o hotspot do telemóvel desligado)
+                if name not in nets:
+                    nets[name] = {"ssid": name, "signal": -1, "sec": "", "chan": "", "inuse": False, "saved": True}
+            self.nets = sorted(nets.values(), key=lambda n: (not n["inuse"], not n["saved"], -n["signal"]))
+            self.info, self.vpns, self.error = info, vpns, ""
+        except (OSError, subprocess.TimeoutExpired) as e:
+            self.error = f"nmcli: {e}"
+
+    def _poll(self) -> None:
+        while True:
+            self._read()
+            self.app.events.put(("refresh", None))
+            self._wake.wait(5)
+            self._wake.clear()
+
+    def _do(self, label: str, args: list[str], done: str, timeout=45) -> None:
+        """Numa thread: corre um comando (nmcli ou tailscale) e avisa do resultado."""
+        self.busy = label
+        self.app.events.put(("refresh", None))
+        try:
+            r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+            ok, err = r.returncode == 0, (r.stderr or r.stdout).strip().splitlines()
+        except (OSError, subprocess.TimeoutExpired) as e:
+            ok, err = False, [str(e)]
+        self.busy = ""
+        self._read()
+        msg = done if ok else f"Falhou: {(err[-1] if err else 'sem resposta')[:60]}"
+        self.app.events.put(("toast", (msg, "ok" if ok else "err")))
+        self.app.events.put(("refresh", None))
+
+    def _bg(self, label, args, done, timeout=45):
+        if self.busy:
+            return ("Aguarde: " + self.busy, "warn")
+        threading.Thread(target=self._do, args=(label, args, done, timeout), daemon=True, name="net-acao").start()
+        return (label, "info")
+
+    # ---- ecrã
+    @staticmethod
+    def _sig_color(sig: int) -> str:
+        return "ok" if sig >= 60 else "warn" if sig >= 35 else "err"
+
+    def summary(self) -> str:
+        i = self.info
+        if not i:
+            return self.error or "a ler..."
+        vpn = next((v["name"] for v in self.vpns if v["on"]), "")
+        if not i.get("wifi") and not i.get("eth"):
+            base = "Wi-Fi desligado"
+        elif i.get("ssid"):
+            base = f"{i['ssid']} · {i.get('signal', '?')}%"
+        elif i.get("eth"):
+            base = "cabo"
+        else:
+            base = "sem rede"
+        return f"{base} · VPN" if vpn else base
+
+    def badge(self) -> str:
+        return ""
+
+    def render(self, page: int = 0) -> dict:
+        title = f"Rede · {self.PAGES[page]}"
+        if self.error and not self.info:
+            return {"title": title, "tpl": "text", "text": f"Rede indisponível: {self.error}"}
+        out = [self._wifi, self._redes, self._vpn][page]()
+        out["title"] = title
+        return out
+
+    def _wifi(self) -> dict:
+        i = self.info
+        conn = {"full": ("com Internet", "ok"), "limited": ("limitada", "warn"), "portal": ("portal", "warn"),
+                "none": ("sem Internet", "err")}.get(i.get("conn", ""), (i.get("conn") or "?", "sub"))
+        rows = []
+        if not i.get("wifi"):
+            rows.append(["Wi-Fi", "desligado", "sub"])
+        elif i.get("ssid"):
+            rows.append(["Rede", i["ssid"]])
+            if i.get("signal") is not None:
+                rows.append(["Sinal", f"{i['signal']}%" + (f" · canal {i['chan']}" if i.get("chan") else ""),
+                             self._sig_color(i["signal"])])
+        else:
+            rows.append(["Wi-Fi", "sem ligação", "warn"])
+        if i.get("eth"):
+            rows.append(["Cabo", i["eth"], "ok"])
+        rows.append(["Internet", *conn])
+        if i.get("ip"):
+            rows.append(["IP", i["ip"]])
+        if i.get("gw"):
+            rows.append(["Gateway", i["gw"]])
+        vpn = next((v for v in self.vpns if v["on"]), None)
+        if vpn:
+            rows.append(["VPN", vpn["name"] + (f" · {vpn['ip']}" if vpn.get("ip") else ""), "ok"])
+        if self.busy:
+            rows.append(["", self.busy, "warn"])
+        btns = []
+        if i.get("wifi"):
+            btns.append({"id": "rescan", "label": "Procurar", "color": "#2F81F7"})
+            btns.append({"id": "wifi_off", "label": "Desligar Wi-Fi", "color": "err",
+                         "confirm": "Desligar o Wi-Fi do uConsole? Fica sem rede até o voltar a ligar."})
+        else:
+            btns.append({"id": "wifi_on", "label": "Ligar Wi-Fi", "color": "ok"})
+        return {"tpl": "kv", "rows": rows, "buttons": btns}
+
+    def _redes(self) -> dict:
+        if not self.info.get("wifi"):
+            return {"tpl": "text", "text": "O Wi-Fi está desligado.\nLigue-o na página Wi-Fi.",
+                    "buttons": [{"id": "wifi_on", "label": "Ligar Wi-Fi", "color": "ok"}]}
+        items = []
+        for n in self.nets[:20]:
+            sub = []
+            if n["signal"] >= 0:
+                sub.append(f"{n['signal']}%")
+                sub.append(n["sec"] if n["sec"] == "aberta" else "protegida")
+            else:
+                sub.append("fora de alcance")
+            if n["saved"]:
+                sub.append("guardada")
+            it = {"id": f"w:{n['ssid']}", "label": n["ssid"], "sub": " · ".join(sub), "icon": "wifi"}
+            if n["inuse"]:
+                it.update(bg=self.ON_BG, right="ligada", confirm=f"Desligar de {n['ssid']}?")
+            elif n["saved"] or n["sec"] == "aberta":
+                it["confirm"] = f"Ligar a {n['ssid']}?" + ("" if n["saved"] else " (rede aberta)")
+            if n["signal"] >= 0:
+                it["color"] = {"ok": "#3FB950", "warn": "#D29922", "err": "#F85149"}[self._sig_color(n["signal"])]
+            items.append(it)
+        if not items:
+            return {"tpl": "text", "text": "Nenhuma rede encontrada.",
+                    "buttons": [{"id": "rescan", "label": "Procurar", "color": "#2F81F7"}]}
+        return {"tpl": "list", "items": items}
+
+    def _vpn(self) -> dict:
+        if not self.vpns:
+            return {"tpl": "text", "text": "Nenhuma VPN configurada.\nAs ligações VPN e WireGuard do NetworkManager "
+                                           "(nmcli connection import ...) e o Tailscale aparecem aqui."}
+        items = []
+        for v in self.vpns:
+            items.append({"id": f"v:{v['uuid']}", "label": v["name"], "icon": "power",
+                          "sub": f"{v['kind']} · " + ("ligada" + (f" · {v['ip']}" if v.get("ip") else "")
+                                                      if v["on"] else "desligada"),
+                          "bg": self.ON_BG if v["on"] else self.OFF_BG,
+                          "confirm": f"{'Desligar' if v['on'] else 'Ligar'} {v['name']}?"})
+        return {"tpl": "list", "items": items}
+
+    # ---- ações
+    def on_button(self, btn_id: str):
+        if btn_id == "rescan":
+            return self._bg("A procurar redes...", ["nmcli", "device", "wifi", "rescan"], "Lista de redes atualizada")
+        if btn_id in ("wifi_on", "wifi_off"):
+            on = btn_id == "wifi_on"
+            return self._bg("A ligar o Wi-Fi..." if on else "A desligar o Wi-Fi...",
+                            ["nmcli", "radio", "wifi", "on" if on else "off"],
+                            "Wi-Fi ligado" if on else "Wi-Fi desligado")
+        return None
+
+    def on_tap(self, item_id: str):
+        if item_id.startswith("w:"):
+            ssid = item_id[2:]
+            n = next((n for n in self.nets if n["ssid"] == ssid), None)
+            if not n:
+                return None
+            if n["inuse"]:
+                return self._bg(f"A desligar de {ssid}...", ["nmcli", "device", "disconnect",
+                                                             self.info.get("dev", "wlan0")], f"Desligado de {ssid}")
+            if n["saved"]:
+                return self._bg(f"A ligar a {ssid}...", ["nmcli", "--wait", "40", "connection", "up", "id", ssid],
+                                f"Ligado a {ssid}")
+            if n["sec"] == "aberta":
+                return self._bg(f"A ligar a {ssid}...", ["nmcli", "--wait", "40", "device", "wifi", "connect", ssid],
+                                f"Ligado a {ssid}")
+            return (f"{ssid} pede palavra-passe: ligue-a uma vez no uConsole", "warn")
+        if item_id.startswith("v:"):
+            v = next((v for v in self.vpns if f"v:{v['uuid']}" == item_id), None)
+            if not v:
+                return None
+            if v["uuid"] == "tailscale":
+                ts = shutil.which("tailscale") or "tailscale"
+                return self._bg(f"{'A desligar' if v['on'] else 'A ligar'} o Tailscale...",
+                                [ts, "down" if v["on"] else "up"],
+                                f"Tailscale {'desligado' if v['on'] else 'ligado'}")
+            return self._bg(f"{'A desligar' if v['on'] else 'A ligar'} {v['name']}...",
+                            ["nmcli", "--wait", "40", "connection", "down" if v["on"] else "up", "uuid", v["uuid"]],
+                            f"{v['name']} {'desligada' if v['on'] else 'ligada'}")
+        return None
+
+
+# ------------------------------------------------------------------ volume e brilho do uConsole
+
+class ConsoleProvider(Provider):
+    """Volume (PipeWire, wpctl) e brilho do ecrã do uConsole (/sys/class/backlight)."""
+    SINK = "@DEFAULT_AUDIO_SINK@"
+
+    def __init__(self, node, app):
+        super().__init__(node, app)
+        self.step = int(node.get("volume_step", 5))
+        self.max_vol = int(node.get("volume_max", 100))
+        bl = sorted(Path("/sys/class/backlight").glob("*"))
+        self.bl = Path(node["backlight"]) if node.get("backlight") else (bl[0] if bl else None)
+
+    # ---- som
+    def volume(self) -> tuple[int | None, bool]:
+        try:
+            out = subprocess.run(["wpctl", "get-volume", self.SINK], capture_output=True, text=True,
+                                 timeout=3).stdout
+            m = re.search(r"Volume:\s*([\d.]+)", out)
+            return (round(float(m.group(1)) * 100) if m else None), "MUTED" in out
+        except (OSError, subprocess.TimeoutExpired):
+            return None, False
+
+    def _wpctl(self, *args) -> bool:
+        try:
+            return subprocess.run(["wpctl", *args], capture_output=True, timeout=3).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+
+    # ---- ecrã
+    def brightness(self) -> tuple[int, int] | None:
+        if not self.bl:
+            return None
+        try:
+            return int((self.bl / "brightness").read_text()), int((self.bl / "max_brightness").read_text())
+        except (OSError, ValueError):
+            return None
+
+    def _set_bl(self, v: int) -> bool:
+        b = self.brightness()
+        if not b:
+            return False
+        v = max(0, min(b[1], v))
+        try:
+            (self.bl / "brightness").write_text(str(v))
+            return True
+        except OSError:   # sem permissão (grupo video): tenta o brightnessctl
+            try:
+                return subprocess.run(["brightnessctl", "-d", self.bl.name, "set", str(v)], capture_output=True,
+                                      timeout=3).returncode == 0
+            except (OSError, subprocess.TimeoutExpired):
+                return False
+
+    def summary(self) -> str:
+        v, mute = self.volume()
+        b = self.brightness()
+        parts = ["mudo" if mute else f"som {v}%" if v is not None else ""]
+        if b:
+            parts.append(f"ecrã {b[0]}/{b[1]}")
+        return " · ".join(p for p in parts if p)
+
+    PAGES = ["Som", "Ecrã"]
+
+    def pages(self) -> int:
+        return len(self.PAGES)
+
+    def render(self, page: int = 0) -> dict:
+        """Duas páginas com 3 botões cada (uma linha cabe no ecrã; 6 botões passavam para fora)."""
+        title = f"uConsole · {self.PAGES[page]}"
+        if page == 0:
+            v, mute = self.volume()
+            if v is None:
+                return {"title": title, "tpl": "text", "text": "Sem saída de áudio (PipeWire/wpctl)."}
+            rows = [["Volume", f"{v}%" + (" · mudo" if mute else ""), "sub" if mute else "ok"],
+                    ["Ecrã (swipe)", "brilho do uConsole", "sub"]]
+            btns = [{"id": "vol-", "label": "-", "color": "#2F81F7"},
+                    {"id": "vol+", "label": "+", "color": "#2F81F7"},
+                    {"id": "mute", "label": "Som" if mute else "Mudo", "color": "ok" if mute else "warn"}]
+        else:
+            b = self.brightness()
+            if not b:
+                return {"title": title, "tpl": "text", "text": "Sem controlo do brilho do ecrã."}
+            rows = [["Brilho", f"{b[0]} de {b[1]}", "ok"], ["Som (swipe)", "volume do uConsole", "sub"]]
+            btns = [{"id": "bl-", "label": "-", "color": "#8957E5"},
+                    {"id": "bl+", "label": "+", "color": "#8957E5"},
+                    {"id": "blmax", "label": "Máx", "color": "#8957E5"}]
+        return {"title": title, "tpl": "kv", "rows": rows, "buttons": btns}
+
+    def on_button(self, btn_id: str):
+        if btn_id in ("vol-", "vol+"):
+            v, mute = self.volume()
+            if v is None:
+                return ("Sem saída de áudio", "err")
+            if btn_id == "vol+" and v >= self.max_vol:
+                return (f"Volume no máximo ({self.max_vol}%)", "info")
+            self._wpctl("set-volume", "-l", str(self.max_vol / 100), self.SINK,
+                        f"{self.step}%{'+' if btn_id == 'vol+' else '-'}")
+            if mute and btn_id == "vol+":
+                self._wpctl("set-mute", self.SINK, "0")
+            return None
+        if btn_id == "mute":
+            self._wpctl("set-mute", self.SINK, "toggle")
+            return None
+        if btn_id in ("bl-", "bl+", "blmax"):
+            b = self.brightness()
+            if not b:
+                return ("Sem controlo do brilho", "err")
+            nv = b[1] if btn_id == "blmax" else b[0] + (1 if btn_id == "bl+" else -1)
+            if not 0 <= nv <= b[1]:
+                return ("Brilho no " + ("máximo" if nv > b[1] else "mínimo"), "info")
+            return None if self._set_bl(nv) else ("Sem permissão para o brilho (grupo video)", "err")
+        return None
+
+
 REGISTRY = {"system": SystemProvider, "gps": GpsProvider, "adsb": AdsbProvider, "ais": AisProvider,
-            "mesh": MeshtasticProvider, "clock": ClockProvider, "aio": AioProvider, "sdr": SdrProvider}
+            "mesh": MeshtasticProvider, "clock": ClockProvider, "aio": AioProvider, "sdr": SdrProvider,
+            "net": NetworkProvider, "console": ConsoleProvider}
 
 
 def create(name: str, node: dict, app) -> Provider:
