@@ -108,7 +108,7 @@ Relógio em ecrã inteiro (ver [uso.md](uso.md#relógio)). Pode ser um `[[menu]]
 
 | Opção | Padrão | Descrição |
 |---|---|---|
-| `face` | `paisagem` | Mostrador inicial: `paisagem` ou `retro`. Depois de um swipe, vale o último usado (guardado em `~/.config/dashd/clock.json`, com o brilho) |
+| `face` | `paisagem` | Mostrador inicial: `paisagem`, `retro` ou `previsao`. Depois de um swipe, vale o último usado (guardado em `~/.config/dashd/clock.json`, com o brilho) |
 | `lcd_color` | `ambar` | Cor do digital retro: `ambar`, `verde` ou `ciano` |
 | `brightness` | `50` | Brilho inicial no relógio (10 a 100). O brilho normal volta ao sair |
 | `dim_after` | `300` | Segundos sem toques até o relógio escurecer (`0` = nunca). Um toque repõe o brilho |

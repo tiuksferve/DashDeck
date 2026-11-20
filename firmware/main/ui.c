@@ -1441,7 +1441,7 @@ static void clock_draw(void)
     s_cs.show_dots = (int32_t)(s_dots_until - ms) > 0;
     s_cs.show_exit = (int32_t)(s_exit_until - ms) > 0;
     s_cs.bright = s_bl;
-    if (s_cs.face == 0) {
+    if (s_cs.face == 0 || s_cs.face == 2) {   // paisagem e previsão têm fundo do host
         bool ok = s_bg_ready && !strncmp(s_bg_key, "clk", 3) && s_bg_w == s_cw && s_bg_h == s_ch;
         if (ok) {
             paint_bg(s_bg_key);
@@ -1465,7 +1465,7 @@ static void clock_timer_cb(lv_timer_t *t)
     uint32_t ms = now_ms();
     bool ovl = (int32_t)(s_bright_until - ms) > 0 || (int32_t)(s_dots_until - ms) > 0 ||
                (int32_t)(s_exit_until - ms) > 0;
-    bool bg_new = s_cs.face == 0 && s_bg_ready && !s_clock_drawn_bg;
+    bool bg_new = (s_cs.face == 0 || s_cs.face == 2) && s_bg_ready && !s_clock_drawn_bg;
     if (clockface_animated(&s_cs) || (ht && tm.tm_sec != s_clock_last_sec) || ovl || ovl != s_ovl_was || bg_new) {
         clock_draw();
     }
@@ -1517,10 +1517,16 @@ static void clock_press_cb(lv_event_t *e)
     }
 }
 
+static int32_t jint_at(const cJSON *arr, int i, int32_t def)
+{
+    const cJSON *v = cJSON_GetArrayItem(arr, i);
+    return cJSON_IsNumber(v) ? (int32_t)v->valuedouble : def;
+}
+
 static void clock_apply(const cJSON *c)
 {
     if (!cJSON_IsObject(c)) return;
-    s_cs.face = jint(c, "face", s_cs.face) ? 1 : 0;
+    s_cs.face = (int)(jint(c, "face", s_cs.face) % 3);
     s_cs.pal = jint(c, "pal", s_cs.pal);
     s_cs.night = jbool(c, "night", false);
     int dim = jint(c, "dim", -1), dim_bl = jint(c, "dim_bl", -1);
@@ -1538,6 +1544,34 @@ static void clock_apply(const cJSON *c)
         s_cs.tmin = jint(wx, "min", 0);
         s_cs.rain = jint(wx, "rain", 0);
         s_cs.wind = jint(wx, "wind", 0);
+    }
+    // previsão por horas (mostrador 2): "hours":[[hora|-1, ícone, temp, %chuva],..], "hicons":[{pal,d},..]
+    const cJSON *hs = cJSON_GetObjectItemCaseSensitive(c, "hours");
+    s_cs.nh = 0;
+    const cJSON *hh;
+    cJSON_ArrayForEach(hh, hs) {
+        if (s_cs.nh >= 6) break;
+        s_cs.hours[s_cs.nh].hour = (int8_t)jint_at(hh, 0, -1);
+        s_cs.hours[s_cs.nh].icon = (int8_t)jint_at(hh, 1, -1);
+        s_cs.hours[s_cs.nh].temp = (int8_t)jint_at(hh, 2, 0);
+        s_cs.hours[s_cs.nh].rain = (uint8_t)jint_at(hh, 3, 0);
+        s_cs.nh++;
+    }
+    const cJSON *hic = cJSON_GetObjectItemCaseSensitive(c, "hicons");
+    s_cs.nhicons = 0;
+    const cJSON *ho;
+    cJSON_ArrayForEach(ho, hic) {
+        if (s_cs.nhicons >= 6) break;
+        const char *hd = jstr(ho, "d", "");
+        if (strlen(hd) != 256) continue;
+        int k = s_cs.nhicons++;
+        const cJSON *pal = cJSON_GetObjectItemCaseSensitive(ho, "pal");
+        for (int i = 0; i < 7; i++) {
+            const cJSON *pp = cJSON_GetArrayItem(pal, i);
+            s_cs.hpal[k][i + 1] = (cJSON_IsString(pp) && pp->valuestring[0] == '#')
+                                      ? rgb565((uint32_t)strtoul(pp->valuestring + 1, NULL, 16)) : 0xFFFF;
+        }
+        for (int i = 0; i < 256; i++) s_cs.hicon[k][i] = (hd[i] >= '0' && hd[i] <= '7') ? (uint8_t)(hd[i] - '0') : 0;
     }
     // ícone 16x16: "pal" e "role" por cor (a cor i é o índice i+1; 0 = transparente)
     const cJSON *ic = cJSON_GetObjectItemCaseSensitive(c, "icon");
@@ -1635,7 +1669,7 @@ static void clock_gesture(lv_dir_t d)
     char v[8];
     uint32_t ms = now_ms();
     if (d == LV_DIR_LEFT || d == LV_DIR_RIGHT) {
-        s_cs.face ^= 1;
+        s_cs.face = (s_cs.face + (d == LV_DIR_LEFT ? 1 : 2)) % 3;   // paisagem → retro → previsão
         s_dots_until = ms + 1500;
         snprintf(v, sizeof(v), "%d", s_cs.face);
         link_send_event("clock", "face", v, NULL, NULL);

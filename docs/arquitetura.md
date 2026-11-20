@@ -106,7 +106,7 @@ está na placa) seria o próximo passo se um dia a tela ficar solta.
 | `log` | `lines`, ou `append` no `update` |
 | `text` | `text` |
 | `plot` | `plot` (canvas) e `rows` (kv ao lado, se couber, ou por baixo) |
-| `clock` | `clock`: `face` (0 paisagem, 1 retro), `pal` (cor do LCD), `bl` (brilho ao entrar), `dim` e `dim_bl` (escurece após `dim` s sem toques), `bg` (chave do fundo, prefixo `clk`), `night`, `anim` (`rain`, `storm`, `snow` ou vazio), `wx` (`t`, `max`, `min`, `rain`, `wind`) e `icon` (`pal` até 7 cores, `role` 1 forma / 2 sombra, `d` com 256 dígitos 0–7). Ecrã inteiro, sem barra nem dock |
+| `clock` | `clock`: `face` (0 paisagem, 1 retro, 2 previsão), `hours` (`[hora ou -1 = agora, ícone, temp, % chuva]`, até 6) e `hicons` (até 6 ícones 16×16) no mostrador 2, `pal` (cor do LCD), `bl` (brilho ao entrar), `dim` e `dim_bl` (escurece após `dim` s sem toques), `bg` (chave do fundo, prefixo `clk`), `night`, `anim` (`rain`, `storm`, `snow` ou vazio), `wx` (`t`, `max`, `min`, `rain`, `wind`) e `icon` (`pal` até 7 cores, `role` 1 forma / 2 sombra, `d` com 256 dígitos 0–7). Ecrã inteiro, sem barra nem dock |
 | todos | `buttons`: `id`, `label`, `color`, `confirm` (texto da confirmação) |
 
 `plot`:

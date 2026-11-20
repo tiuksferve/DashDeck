@@ -2159,11 +2159,11 @@ class ClockProvider(Provider):
         super().__init__(node, app)
         import clockscene
         self.cs = clockscene
-        self.face = 0 if node.get("face", "paisagem") == "paisagem" else 1
+        self.face = {"paisagem": 0, "retro": 1, "previsao": 2, "previsão": 2}.get(str(node.get("face", "paisagem")), 0)
         self.bl = int(node.get("brightness", 50))
         try:
             st = json.loads(self.STATE.read_text())
-            self.face = int(st.get("face", self.face)) & 1
+            self.face = int(st.get("face", self.face)) % 3
             self.bl = int(st.get("bl", self.bl))
         except (OSError, ValueError):
             pass
@@ -2198,7 +2198,7 @@ class ClockProvider(Provider):
     def on_event(self, data: dict) -> None:
         """{"t":"clock","face":"1"} ou {"t":"clock","bl":"60"} vindos dos gestos no ESP."""
         if "face" in data:
-            self.face = int(data["face"]) & 1
+            self.face = int(data["face"]) % 3
         if "bl" in data:
             self.bl = max(10, min(100, int(data["bl"])))
         self._save()
@@ -2225,12 +2225,22 @@ class ClockProvider(Provider):
             clock["wx"] = {k: wx[k] for k in ("t", "max", "min", "rain", "wind")}
             clock["icon"] = self.cs.weather_icon(kind, night)
         scr = {"tpl": "clock", "clock": clock}
-        if self.face == 0:
+        if self.face == 2:
+            hours, icons, keys = [], [], []
+            for i, (tm, hk, temp, rain, is_day) in enumerate(self.weather.next_hours(6) if self.weather else []):
+                ik = (hk, not is_day)
+                if ik not in keys:
+                    keys.append(ik)
+                    icons.append({k: v for k, v in self.cs.weather_icon(hk, not is_day).items() if k != "role"})
+                hours.append([-1 if i == 0 else int(tm[11:13]), keys.index(ik), temp, rain])
+            clock["hours"], clock["hicons"] = hours, icons
+        if self.face in (0, 2):
+            scene = "costa" if self.face == 2 else "lago"
             w, h = self.app.esp_w, self.app.esp_h
-            key = f"clk{w}{kind[:3]}{time.strftime('%d%H')}{minute % 60 // 5}"
+            key = f"clk{w}{scene[0]}{kind[:3]}{time.strftime('%d%H')}{minute % 60 // 5}"
             if not self._scene or self._scene[0] != key:
                 t0 = time.monotonic()
-                img = self.cs.render_scene(w, h, minute, kind, sr, ss, time.time())
+                img = self.cs.render_scene(w, h, minute, kind, sr, ss, time.time(), scene=scene)
                 self._scene = self.cs.scene_bg(key, img)
                 log.debug("relógio: cena %s em %.2f s", key, time.monotonic() - t0)
             clock["bg"] = key

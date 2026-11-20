@@ -183,6 +183,15 @@ static void big3(char c, int x, int y, int cell, int gap, uint16_t col)
             if (g->r[r][k] == '1') rect(x + k * cell, y + r * cell, cell - gap, cell - gap, col);
 }
 
+static void icon_raw(const uint8_t *px, const uint16_t *pal, int x, int y, int sc)
+{
+    for (int j = 0; j < 16; j++)
+        for (int i = 0; i < 16; i++) {
+            uint8_t v = px[j * 16 + i];
+            if (v && v <= 7) rect(x + i * sc, y + j * sc, sc, sc, pal[v]);
+        }
+}
+
 static void icon(const clock_state_t *st, int x, int y, int sc, int out, const uint16_t *mono)
 {
     if (!st->has_icon) return;
@@ -320,6 +329,51 @@ static void face_landscape(const clock_state_t *st, const struct tm *tm, float t
     text3(buf, xx, yy, 2, ink, out);
 }
 
+// Mostrador 2: previsão por horas sobre a costa. Hora em cima; em baixo, numa faixa escura, as próximas
+// horas (hora, ícone, temperatura, chuva).
+static void face_forecast(const clock_state_t *st, const struct tm *tm, float t)
+{
+    particles(st, t);
+    const uint16_t ink = c565(0xFFFFFF);
+    const int out = c565(0x0E1020);
+    const bool land = BW > BH;
+    char buf[24];
+    int x = 8;
+    if (st->has_time) {
+        snprintf(buf, sizeof(buf), "%02d:%02d", tm->tm_hour, tm->tm_min);
+        x += text5(buf, x, 6, 3, ink, out) + 4;
+        snprintf(buf, sizeof(buf), "%02d", tm->tm_sec);
+        text5(buf, x, 20, 1, c565(0xFFE9A8), out);
+        snprintf(buf, sizeof(buf), "%s %d %s", DOW[tm->tm_wday % 7], tm->tm_mday, MON[tm->tm_mon % 12]);
+        text5(buf, 8, 32, 1, ink, out);
+    } else {
+        text5("--:--", 8, 6, 3, ink, out);
+    }
+    if (!st->nh) {
+        text5("SEM PREVISAO", 8, BH - 20, 2, ink, out);
+        return;
+    }
+    // faixa: 6 colunas na horizontal; 3 x 2 na vertical
+    const int cols = land ? 6 : 3, rows = land ? 1 : 2, cell_h = 66;
+    const int y0 = BH - cell_h * rows, cw = BW / cols;
+    for (int y = y0; y < BH; y++)
+        for (int xx = 0; xx < BW; xx++) blend(xx, y, 0x05080F, 165);
+    rect(0, y0, BW, 1, c565(0x67A9D8));
+    for (int i = 0; i < st->nh && i < cols * rows; i++) {
+        int cx = (i % cols) * cw + cw / 2, cy = y0 + (i / cols) * cell_h;
+        if (st->hours[i].hour < 0) snprintf(buf, sizeof(buf), "AGORA");
+        else snprintf(buf, sizeof(buf), "%dH", st->hours[i].hour);
+        text5(buf, cx - tw5(buf, 1) / 2, cy + 6, 1, c565(0xBFD4E6), -1);
+        int ic = st->hours[i].icon;
+        if (ic >= 0 && ic < st->nhicons) icon_raw(st->hicon[ic], st->hpal[ic], cx - 8, cy + 16, 1);
+        snprintf(buf, sizeof(buf), "%d" DEG, st->hours[i].temp);
+        text5(buf, cx - tw5(buf, 2) / 2, cy + 36, 2, ink, -1);
+        int r = st->hours[i].rain;
+        snprintf(buf, sizeof(buf), "*%d%%", r);
+        text5(buf, cx - tw5(buf, 1) / 2, cy + 54, 1, c565(r >= 30 ? 0x8CC4FF : 0x8B98A5), -1);
+    }
+}
+
 static const uint32_t LCD_PAL[3][4] = {   // fundo, apagado, aceso, meia cor
     {0x170F04, 0x2A1D0A, 0xFFB000, 0x8A5C00},
     {0x07120A, 0x12261A, 0x7DFF6A, 0x3C8A34},
@@ -441,8 +495,8 @@ static void overlays(const clock_state_t *st)
             rect(x0 + 4, 140 - i * 12, 12, 9, c565(i < n ? 0xFFFFFF : 0x5A5A64));
     }
     if (st->show_dots) {
-        for (int i = 0; i < 2; i++)
-            rect(BW / 2 - 9 + i * 12, BH - 8, 6, 4, c565(i == st->face ? 0xFFFFFF : 0x6E6E78));
+        for (int i = 0; i < 3; i++)
+            rect(BW / 2 - 15 + i * 12, BH - 8, 6, 4, c565(i == st->face ? 0xFFFFFF : 0x6E6E78));
     }
     if (st->show_exit) {   // caixa ao centro: o 2.º toque sai do relógio
         const char *l1 = "TOQUE DE NOVO", *l2 = "PARA SAIR";
@@ -462,7 +516,7 @@ static void overlays(const clock_state_t *st)
 
 bool clockface_animated(const clock_state_t *st)
 {
-    return st->face == 0 && st->anim != CLK_ANIM_NONE;
+    return (st->face == 0 || st->face == 2) && st->anim != CLK_ANIM_NONE;
 }
 
 void clockface_draw(uint16_t *buf, int stride_px, int w, int h, const clock_state_t *st, const struct tm *tm,
@@ -474,6 +528,7 @@ void clockface_draw(uint16_t *buf, int stride_px, int w, int h, const clock_stat
     BS = stride_px;
     float t = (float)(ms % 3600000u) / 1000.0f;
     if (st->face == 1) face_retro(st, tm);
+    else if (st->face == 2) face_forecast(st, tm, t);
     else face_landscape(st, tm, t);
     overlays(st);
 }

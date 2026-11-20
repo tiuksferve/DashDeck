@@ -11,7 +11,7 @@ mensagem, até 8 KB (descrito no cabeçalho de `firmware/main/ui.c` e em `docs/a
 
 - **Menu inicial (boxes):** AIO v2, Meshtastic, GPS, ADS-B, AIS, SDR, Aplicações, Serviços, Sistema.
 - **Dock** (início e Aplicações): Início, Relógio, Captura, Brilho, Bloquear.
-- **Firmware atual:** 0.17.0 (gravado em 20/11).
+- **Firmware atual:** 0.18.0 (gravado em 20/11).
 
 ## Onde está cada coisa
 - `host/providers.py`: telas com dados (system, gps, adsb, ais, mesh, clock, aio, sdr).
@@ -41,15 +41,14 @@ mensagem, até 8 KB (descrito no cabeçalho de `firmware/main/ui.c` e em `docs/a
 - **Disco do uConsole:** tem pouco espaço livre; por isso o build fica em `/dev/shm`.
 
 ## Feito recentemente (19/11)
-- Meshtastic: página **Conversas** (canais e diretas; cada uma abre as suas mensagens; marca como lida só a conversa aberta), **Responder** em cada mensagem, **Mensagem direta** no detalhe do nó, aviso animado **"Ondas LoRa"** para diretas recebidas (o toque abre a conversa).
+- Meshtastic: página **Mapa** dos nós (20/11), página **Conversas** (canais e diretas; cada uma abre as suas mensagens; marca como lida só a conversa aberta), **Responder** em cada mensagem, **Mensagem direta** no detalhe do nó, aviso animado **"Ondas LoRa"** para diretas recebidas (o toque abre a conversa).
 - **SDR:** monitor (alimentação, dongle, quem usa, frequência, histórico, Libertar).
 - **AIO v2:** interruptores com informação ao vivo, box **Energia** e medição do consumo por recurso (`aiov2_ctl --measure`, só a bateria).
 - **Arranque:** animação Pixels ou Nascer do sol (aleatória com entropia do ADC), com barra de progresso até o uConsole responder.
-- **Relógio:** paisagem e digital retro, swipe troca o mostrador e muda o brilho, dois toques para sair, escurece após 5 min.
+- **Relógio:** paisagem, digital retro e previsão por horas (costa com farol; 20/11), swipe troca o mostrador e muda o brilho, dois toques para sair, escurece após 5 min.
 - Nome mudado de DashOS para DashDeck (também no MeshDeckWeb, branch `rename-dashdeck`).
 
 ## Por fazer (por prioridade sugerida)
-1. **Mostrador de previsão por horas** no relógio (paisagem com outra imagem).
-2. **Atualizar o firmware pelo cartão SD** (o cartão já está montado em `/sd` desde a 0.17.0) (copiar o `.bin` para o cartão; o ESP grava-o em `ota_1` ao arrancar). Exige gravar esta funcionalidade uma vez pela USB.
+1. **Atualizar o firmware pelo cartão SD** (o cartão já está montado em `/sd` desde a 0.17.0) (copiar o `.bin` para o cartão; o ESP grava-o em `ota_1` ao arrancar). Exige gravar esta funcionalidade uma vez pela USB.
 4. Perfis de uso da AIO, mais cenas na paisagem, alarme/temporizador, volume e brilho do uConsole, rede (Wi-Fi/VPN), aplicações abertas, rotação pelo menu, cartão SD para fundos e ícones, histórico de mensagens no MeshDeckWeb.
 - Ainda por confirmar com uso real: o aviso "Ondas LoRa" com uma mensagem direta de verdade e a alternância das animações de arranque (só se testou com mensagens fictícias e imagens geradas no uConsole).

@@ -109,7 +109,7 @@ Abre-se pelo botão **Relógio** do dock. É um ecrã inteiro, sem barra nem doc
 
 | Gesto | Efeito |
 |---|---|
-| Swipe para os lados | Troca de mostrador (os pontos em baixo mostram qual) |
+| Swipe para os lados | Troca de mostrador: paisagem → digital retro → previsão (os pontos em baixo mostram qual) |
 | Swipe para cima / para baixo | Mais / menos brilho, em passos de 10% (aparece uma barra à direita) |
 | Toque em qualquer sítio | Mostra "Toque de novo para sair"; um 2.º toque em 2,5 s volta ao DashDeck, com o brilho normal |
 | Botão BOOT | Volta logo ao DashDeck |
@@ -129,6 +129,10 @@ Depois de 5 min sem toques, o relógio escurece para 10%. O toque seguinte repõ
   - Uma fila de 60 pontos marca os segundos.
   - Em baixo ficam o ícone, a temperatura, a máxima, a mínima, a chuva e o vento.
   - A cor (âmbar, verde ou ciano) escolhe-se no `config.toml`.
+- **Previsão:**
+  - Uma costa em pixel art: mar com o reflexo do céu, um cabo ao longe, uma falésia com um farol listado (que acende e lança o feixe à noite) e um veleiro. O céu e o tempo seguem as mesmas regras da paisagem (chuva e neve a cair, nevoeiro, sol e lua).
+  - Em cima, a hora, os segundos e a data.
+  - Em baixo, numa faixa escura, as próximas 6 horas (a primeira é "AGORA"): hora, ícone do tempo (de dia ou de noite), temperatura e probabilidade de chuva (azul a partir de 30%). Na vertical ficam em 3 × 2.
 - **Hora:** o ESP conta a hora sozinho, acertada pelo dashd ao ligar e a cada 10 min. O relógio continua certo mesmo com o dashd parado.
 - **Previsão:**
   - Vem do Open-Meteo, a cada 30 min, para a posição do GPS (ou do nó Meshtastic) ou para a do `config.toml`.

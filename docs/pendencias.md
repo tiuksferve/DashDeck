@@ -16,7 +16,7 @@
 - **Filtro por altitude** no ADS-B e por tipo no AIS.
 - **Guardar os trajetos do ADS-B** entre arranques do dashd (hoje ficam na memória).
 - **Rotação pelo próprio menu** (hoje é no `config.toml`).
-- **Relógio:** previsão por horas, mais cenas para a paisagem (cidade, mar) e escolher a cor do LCD por gesto.
+- **Relógio:** mais cenas (cidade à noite, neve no inverno) e escolher a cor do LCD por gesto.
 
 ## Limitações conhecidas
 - **Céu do GPS com o meshtasticd:** só com o gpsmux do MeshDeckWeb instalado (`sudo gpsmux/install.sh`), que partilha o GPS e o põe ao vivo na API local. Sem ele, o Meshtastic não repassa os dados dos satélites.
@@ -62,5 +62,6 @@
 | 0.15.2 | Frase "TELA PEQUENA, GRANDES POSSIBILIDADES!" na animação Pixels (fonte com `!` e `,`) |
 | 0.15.3 | Tela de carregamento com 5 s no mínimo (a animação estica-se) |
 | 0.15.4 | A frase também no Nascer do sol |
+| 0.18.0 | Mostrador de previsão por horas no relógio (costa com farol) |
 | 0.17.0 | Cartão SD (ícones, e fundos quando falta RAM), buffer de ecrã reservado no arranque, aviso de mensagem por cima do relógio com a memória do fundo emprestada |
 | 0.16.0 | Aviso de mensagem direta (`notify`, animação "Ondas LoRa"); a animação de arranque passa a ser mesmo aleatória (entropia do ADC no arranque) |

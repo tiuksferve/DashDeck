@@ -23,7 +23,8 @@ CACHE = Path.home() / ".cache" / "dashd" / "weather.json"
 API = ("https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
        "&current=temperature_2m,weather_code,wind_speed_10m,is_day"
        "&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset"
-       "&timezone=auto&forecast_days=1")
+       "&hourly=temperature_2m,weather_code,precipitation_probability,is_day"
+       "&timezone=auto&forecast_days=1&forecast_hours=12")
 
 KINDS = {"limpo": "Limpo", "parcial": "Pouco nublado", "nublado": "Nublado", "chuva": "Chuva",
          "trovoada": "Trovoada", "neve": "Neve", "nevoeiro": "Nevoeiro"}
@@ -107,6 +108,14 @@ class Weather:
             "max": round(day["temperature_2m_max"][0]), "min": round(day["temperature_2m_min"][0]),
             "rain": int(day.get("precipitation_probability_max", [0])[0] or 0),
             "sunrise": _hm(day["sunrise"][0]), "sunset": _hm(day["sunset"][0]),
+            # próximas horas: [hora local "AAAA-MM-DDTHH:00", tipo, temperatura, % chuva, é dia]
+            "hours": [[tm, wmo_kind(int(code if code is not None else 3)), round(tc if tc is not None else 0),
+                       int(pp or 0), bool(dy)]
+                      for tm, code, tc, pp, dy in zip(j.get("hourly", {}).get("time", []),
+                                                      j.get("hourly", {}).get("weather_code", []),
+                                                      j.get("hourly", {}).get("temperature_2m", []),
+                                                      j.get("hourly", {}).get("precipitation_probability", []),
+                                                      j.get("hourly", {}).get("is_day", []))],
         }
         try:
             CACHE.parent.mkdir(parents=True, exist_ok=True)
@@ -127,6 +136,14 @@ class Weather:
             if ok and self.on_update:
                 self.on_update()
             time.sleep(self.every if ok else 300)
+
+    def next_hours(self, n: int = 6) -> list[list]:
+        """As n horas a partir da atual (a hora em curso primeiro), da previsão guardada."""
+        d = self.current()
+        if not d:
+            return []
+        now = time.strftime("%Y-%m-%dT%H:00")
+        return [h for h in d.get("hours", []) if h[0] >= now][:n]
 
     def current(self) -> dict | None:
         """A previsão se tiver menos de 12 h, senão None."""
@@ -199,10 +216,98 @@ class _Canvas:
                     self.px(x, y, c) if a is None else self.bl(x, y, c, a)
 
 
-def render_scene(w: int, h: int, minute: int, kind: str, sr: int, ss: int, epoch: float) -> Image.Image:
+def _coast(cv: "_Canvas", w: int, h: int, HZ: int, L: float, G: float, cf: float, snowy: bool, bot, sun_x: float,
+           e: float, epoch: float) -> None:
+    """Costa com farol: mar com reflexo do céu, um cabo ao longe, falésia com farol (aceso à noite) e um veleiro."""
+    shift = int(epoch / 300)
+    # cabo ao longe, à esquerda, quase da cor do céu
+    head = _mix(_mix(_hex("#1c2244"), _hex("#5d74a0"), L), bot, .45)
+    for x in range(0, int(w * 0.42)):
+        top = HZ - round(9 * math.sin(math.pi * x / (w * 0.42)) ** 0.7 + 2 * math.sin(x * .3))
+        for y in range(max(0, top), HZ):
+            cv.p[y * w + x] = head
+    # mar: reflexo do céu, mais escuro e azulado, ondulado, com brilhos e o reflexo do sol
+    deep = _mix(_hex("#0a1630"), _hex("#1f5c8a"), L)
+    glint = _hex("#ffd890")
+    for y in range(HZ, h):
+        k = (y - HZ) / max(1, h - HZ)
+        for x in range(w):
+            off = round(math.sin(y * .7 + x * .05 + shift))
+            src = cv.get(x + off, HZ - 1 - (y - HZ) * 2)
+            c0 = _mix(_mix(_mul(src, .6), deep, .35 + .4 * k), _hex("#14284a"), .1)
+            if (x * 5 + y * 11 + shift * 7) % 37 == 0:
+                c0 = _mix(c0, (255, 255, 255), .3 * (1 - k))
+            if abs(x - sun_x) < 4 - (y - HZ) / 12 and (y + shift) % 3 and e > -.05:
+                c0 = _mix(c0, glint, .5 * (1 - cf))
+            cv.p[y * w + x] = c0
+        if y == HZ:
+            for x in range(w):
+                cv.p[y * w + x] = _mul(cv.p[y * w + x], 1.15)
+    # falésia à direita
+    x0 = int(w * 0.66)
+    rock = _mix(_hex("#1d1a22"), _hex("#7b6a5c"), L)
+    rock_l = _mix(_hex("#2a2530"), _hex("#a08a72"), L)
+    grass = _mix(_hex("#66709a"), _hex("#e8ecf3"), L) if snowy else _mix(_hex("#15301f"), _hex("#5a9a48"), L)
+    foam = _mix(_hex("#5a6488"), _hex("#f2f6fa"), L)
+    tops = []
+    for x in range(x0, w):
+        u = (x - x0) / max(1, w - x0)
+        top = HZ - 30 + round(4 * math.sin(x * .09) + 2 * math.sin(x * .27)) if u > .12 else HZ - 30 + round((.12 - u) * 160)
+        tops.append(top)
+        for y in range(top, h):
+            if y < top + 3:
+                c0 = grass
+            elif (y - top) % 9 == 0:                       # camadas da rocha
+                c0 = _mul(rock, .82)
+            elif (x * 7919 + y * 104729) % 23 == 0:         # pintas soltas
+                c0 = rock_l
+            else:
+                c0 = rock
+            cv.p[y * w + x] = c0
+    # espuma onde o mar bate na falésia
+    for y in range(HZ, h):
+        for k in range(1, 4):
+            if (y * 3 + k + shift) % 4 and k <= 1 + (y + shift) % 3:
+                cv.p[y * w + x0 - k] = foam
+    # farol
+    lx = int(w * 0.84)
+    base = tops[lx - x0] if 0 <= lx - x0 < len(tops) else HZ - 30
+    white = _mix(_hex("#5a5f70"), _hex("#f4f4f0"), L)
+    red = _mix(_hex("#3a1418"), _hex("#c8382e"), L)
+    dark = _mix(_hex("#101018"), _hex("#30323c"), L)
+    tw, th = 8, 30
+    for j in range(th):
+        y = base - j
+        half = tw // 2 - (1 if j > th * .6 else 0)
+        band = red if (j // 6) % 2 else white
+        cv.rect(lx - half, y, half * 2, 1, band)
+    cv.rect(lx - 6, base - th, 12, 1, dark)                       # varanda
+    lit = L < .55
+    lamp = _hex("#ffe27a") if lit else _hex("#9fc3dd")
+    cv.rect(lx - 3, base - th - 5, 6, 5, lamp)                    # lanterna
+    cv.rect(lx - 4, base - th - 7, 8, 2, dark)                    # cúpula
+    if lit:   # feixe de luz, suave, para a esquerda
+        cv.disc(lx, base - th - 3, 6, _hex("#ffe27a"), .2)
+        for k in range(1, 60):
+            for dy in range(-k // 8, k // 8 + 1):
+                cv.bl(lx - 3 - k, base - th - 3 + dy, _hex("#ffe9a0"), .14 * (1 - k / 60))
+    # veleiro a atravessar devagar
+    bx = int((epoch / 40) % (w * 0.6)) + 6
+    by = HZ + 7
+    hull = _mix(_hex("#2a1a14"), _hex("#6a4028"), L)
+    sail = _mix(_hex("#7a8098"), _hex("#fbfbf6"), L)
+    cv.rect(bx - 6, by, 12, 2, hull)
+    for j in range(10):
+        cv.rect(bx - j // 2, by - 2 - j, max(1, j // 2), 1, sail)
+    cv.rect(bx, by - 12, 1, 12, hull)
+
+
+def render_scene(w: int, h: int, minute: int, kind: str, sr: int, ss: int, epoch: float,
+                 scene: str = "lago") -> Image.Image:
     """Paisagem sem a hora nem as partículas (essas são do ESP). Devolve uma imagem RGB w x h."""
     cv = _Canvas(w, h)
-    HZ = h - 22                       # linha da água
+    # linha da água: o lago fica em baixo; na costa o mar começa a meio (a faixa da previsão fica por cima)
+    HZ = h - 22 if scene == "lago" else int(h * 0.56)
     cf = CLOUD_FACTOR.get(kind, 0)
     e = sun_elev(minute, sr, ss)
     L = _clamp((e + .12) / .4)
@@ -288,69 +393,72 @@ def render_scene(w: int, h: int, minute: int, kind: str, sr: int, ss: int, epoch
                     if dx * dx + dy * dy <= r * r and y < HZ:
                         cv.px(x, y, cs if dy > r * .35 else cl)
 
-    far = _mix(_mix(_hex("#1c2244"), _hex("#6178a6"), L), bot, .3)
-    far_l = _mul(far, 1.12)
-    snow_c = _mix(_hex("#6a7496"), _hex("#eef2fa"), L)
-    hill = _mix(_hex("#5a6488"), _hex("#dfe5ee"), L) if snowy else _mix(_hex("#101e1c"), _hex("#3a6e40"), L)
-    hill_l = _mul(hill, 1.1)
-    mead = _mix(_hex("#66709a"), _hex("#e8ecf3"), L) if snowy else _mix(_hex("#16301f"), _hex("#5a9a48"), L)
-    mead_d = _mul(mead, .85)
-    snow_line = HZ - (42 if snowy else 58)
-    far_raw = [HZ - 44 - (17 * math.sin(x * .022 + 1.3) + 9 * math.sin(x * .061 + .4) + 4 * math.sin(x * .14 + 2))
-               for x in range(w)]
-    mid_raw = [HZ - 18 - (6 * math.sin(x * .035 + 2.1) + 4 * math.sin(x * .09) + 2 * math.sin(x * .21 + 1))
-               for x in range(w)]
-    far_h = [round(v / 2) * 2 for v in far_raw]
-    mid_h = [round(v) for v in mid_raw]
-    rt = random.Random(7)
-    tex = [rt.random() for _ in range(w * 6)]
-    water_tint = _hex("#14284a")
-    glint = _hex("#ffd890")
-    shift = int(epoch / 300)
-    for x in range(w):
-        fh, mh = far_h[x], mid_h[x]
-        rising = far_raw[x] < far_raw[max(0, x - 1)]   # encosta virada à luz (declive real, sem riscas)
-        mrise = mid_raw[x] < mid_raw[max(0, x - 1)]
-        for y in range(fh, h):
-            if y >= HZ:
-                off = round(math.sin(y * .9 + shift))
-                c0 = _mix(_mul(cv.get(x + off, HZ - 1 - (y - HZ) * 2), .62), water_tint, .18)
-                if (x * 7 + y * 13 + shift * 3) % 29 == 0:
-                    c0 = _mix(c0, (255, 255, 255), .25)
-                if abs(x - sun_x) < 3 - (y - HZ) / 9 and (y + shift) % 3 and e > -.05:
-                    c0 = _mix(c0, glint, .55 * (1 - cf))
-                if y == HZ:
-                    c0 = _mul(c0, .75)
-                cv.p[y * w + x] = c0
-            elif y >= HZ - 6:
-                cv.p[y * w + x] = mead_d if tex[(y - HZ + 6) * w + x] > .8 else mead
-            elif y >= mh:
-                cv.p[y * w + x] = hill_l if mrise and y < mh + 3 else hill
-            else:
-                cap = y < snow_line + (x * 7) % 5 and y < fh + 14
-                cv.p[y * w + x] = snow_c if cap else (far_l if rising else far)
+    if scene == "lago":
+        far = _mix(_mix(_hex("#1c2244"), _hex("#6178a6"), L), bot, .3)
+        far_l = _mul(far, 1.12)
+        snow_c = _mix(_hex("#6a7496"), _hex("#eef2fa"), L)
+        hill = _mix(_hex("#5a6488"), _hex("#dfe5ee"), L) if snowy else _mix(_hex("#101e1c"), _hex("#3a6e40"), L)
+        hill_l = _mul(hill, 1.1)
+        mead = _mix(_hex("#66709a"), _hex("#e8ecf3"), L) if snowy else _mix(_hex("#16301f"), _hex("#5a9a48"), L)
+        mead_d = _mul(mead, .85)
+        snow_line = HZ - (42 if snowy else 58)
+        far_raw = [HZ - 44 - (17 * math.sin(x * .022 + 1.3) + 9 * math.sin(x * .061 + .4) + 4 * math.sin(x * .14 + 2))
+                   for x in range(w)]
+        mid_raw = [HZ - 18 - (6 * math.sin(x * .035 + 2.1) + 4 * math.sin(x * .09) + 2 * math.sin(x * .21 + 1))
+                   for x in range(w)]
+        far_h = [round(v / 2) * 2 for v in far_raw]
+        mid_h = [round(v) for v in mid_raw]
+        rt = random.Random(7)
+        tex = [rt.random() for _ in range(w * 6)]
+        water_tint = _hex("#14284a")
+        glint = _hex("#ffd890")
+        shift = int(epoch / 300)
+        for x in range(w):
+            fh, mh = far_h[x], mid_h[x]
+            rising = far_raw[x] < far_raw[max(0, x - 1)]   # encosta virada à luz (declive real, sem riscas)
+            mrise = mid_raw[x] < mid_raw[max(0, x - 1)]
+            for y in range(fh, h):
+                if y >= HZ:
+                    off = round(math.sin(y * .9 + shift))
+                    c0 = _mix(_mul(cv.get(x + off, HZ - 1 - (y - HZ) * 2), .62), water_tint, .18)
+                    if (x * 7 + y * 13 + shift * 3) % 29 == 0:
+                        c0 = _mix(c0, (255, 255, 255), .25)
+                    if abs(x - sun_x) < 3 - (y - HZ) / 9 and (y + shift) % 3 and e > -.05:
+                        c0 = _mix(c0, glint, .55 * (1 - cf))
+                    if y == HZ:
+                        c0 = _mul(c0, .75)
+                    cv.p[y * w + x] = c0
+                elif y >= HZ - 6:
+                    cv.p[y * w + x] = mead_d if tex[(y - HZ + 6) * w + x] > .8 else mead
+                elif y >= mh:
+                    cv.p[y * w + x] = hill_l if mrise and y < mh + 3 else hill
+                else:
+                    cap = y < snow_line + (x * 7) % 5 and y < fh + 14
+                    cv.p[y * w + x] = snow_c if cap else (far_l if rising else far)
 
-    tree = _mix(_hex("#0a1a14"), _hex("#24563a"), L)
-    trunk = _mix(_hex("#20140c"), _hex("#5a3a22"), L)
-    base = HZ - 5
-    for tx in (26, 38, 54, w - 52, w - 36, w - 20):
-        hgt = 10 if tx % 3 else 13
-        cv.rect(tx, base - 2, 1, 3, trunk)
-        for r in range(hgt - 2):
-            wd = 1 + 2 * int(r / 2.2)
-            cv.rect(tx - wd // 2, base - hgt + r, wd, 1, snow_c if snowy and r % 3 == 0 else tree)
-    hx = w - 94
-    wall = _mix(_hex("#3c3236"), _hex("#d6b892"), L)
-    roof = snow_c if snowy else _mix(_hex("#3a1a20"), _hex("#b0473a"), L)
-    cv.rect(hx, base - 8, 13, 8, wall)
-    for r in range(7):
-        cv.rect(hx - 1 + r, base - 9 - r, 15 - 2 * r, 1, roof)
-    cv.rect(hx + 10, base - 15, 2, 4, _mul(wall, .7))
-    cv.rect(hx + 2, base - 4, 2, 4, _mul(wall, .45))
-    lit = L < .55
-    cv.rect(hx + 7, base - 6, 3, 2, _hex("#ffd36a") if lit else _hex("#8fb6d4"))
-    if lit:
-        cv.disc(hx + 8, base - 5, 4, _hex("#ffd36a"), .12)
+        tree = _mix(_hex("#0a1a14"), _hex("#24563a"), L)
+        trunk = _mix(_hex("#20140c"), _hex("#5a3a22"), L)
+        base = HZ - 5
+        for tx in (26, 38, 54, w - 52, w - 36, w - 20):
+            hgt = 10 if tx % 3 else 13
+            cv.rect(tx, base - 2, 1, 3, trunk)
+            for r in range(hgt - 2):
+                wd = 1 + 2 * int(r / 2.2)
+                cv.rect(tx - wd // 2, base - hgt + r, wd, 1, snow_c if snowy and r % 3 == 0 else tree)
+        hx = w - 94
+        wall = _mix(_hex("#3c3236"), _hex("#d6b892"), L)
+        roof = snow_c if snowy else _mix(_hex("#3a1a20"), _hex("#b0473a"), L)
+        cv.rect(hx, base - 8, 13, 8, wall)
+        for r in range(7):
+            cv.rect(hx - 1 + r, base - 9 - r, 15 - 2 * r, 1, roof)
+        cv.rect(hx + 10, base - 15, 2, 4, _mul(wall, .7))
+        cv.rect(hx + 2, base - 4, 2, 4, _mul(wall, .45))
+        lit = L < .55
+        cv.rect(hx + 7, base - 6, 3, 2, _hex("#ffd36a") if lit else _hex("#8fb6d4"))
+        if lit:
+            cv.disc(hx + 8, base - 5, 4, _hex("#ffd36a"), .12)
+    else:
+        _coast(cv, w, h, HZ, L, G, cf, snowy, bot, sun_x, e, epoch)
 
     if kind == "nevoeiro":
         fc = _mix(_hex("#2c3044"), _hex("#cdd2dc"), L)

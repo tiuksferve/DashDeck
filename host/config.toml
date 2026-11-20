@@ -204,7 +204,7 @@ type = "provider"
 provider = "clock"
 # Ecrã inteiro com a hora e a previsão do dia. Swipe para os lados troca o mostrador,
 # para cima/baixo muda o brilho, um toque volta ao DashDeck (o mostrador e o brilho ficam guardados).
-face = "paisagem"         # mostrador inicial: "paisagem" ou "retro"
+face = "paisagem"         # mostrador inicial: "paisagem", "retro" ou "previsao"
 lcd_color = "ambar"       # cor do digital retro: "ambar", "verde" ou "ciano"
 brightness = 50           # brilho inicial no relógio (o normal volta ao sair)
 dim_after = 300           # segundos sem toques até escurecer (0 = nunca); um toque repõe o brilho

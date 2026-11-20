@@ -1,7 +1,8 @@
 #pragma once
 // Modo relógio: desenho pixel art direto num buffer RGB565 (sem LVGL).
 // Mostrador 0 = paisagem (o fundo vem do host; aqui desenha-se a hora, a previsão e a chuva/neve),
-// mostrador 1 = digital retro (todo desenhado aqui).
+// mostrador 1 = digital retro (todo desenhado aqui), mostrador 2 = previsão por horas (fundo da costa
+// vindo do host, com a faixa das próximas horas desenhada aqui).
 #include <stdbool.h>
 #include <stdint.h>
 #include <time.h>
@@ -9,7 +10,7 @@
 typedef enum { CLK_ANIM_NONE, CLK_ANIM_RAIN, CLK_ANIM_STORM, CLK_ANIM_SNOW } clk_anim_t;
 
 typedef struct {
-    int face;               // 0 paisagem, 1 digital retro
+    int face;               // 0 paisagem, 1 digital retro, 2 previsão
     int pal;                // cor do LCD: 0 âmbar, 1 verde, 2 ciano
     bool has_time;
     bool has_wx;
@@ -23,6 +24,13 @@ typedef struct {
     int bright;             // brilho atual (barra ao mudar)
     bool show_bright, show_dots;
     bool show_exit;         // 1.º toque: "toque de novo para sair"
+    // previsão por horas (mostrador 2): até 6 horas e até 6 ícones diferentes
+    int nh;
+    struct { int8_t hour; int8_t icon; int8_t temp; uint8_t rain; } hours[6];   // hour < 0 = "agora"
+    int nhicons;
+    uint8_t hicon[6][256];
+    uint16_t hpal[6][8];
+    uint8_t hrole[6][8];
 } clock_state_t;
 
 // Desenha o mostrador por cima do que já está no buffer (no 0, o fundo da paisagem).
