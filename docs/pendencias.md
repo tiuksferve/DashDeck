@@ -64,6 +64,7 @@
 | 0.15.2 | Frase "TELA PEQUENA, GRANDES POSSIBILIDADES!" na animação Pixels (fonte com `!` e `,`) |
 | 0.15.3 | Tela de carregamento com 5 s no mínimo (a animação estica-se) |
 | 0.15.4 | A frase também no Nascer do sol |
+| 0.25.0 | Imagens JPEG no canvas (`{"t":"jpg"}`, TJpgDec da ROM, ~40 ms por quadro de 242×136, resposta `jpgack`), plot `live` (o update não apaga a imagem), botões `ctrl` com largura do rótulo e cor. No host: box **Câmara** (CamDeck) com visor ao vivo, Foto e Gravar; visor a ~16 quadros/s quando a câmara os dá |
 | 0.24.2 | Sombra do relógio ainda mais leve (`SCRIM_A` 85). No host: dock com ícones a cores (emoji) em Início, Captura, Brilho e Bloquear; Aplicações continuam a 44 quadros/s |
 | 0.24.1 | Sombra atrás do texto do relógio mais leve (opacidade 100 em vez de 165, `SCRIM_A` em `clockface.c`) |
 | 0.24.0 | Texto do relógio mais legível sobre as cenas: sombra translúcida esbatida atrás da hora, da data e do tempo, contorno de 2 px com sombra projetada nos números grandes; `stats` com o tempo de desenho do relógio (~14 ms por quadro, com a animação a 8 quadros/s) |

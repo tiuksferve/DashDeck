@@ -105,6 +105,16 @@ O nome e o ícone vêm do `.desktop` com o mesmo `app_id` (nome do ficheiro, `St
 | `url` | `http://127.0.0.1:8119` | Servidor web do AIS-catcher (`/api/ships.json` e `/api/allpath.json`) |
 | `map`, `map_style`, `map_url` | | Iguais aos do `adsb` |
 
+### `camera`
+Câmara do CamDeck (ver [uso.md](uso.md#câmara)). O dashd fala com o `camd` pela API local e entra com o
+token de `~/.config/camdeck/local-token` (criado pelo camd, só aceite em ligações de 127.0.0.1); não
+precisa da palavra-passe.
+
+| Opção | Padrão | Descrição |
+|---|---|---|
+| `url` | `http://127.0.0.1:8090` | Endereço do camd |
+| `quality` | `70` | Qualidade JPEG do visor enviado ao ESP (o quadro já vai reduzido ao tamanho do canvas, ~4-8 KB) |
+
 ### `sdr`
 Monitor do RTL-SDR (ver [uso.md](uso.md#sdr)). Sem opções. Usa `sudo -n fuser` para ver quem tem o dongle aberto e, no "Libertar SDR", `sudo -n systemctl stop` ou `sudo -n kill`.
 

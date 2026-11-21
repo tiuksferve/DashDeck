@@ -5,11 +5,14 @@ pages() diz quantas páginas tem (mudadas com swipe lateral). summary() é o sub
 """
 from __future__ import annotations
 
+import base64
+import io
 import json
 import logging
 import math
 import re
 import os
+import queue
 import shutil
 import socket
 import subprocess
@@ -17,6 +20,7 @@ import threading
 import time
 from pathlib import Path
 
+import camclient
 import maptiles
 import meshbridge
 import routes
@@ -3154,9 +3158,295 @@ class WindowsProvider(Provider):
         return (f"{name}: {'à frente' if action == 'activate' else 'minimizado'}", "ok")
 
 
+# ------------------------------------------------------------------ câmara (CamDeck)
+
+class CameraProvider(Provider):
+    """Câmara do CamDeck (XIAO ESP32-S3 Sense, servidor camd no uConsole). Página 1: visor ao vivo,
+    com Foto e Gravar por cima da imagem. Página 2: estado e resoluções. O visor corre numa thread:
+    pede o último quadro ao camd, reduz para o tamanho do canvas, envia-o em JPEG ({"t":"jpg"}) e
+    espera o "jpgack" do ESP antes do seguinte (a cadência acompanha o que o ESP consegue)."""
+    VIDEO_SIZES = ["VGA", "SVGA", "XGA", "HD"]
+    PHOTO_SIZES = ["HD", "UXGA", "QXGA"]
+    CHUNK = 5400                 # bytes por linha (base64 ~7,2 KB; o ESP aceita linhas até 8 KB)
+    JPG_MAX = 24000              # o ESP guarda JPEG até 24 KB
+    REC = "#DA3633"
+
+    def __init__(self, node, app):
+        super().__init__(node, app)
+        self.cam = camclient.CamClient(node.get("url", "http://127.0.0.1:8090"))
+        self.quality = int(node.get("quality", 70))
+        self._st: tuple[float, dict | None, str] = (0.0, None, "")
+        self._thread: threading.Thread | None = None
+        self._box = (0, 0)
+        self._flash: tuple[float, bytes] | None = None   # foto acabada de tirar (mostrada 1,5 s)
+        self._busy = False
+        self.fps = 0.0
+        self.dec_ms = 0
+        self._font = None
+        self._frame_n = -1
+
+    # ---- estado do camd
+    def state(self, max_age: float = 1.5) -> tuple[dict | None, str]:
+        t, st, err = self._st
+        if time.monotonic() - t < max_age:
+            return st, err
+        try:
+            st, err = self.cam.state(), ""
+        except camclient.CamError as e:
+            st, err = None, str(e)
+        self._st = (time.monotonic(), st, err)
+        return st, err
+
+    def _fresh(self) -> None:
+        self._st = (0.0, None, "")
+
+    @staticmethod
+    def _mmss(sec: float) -> str:
+        m, s = divmod(int(sec), 60)
+        return f"{m}:{s:02d}"
+
+    def summary(self) -> str:
+        st, err = self.state()
+        if err:
+            return "parada"
+        if st["rec"]["recording"]:
+            return f"a gravar {self._mmss(st['rec']['elapsed'])}"
+        return "pronta" if st["camera"].get("ready") else "desligada"
+
+    def pages(self) -> int:
+        return 2
+
+    # ---- telas
+    def render(self, page: int = 0) -> dict:
+        st, err = self.state()
+        if page == 1:
+            return self._info(st, err)
+        W, H = self.app.canvas_area()
+        portrait = W < H
+        if portrait:
+            H = W * 3 // 4
+        self._box = (W, H)
+        plot = {"w": W, "h": H, "center": False, "cross": False, "pts": []}
+        out = {"tpl": "plot", "title": "Câmara", "plot": plot, "buttons": []}
+        if err:
+            plot["msg"] = "CamDeck parado"
+            out["buttons"] = [{"id": "start", "label": "Ligar o CamDeck", "color": "ok"}]
+            out["rows"] = [["Erro", err[:60], "err"]]
+            return out
+        cam, rec = st["camera"], st["rec"]
+        if not cam.get("ready"):
+            plot["msg"] = "Câmara a arrancar..." if cam.get("connected") else "Câmara desligada\nLigue-a à USB"
+            return out
+        self._ensure_thread()
+        plot.update(live=True, msg="A ligar o vídeo...")
+        plot["ctrl"] = [["snap", "bl", "Foto"],
+                        ["rec", "br", "Parar", self.REC] if rec["recording"] else ["rec", "br", "Gravar"]]
+        if portrait:
+            out["rows"] = [["Vídeo", f"{cam.get('stream_size')} · {st['stat'].get('fps', 0):.0f} fps"],
+                           ["Gravação", f"a gravar {self._mmss(rec['elapsed'])}" if rec["recording"] else "parada",
+                            "err" if rec["recording"] else "sub"]]
+        return out
+
+    def _info(self, st: dict | None, err: str) -> dict:
+        out = {"tpl": "kv", "title": "Câmara · Estado"}
+        if err:
+            out["rows"] = [["CamDeck", "parado", "err"], ["Erro", err[:60]]]
+            out["buttons"] = [{"id": "start", "label": "Ligar o CamDeck", "color": "ok"}]
+            return out
+        cam, stat, rec, info = st["camera"], st["stat"], st["rec"], st["camera"].get("info", {})
+        ready = cam.get("ready")
+        rows = [["Câmara", f"{info.get('sensor', '?')} · fw {info.get('fw', '?')}" if ready else
+                 ("a arrancar" if cam.get("connected") else "desligada da USB"), "ok" if ready else "warn"]]
+        if ready:
+            rows.append(["Vídeo", f"{cam.get('stream_size')} · {stat.get('fps', 0):.0f} fps"
+                         if stat.get("streaming") else f"{cam.get('stream_size')} · parado"])
+            rows.append(["Fotos", str(cam.get("snap_size") or "?")])
+            if self.fps:
+                rows.append(["Visor", f"{self.fps:.1f} q/s · {self.dec_ms} ms no ESP"])
+            if stat.get("temp") is not None:
+                rows.append(["Temperatura", f"{stat['temp']:.0f} °C"])
+        rows.append(["Gravação", f"a gravar {self._mmss(rec['elapsed'])}" if rec["recording"] else
+                     ("a converter" if rec.get("processing") else "parada"),
+                     "err" if rec["recording"] else "sub"])
+        disk = st.get("disk") or {}
+        if disk.get("free"):
+            rows.append(["Disco", f"{disk['free'] / 1e9:.0f} GB livres"])
+        out["rows"] = rows
+        btns = []
+        if ready:
+            btns = [{"id": "vsize", "label": f"Vídeo {cam.get('stream_size')}", "color": "#2F81F7"},
+                    {"id": "psize", "label": f"Fotos {cam.get('snap_size')}", "color": "#8957E5"}]
+        btns.append({"id": "open", "label": "Abrir", "color": "#238636"})
+        out["buttons"] = btns
+        return out
+
+    # ---- visor
+    def _visible(self) -> bool:
+        a = self.app
+        return bool(a.esp_ready) and a.node().get("id") == self.node["id"] and \
+            a.page.get(self.node["id"], 0) == 0
+
+    def _ensure_thread(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._thread = threading.Thread(target=self._stream, daemon=True, name="camara")
+        self._thread.start()
+
+    def on_leave(self) -> None:
+        self.fps = 0.0   # a thread vê que a tela saiu e acaba sozinha
+
+    def _stream(self) -> None:
+        away, n, t0 = 0, 0, time.monotonic()
+        while True:
+            if not self._visible():
+                away += 1
+                if away > 15:      # 3 s fora do visor: acaba (o render volta a ligá-la)
+                    return
+                time.sleep(0.2)
+                continue
+            away = 0
+            try:
+                data = self._next_jpeg()
+            except camclient.CamError as e:
+                log.info("câmara: %s", e)
+                self._fresh()
+                self.app.events.put(("refresh", None))
+                time.sleep(2)
+                continue
+            except Exception:
+                log.exception("câmara: quadro")
+                time.sleep(1)
+                continue
+            if data and self._send(data):
+                n += 1
+            dt = time.monotonic() - t0
+            if dt >= 3:
+                self.fps, n, t0 = n / dt, 0, time.monotonic()
+
+    def _next_jpeg(self) -> bytes:
+        from PIL import Image, ImageDraw
+        W, H = self._box
+        flash = self._flash
+        if flash and time.monotonic() < flash[0]:
+            src = flash[1]
+        else:
+            self._frame_n, src = self.cam.frame(self._frame_n)   # espera por um quadro novo
+        img = Image.open(io.BytesIO(src))
+        img.draft("RGB", (W, H))   # o JPEG já é descodificado reduzido (muito mais rápido)
+        img = img.convert("RGB")
+        k = min(W / img.width, H / img.height)
+        img = img.resize((max(16, round(img.width * k)), max(16, round(img.height * k))), Image.BILINEAR)
+        d = ImageDraw.Draw(img)
+        st, _ = self.state(max_age=1.0)
+        if flash and time.monotonic() < flash[0]:
+            d.rectangle((0, 0, img.width - 1, img.height - 1), outline=(255, 255, 255), width=2)
+            self._label(d, img.width, "FOTO", (255, 255, 255))
+        elif st and st["rec"]["recording"]:
+            self._label(d, img.width, "REC " + self._mmss(st["rec"]["elapsed"]), (255, 80, 70), dot=True)
+        for q in (self.quality, 50, 35):
+            buf = io.BytesIO()
+            img.save(buf, "JPEG", quality=q)
+            if buf.tell() <= self.JPG_MAX:
+                return buf.getvalue()
+        return b""
+
+    def _label(self, d, w: int, text: str, col, dot: bool = False) -> None:
+        from PIL import ImageFont
+        if self._font is None:
+            try:
+                self._font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 11)
+            except OSError:
+                self._font = ImageFont.load_default()
+        tw = d.textlength(text, font=self._font) + (12 if dot else 0)
+        x, y = (w - tw) / 2, 4
+        d.rounded_rectangle((x - 5, y - 2, x + tw + 5, y + 14), 5, fill=(0, 0, 0))
+        if dot:
+            d.ellipse((x, y + 2, x + 8, y + 10), fill=col)
+            x += 12
+        d.text((x, y), text, font=self._font, fill=col)
+
+    def _send(self, data: bytes) -> bool:
+        link, nid = self.app.link, self.node["id"]
+        q = link.jpg_acks
+        while not q.empty():
+            q.get_nowait()
+        for off in range(0, len(data), self.CHUNK):
+            msg = {"t": "jpg", "id": nid, "off": off, "d": base64.b64encode(data[off:off + self.CHUNK]).decode()}
+            if off == 0:
+                msg["size"] = len(data)
+            if off + self.CHUNK >= len(data):
+                msg["last"] = True
+            link.send(msg, raw=True)
+        try:
+            ack = q.get(timeout=2)
+        except queue.Empty:
+            return False
+        self.dec_ms = int(ack.get("ms", 0))
+        return bool(ack.get("ok"))
+
+    # ---- botões
+    def _snap(self) -> None:
+        try:
+            r = self.cam.snap()
+            try:
+                self._flash = (time.monotonic() + 1.5, self.cam.thumb("photos", r["name"]))
+            except camclient.CamError:
+                pass
+            self.app.toast(f"Foto guardada ({r.get('bytes', 0) // 1024} KB)", "ok")
+        except camclient.CamError as e:
+            self.app.toast(f"Foto falhou: {str(e)[:50]}", "err")
+        finally:
+            self._busy = False
+
+    def on_button(self, btn_id: str):
+        if btn_id == "start":
+            r = subprocess.run(["systemctl", "--user", "start", "camd"], capture_output=True, text=True, timeout=15)
+            self._fresh()
+            return ("CamDeck a arrancar", "ok") if r.returncode == 0 else \
+                (f"Falhou: {(r.stderr or '?').strip()[:60]}", "err")
+        if btn_id == "open":
+            env = dict(os.environ, XDG_RUNTIME_DIR=os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"),
+                       WAYLAND_DISPLAY=os.environ.get("WAYLAND_DISPLAY", "wayland-0"))
+            subprocess.Popen(["xdg-open", self.cam.url + "/"], env=env, start_new_session=True,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return ("CamDeck aberto no uConsole", "ok")
+        st, err = self.state(max_age=0)
+        if err:
+            return (err[:60], "err")
+        try:
+            if btn_id == "snap":
+                if self._busy:
+                    return ("Ainda a tirar a foto", "info")
+                self._busy = True
+                threading.Thread(target=self._snap, daemon=True, name="foto").start()
+                return None
+            if btn_id == "rec":
+                on = not st["rec"]["recording"]
+                self.cam.record(on)
+                self._fresh()
+                return ("A gravar", "ok") if on else ("Gravação parada: a converter para MP4", "ok")
+            if btn_id in ("vsize", "psize"):
+                cam = st["camera"]
+                avail = {s["name"] for s in cam.get("info", {}).get("sizes", [])}
+                opts = [s for s in (self.VIDEO_SIZES if btn_id == "vsize" else self.PHOTO_SIZES) if s in avail]
+                cur = cam.get("stream_size" if btn_id == "vsize" else "snap_size")
+                nxt = opts[(opts.index(cur) + 1) % len(opts)] if cur in opts else opts[-1]
+                if btn_id == "vsize":
+                    self.cam.set("framesize", nxt)
+                else:
+                    self.cam.prefs(snap_size=nxt)
+                self._fresh()
+                return (f"{'Vídeo' if btn_id == 'vsize' else 'Fotos'}: {nxt}", "ok")
+        except camclient.CamError as e:
+            self._fresh()
+            return (str(e)[:60], "err")
+        return None
+
+
 REGISTRY = {"system": SystemProvider, "gps": GpsProvider, "adsb": AdsbProvider, "ais": AisProvider,
             "mesh": MeshtasticProvider, "clock": ClockProvider, "aio": AioProvider, "sdr": SdrProvider,
-            "net": NetworkProvider, "console": ConsoleProvider, "windows": WindowsProvider}
+            "net": NetworkProvider, "console": ConsoleProvider, "windows": WindowsProvider,
+            "camera": CameraProvider}
 
 
 def create(name: str, node: dict, app) -> Provider:

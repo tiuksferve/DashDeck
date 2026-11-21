@@ -20,6 +20,10 @@
 //   {"t":"bg","key":"..","w":..,"h":..,"pal":["#rrggbb"x16],"off":n,"d":"base64","last":true}
 //      imagem de fundo 4 bpp (2 px/byte, nibble alto primeiro) usada pelo plot com o mesmo "bg";
 //      cada pedaço é confirmado com {"t":"bgack","off":n,"ok":bool}
+//   {"t":"jpg","id":screen,"off":n,"size":total,"d":"base64","last":true}  JPEG (até 24 KB) desenhado no
+//      canvas do plot desta tela (centrado; reduzido 1/2..1/8 se não couber) -> {"t":"jpgack","ok","ms"}
+//      plot "live":true: num update o canvas não é redesenhado (fica a última imagem); "ctrl" aceita
+//      uma 4.ª posição com a cor do botão, e a largura acompanha o rótulo
 //   {"t":"rot","v":0..3}  grava a rotação na NVS e reinicia
 //   {"t":"icon","id":"..","w":32,"h":32,"d":"base64 RGB565A8"} -> {"t":"iconack","id":..,"ok":..}
 //   {"t":"dock","items":[{"id","label","icon","img","color"}]}  barra fixa em baixo -> {"t":"dock","item":id}
@@ -71,6 +75,7 @@
 #include "clockface.h"
 #include "dash_fonts.h"
 #include "esp_timer.h"
+#include "esp32c6/rom/tjpgd.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
 #include "mbedtls/base64.h"
@@ -1374,6 +1379,120 @@ static void handle_bg(const cJSON *msg)
     bg_ack(off, true);
 }
 
+// ---------- imagem JPEG no canvas (pré-visualização da câmara) ----------
+// {"t":"jpg","id":screen,"off":n,"size":total,"d":"base64","last":bool}: o host envia um JPEG pequeno
+// (já do tamanho do canvas) em pedaços; no último, é descodificado com o TJpgDec da ROM direto para o
+// canvas do plot desta tela, e o ESP responde {"t":"jpgack","ok":bool,"ms":tempo}. O host só envia o
+// quadro seguinte depois da resposta, por isso a cadência ajusta-se sozinha.
+#define JPG_MAX (24 * 1024)
+#define JPG_POOL 3200
+static uint8_t *s_jpg;          // JPEG a receber (libertado ao mudar de tela)
+static size_t s_jpg_len, s_jpg_cap, s_jpg_pos;
+static int32_t s_jpg_ox, s_jpg_oy;
+
+static void jpg_ack(bool ok, int ms)
+{
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "t", "jpgack");
+    cJSON_AddBoolToObject(o, "ok", ok);
+    cJSON_AddNumberToObject(o, "ms", ms);
+    link_send(o);
+    cJSON_Delete(o);
+}
+
+static void jpg_free(void)
+{
+    free(s_jpg);
+    s_jpg = NULL;
+    s_jpg_cap = s_jpg_len = 0;
+}
+
+static UINT jpg_in(JDEC *jd, BYTE *buf, UINT n)
+{
+    (void)jd;
+    if (s_jpg_pos + n > s_jpg_len) n = (UINT)(s_jpg_len - s_jpg_pos);
+    if (buf) memcpy(buf, s_jpg + s_jpg_pos, n);
+    s_jpg_pos += n;
+    return n;
+}
+
+static UINT jpg_out(JDEC *jd, void *bitmap, JRECT *r)
+{
+    (void)jd;
+    const uint8_t *src = bitmap;   // RGB888 (formato da ROM)
+    for (int y = r->top; y <= r->bottom; y++) {
+        int32_t dy = y + s_jpg_oy;
+        if (dy < 0 || dy >= s_ch) {
+            src += 3 * (r->right - r->left + 1);
+            continue;
+        }
+        uint16_t *row = (uint16_t *)(s_cbuf.data + dy * s_cbuf.header.stride);
+        for (int x = r->left; x <= r->right; x++, src += 3) {
+            int32_t dx = x + s_jpg_ox;
+            if (dx >= 0 && dx < s_cw) {
+                row[dx] = (uint16_t)(((src[0] & 0xF8) << 8) | ((src[1] & 0xFC) << 3) | (src[2] >> 3));
+            }
+        }
+    }
+    return 1;
+}
+
+static void handle_jpg(const cJSON *msg)
+{
+    int32_t off = jint(msg, "off", 0);
+    if (off == 0) {
+        int32_t size = jint(msg, "size", 0);
+        if (size <= 0 || size > JPG_MAX) {
+            jpg_ack(false, 0);
+            return;
+        }
+        if ((size_t)size > s_jpg_cap) {
+            jpg_free();
+            s_jpg = heap_caps_malloc(size, MALLOC_CAP_8BIT);
+            if (!s_jpg) {
+                ESP_LOGW(TAG, "jpg: sem memória para %ld B", (long)size);
+                jpg_ack(false, 0);
+                return;
+            }
+            s_jpg_cap = size;
+        }
+        s_jpg_len = size;
+        s_jpg_pos = 0;
+    }
+    const char *d = jstr(msg, "d", "");
+    size_t olen = 0;
+    if (!s_jpg || off < 0 || (size_t)off != s_jpg_pos || (size_t)off >= s_jpg_len ||
+        mbedtls_base64_decode(s_jpg + off, s_jpg_len - off, &olen, (const unsigned char *)d, strlen(d)) != 0) {
+        s_jpg_pos = 0;
+        jpg_ack(false, 0);
+        return;
+    }
+    s_jpg_pos = off + olen;
+    if (!jbool(msg, "last", false)) return;   // os pedaços do meio não têm resposta
+    bool ok = false;
+    int64_t t0 = esp_timer_get_time();
+    void *pool = malloc(JPG_POOL);
+    if (pool && s_jpg_pos == s_jpg_len && lvgl_port_lock(1000)) {
+        if (s_tpl == TPL_PLOT && s_canvas && s_cmem && !strcmp(jstr(msg, "id", ""), s_screen_id)) {
+            JDEC jd;
+            s_jpg_len = s_jpg_pos;
+            s_jpg_pos = 0;
+            if (jd_prepare(&jd, jpg_in, pool, JPG_POOL, NULL) == JDR_OK) {
+                uint8_t sc = 0;   // reduz 1/2, 1/4 ou 1/8 se a imagem for maior que o canvas
+                while (sc < 3 && ((int32_t)(jd.width >> sc) > s_cw || (int32_t)(jd.height >> sc) > s_ch)) sc++;
+                s_jpg_ox = (s_cw - (int32_t)(jd.width >> sc)) / 2;
+                s_jpg_oy = (s_ch - (int32_t)(jd.height >> sc)) / 2;
+                ok = jd_decomp(&jd, jpg_out, sc) == JDR_OK;
+                lv_obj_invalidate(s_canvas);
+            }
+        }
+        lvgl_port_unlock();
+    }
+    free(pool);
+    s_jpg_pos = 0;
+    jpg_ack(ok, (int)((esp_timer_get_time() - t0) / 1000));
+}
+
 static void draw_plot(const cJSON *p)
 {
     if (!s_canvas || !cJSON_IsObject(p)) {
@@ -1579,6 +1698,7 @@ static void build_ctrl(const cJSON *ctrl)
     cJSON_ArrayForEach(c, ctrl) {
         if (i >= CTRL_MAX) break;
         const cJSON *jid = cJSON_GetArrayItem(c, 0), *jpos = cJSON_GetArrayItem(c, 1), *jl = cJSON_GetArrayItem(c, 2);
+        const cJSON *jc = cJSON_GetArrayItem(c, 3);   // cor do fundo (opcional)
         if (!cJSON_IsString(jid) || !cJSON_IsString(jpos)) continue;
         const char *pos = jpos->valuestring;
         const char *lbl = cJSON_IsString(jl) && jl->valuestring[0] ? jl->valuestring : NULL;
@@ -1594,11 +1714,13 @@ static void build_ctrl(const cJSON *ctrl)
         strlcpy(s_ctrl_ids[i], jid->valuestring, ID_LEN);
         lv_obj_t *b = lv_obj_create(s_plot_wrap);
         lv_obj_remove_style_all(b);
-        lv_obj_set_size(b, 30, 26);
+        lv_obj_set_size(b, LV_SIZE_CONTENT, 26);   // largura do rótulo, no mínimo 30
+        lv_obj_set_style_min_width(b, 30, 0);
+        lv_obj_set_style_pad_hor(b, 8, 0);
         lv_obj_align(b, al, 0, 0);
         lv_obj_set_style_radius(b, 7, 0);
-        lv_obj_set_style_bg_color(b, lv_color_hex(C_BAR), 0);
-        lv_obj_set_style_bg_opa(b, LV_OPA_70, 0);
+        lv_obj_set_style_bg_color(b, parse_color(cJSON_IsString(jc) ? jc->valuestring : NULL, C_BAR), 0);
+        lv_obj_set_style_bg_opa(b, cJSON_IsString(jc) ? LV_OPA_90 : LV_OPA_70, 0);
         lv_obj_set_style_bg_color(b, lv_color_hex(C_ACCENT), LV_STATE_PRESSED);
         lv_obj_set_style_bg_opa(b, LV_OPA_COVER, LV_STATE_PRESSED);
         lv_obj_set_style_border_width(b, 1, 0);
@@ -2088,9 +2210,12 @@ static void apply_body(const cJSON *msg, bool rebuild)
             lv_obj_set_style_pad_row(s_list, 6, 0);
         }
         const cJSON *pl = cJSON_GetObjectItemCaseSensitive(msg, "plot");
-        if (s_plot_wrap) lv_obj_set_size(s_plot_wrap, jint(pl, "w", 160), jint(pl, "h", 160));
-        draw_plot(pl);
-        build_ctrl(cJSON_GetObjectItemCaseSensitive(pl, "ctrl"));
+        // "live": o canvas mostra imagens "jpg"; num update só mudam os botões (não apaga a imagem)
+        if (rebuild || !jbool(pl, "live", false)) {
+            if (s_plot_wrap && pl) lv_obj_set_size(s_plot_wrap, jint(pl, "w", 160), jint(pl, "h", 160));
+            draw_plot(pl);
+        }
+        if (pl) build_ctrl(cJSON_GetObjectItemCaseSensitive(pl, "ctrl"));
     }
 
     if (arr && cJSON_IsArray(arr)) {
@@ -2223,6 +2348,7 @@ static void build_dock(const cJSON *items)
 static void render_screen(const cJSON *msg)
 {
     s_icon_gen++;   // os ícones da tela nova passam à frente na RAM
+    if (strcmp(s_screen_id, jstr(msg, "id", ""))) jpg_free();
     strlcpy(s_screen_id, jstr(msg, "id", ""), ID_LEN);
     s_tpl = parse_tpl(jstr(msg, "tpl", "menu"));
     if (s_tpl != TPL_CLOCK) clock_exit();
@@ -2915,6 +3041,10 @@ void ui_handle(const cJSON *msg)
     }
     if (!strcmp(t, "bg")) {
         handle_bg(msg);
+        return;
+    }
+    if (!strcmp(t, "jpg")) {
+        handle_jpg(msg);
         return;
     }
     if (!strcmp(t, "bl")) {

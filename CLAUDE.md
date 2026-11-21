@@ -9,12 +9,13 @@ toque), ligada só por USB. O ESP é um renderizador fino (LVGL 9.2); quem decid
 `host/dashd.py` (systemd --user), configurado em `host/config.toml`. Protocolo: uma linha JSON por
 mensagem, até 8 KB (descrito no cabeçalho de `firmware/main/ui.c` e em `docs/arquitetura.md`).
 
-- **Menu inicial (boxes):** AIO v2, Meshtastic, GPS, ADS-B, AIS, SDR, Rede, Aplicações, Serviços, Sistema.
+- **Menu inicial (boxes):** AIO v2, Meshtastic, GPS, ADS-B, AIS, SDR, Câmara, Rede, Aplicações, Serviços, Sistema.
 - **Dock** (início e Aplicações): Início, Relógio, Captura, Brilho, Som (volume e brilho do uConsole), Bloquear.
-- **Firmware atual:** 0.24.2 (gravado em 20/11).
+- **Firmware atual:** 0.25.0 (gravado em 21/11).
 
 ## Onde está cada coisa
-- `host/providers.py`: telas com dados (system, gps, adsb, ais, mesh, clock, aio, sdr, net, console, windows).
+- `host/providers.py`: telas com dados (system, gps, adsb, ais, mesh, clock, aio, sdr, net, console, windows, camera).
+- `host/camclient.py`: cliente do camd do CamDeck (`~/PycharmProjects/CamDeck`, porta 8090, token local em `~/.config/camdeck/local-token`).
 - `host/wltop.py`: janelas abertas no uConsole (cliente Wayland em Python puro; listar, mostrar, minimizar, fechar).
 - `host/dashd.py`: ligação serial, navegação, envio de ícones, fundos, emojis e avisos.
 - `host/clockscene.py`: relógio (Open-Meteo, cena da paisagem em 8 bpp, ícones do tempo).
@@ -47,7 +48,8 @@ mensagem, até 8 KB (descrito no cabeçalho de `firmware/main/ui.c` e em `docs/a
 - **Memória do ESP:** o LVGL usa o heap do sistema (`CONFIG_LV_USE_CLIB_MALLOC`); 110 KB ficam reservados para o buffer de ecrã (relógio, mapas, arranque) e sobram ~150 KB. Os ícones vão para o cartão SD (sem reenvio entre arranques) com cópia na RAM para os da tela aberta e do dock (carregados ao construir a tela, libertando os de outras telas, enquanto sobram 36 KB de heap; ler do cartão no barramento do display tornava swipes e animações lentos) e uma cache de imagens de 32 KB para os outros; 96 lugares, os do dock nunca são substituídos (`iconlost` avisa o host). O fundo do relógio fica na RAM, porque ler do cartão leva 120+ ms por quadro. O aviso de mensagem (46 KB) usa a memória do fundo do relógio quando o relógio está aberto (`bgfreed`). O `hello` traz `largest` e `sd`.
 - **Disco do uConsole:** tem pouco espaço livre; por isso o build fica em `/dev/shm`.
 
-## Feito recentemente (19 e 20/11)
+## Feito recentemente (19 a 21/11)
+- **Câmara** (21/11): box com visor ao vivo (JPEG reduzido no host, `{"t":"jpg"}` descodificado pela ROM do C6 em ~40 ms, fluxo com `jpgack`), Foto e Gravar por cima da imagem, página Estado. ~16 quadros/s quando a câmara os dá. Precisa do camd com o token local e o `?after=n` no `/api/frame.jpg` (alterações no CamDeck, 21/11). Os toques nos botões ainda não foram feitos com o dedo (só por eventos simulados).
 - **Rotas** (20/11): ADS-B com origem/destino pelo indicativo (`host/routes.py`, hexdb.io, cache em `~/.cache/dashd/routes.json`); AIS com destino na lista e no mapa e chegada (ETA) no detalhe. Não testado com aviões e navios reais (readsb e AIS-catcher parados).
 - **Relógio legível** (20/11): `scrim()` (sombra translúcida esbatida, opacidade `SCRIM_A`) atrás dos blocos de texto e `outline_px()` (contorno 2 px + sombra) em `clockface.c`. Desenho ~14 ms por quadro.
 - **Abertas** (20/11): box à frente nas Aplicações com os programas abertos (labwc, protocolo wlr-foreign-toplevel); Mostrar, Minimizar, Fechar. Testado com o gestor de ficheiros.
@@ -64,6 +66,9 @@ mensagem, até 8 KB (descrito no cabeçalho de `firmware/main/ui.c` e em `docs/a
 - Nome mudado de DashOS para DashDeck (também no MeshDeckWeb, branch `rename-dashdeck`).
 
 ## Por fazer (por prioridade sugerida)
-1. Histórico de mensagens no MeshDeckWeb.
+1. Pequenas melhorias sugeridas (20/11), por esta ordem: nomes dos portos no AIS (tabela UN/LOCODE pequena: `PT LIS` → Lisboa);
+   alerta animado de squawk 7500/7600/7700 no ADS-B (como o aviso de DM); aviso de bateria fraca do uConsole (15% e 5%);
+   resumo do dia no ADS-B/AIS (vistos hoje, o mais distante); filtros (altitude no ADS-B, tipo no AIS); guardar os trajetos do ADS-B.
+   Histórico de mensagens no MeshDeckWeb.
 2. **Atualizar o firmware pelo cartão SD** (por último; o cartão já está montado em `/sd` desde a 0.17.0): copiar o `.bin` para o cartão; o ESP grava-o em `ota_1` ao arrancar. Exige gravar esta funcionalidade uma vez pela USB.
 - Ainda por confirmar com uso real: o aviso "Ondas LoRa" com uma mensagem direta de verdade e a alternância das animações de arranque (só se testou com mensagens fictícias e imagens geradas no uConsole).

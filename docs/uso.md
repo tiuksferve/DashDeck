@@ -182,6 +182,24 @@ Monitor do RTL-SDR, para saber se está livre para outros programas.
 - **Libertar SDR** (com confirmação): pára o serviço que o tem aberto (por exemplo o ais-catcher, que senão se reiniciava sozinho) ou fecha o programa.
 - No menu principal, o box SDR mostra "livre" ou quem o está a usar.
 
+### Câmara
+Câmara do CamDeck (projeto irmão: XIAO ESP32-S3 Sense ligada ao uConsole por USB),
+pelo servidor `camd`. Duas páginas (swipe):
+
+- **Visor:** o vídeo ao vivo no ecrã inteiro, com **Foto** (canto inferior esquerdo) e **Gravar**
+  (canto inferior direito; fica vermelho, **Parar**, durante a gravação). A foto é tirada na resolução
+  das fotos e aparece 1,5 s no visor com uma moldura branca; durante uma gravação, a foto é o quadro
+  atual. A gravar, o visor mostra "● REC" e o tempo. Os vídeos ficam em MP4 com som, como no browser.
+- **Estado:** sensor e firmware, resolução e fps do vídeo, resolução das fotos, quadros por segundo do
+  visor e o tempo de descodificação no ESP, temperatura, gravação e disco livre. Botões **Vídeo**
+  (VGA, SVGA, XGA, HD) e **Fotos** (HD, UXGA, QXGA) mudam a resolução num toque; **Abrir** abre a
+  interface web do CamDeck no uConsole (galeria e todos os ajustes).
+- O visor acompanha a câmara: cada quadro só é enviado depois de o ESP confirmar o anterior. A USB
+  da câmara limita o vídeo (HD ~4-10 fps conforme a compressão; VGA e SVGA até 28 fps), e o visor chega
+  a cerca de 16 quadros por segundo, por isso VGA ou SVGA dão o visor mais fluido.
+- Com o camd parado, o visor mostra "CamDeck parado" e o botão **Ligar o CamDeck**. No menu, o box
+  mostra "pronta", "a gravar 0:12", "desligada" (câmara fora da USB) ou "parada".
+
 ### Rede
 Rede do uConsole pelo NetworkManager, em três páginas (swipe):
 

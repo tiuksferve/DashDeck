@@ -42,7 +42,7 @@ systemctl --user status dashd -n 30 --no-pager   # últimas linhas do log
 
 ## Na tela
 
-- **Menu inicial em boxes com scroll lateral**: AIO v2, Meshtastic, GPS, ADS-B, AIS, SDR, Rede, Aplicações, Serviços e Sistema.
+- **Menu inicial em boxes com scroll lateral**: AIO v2, Meshtastic, GPS, ADS-B, AIS, SDR, Câmara, Rede, Aplicações, Serviços e Sistema.
 - **Barra de cima**: botão ←, título, pontos de página, hora, bateria do uConsole e ícone da ligação USB (verde ou vermelho).
 - **Dock** (na tela inicial e em Aplicações): Início, Relógio, Captura, Brilho, Som e Bloquear.
 - **Ecrã apagado** após 3 min sem toques na tela inicial; um toque liga-o.
@@ -63,6 +63,7 @@ Os detalhes de cada tela estão em [docs/uso.md](docs/uso.md).
 | AIS | Liga e desliga o AIS-catcher. Lista de navios, detalhe e o mesmo mapa com trajetos e seguir um navio | ok |
 | AIO v2 | Interruptores GPS, LoRa, SDR e USB da placa AIO v2 (pelo `aiov2_ctl`), com informação ao vivo de cada um, perfis de uso num toque (Meshtastic, ADS-B, AIS, Poupança), a energia da bateria e a medição do consumo por recurso | ok |
 | SDR | Monitor do RTL-SDR: alimentação, dongle, quem o usa, frequência, histórico e "Libertar SDR" | ok |
+| Câmara | Visor ao vivo da câmara do CamDeck (XIAO ESP32-S3 Sense), Foto e Gravar por cima da imagem, estado e resolução do vídeo e das fotos | ok |
 | Rede | Wi-Fi (estado, sinal, Internet, IP), redes ao alcance (as guardadas ligam-se com um toque) e VPN (NetworkManager e Tailscale) | ok |
 | Som | Volume e brilho do ecrã do uConsole, pelo dock | ok |
 | Serviços | Ligar, parar e reiniciar unidades systemd, com o grupo exclusivo `sdr` (um só uso do RTL-SDR) | ok |

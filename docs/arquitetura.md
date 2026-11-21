@@ -93,6 +93,7 @@ está na placa) seria o próximo passo se um dia a tela ficar solta.
 | `bgfreed` (ESP → host) | — | O aviso de mensagem usou a memória do fundo do relógio; o host volta a enviá-lo |
 | `emoji` | `cp` (U+100000 + 0..47), `w`, `h` (até 24), `d` (base64 RGB565A8) | Guarda a imagem do emoji que o texto traz como o código privado `cp`. O ESP responde `emojiack` |
 | `bg` | `key`, `off`, `d` (base64), na 1.ª parte `w`, `h`, `pal` (16 cores) ou `bpp:8` com `pal` de 256, na última `last` | Fundo do plot (4 bpp) ou do relógio (8 bpp), em pedaços de 2 KB, cada um confirmado com `bgack` |
+| `jpg` | `id` (tela), `off`, `d` (base64), na 1.ª parte `size` (até 24 KB), na última `last` | JPEG desenhado no canvas do plot da tela `id` (centrado; reduzido 1/2 a 1/8 se não couber), descodificado com o TJpgDec da ROM do C6 (~40 ms para 242×136). Pedaços até ~5,4 KB; só a última parte tem resposta: `jpgack` com `ok` e `ms`. Usado pelo visor da câmara |
 | `dock` | `items` (`id`, `label`, `icon`, `img`, `color`) | Constrói o dock (só aparece nas telas com `"dock":true`) |
 | `idle` | `home` (segundos, 0 = nunca) | Apaga o backlight após N s sem toques na tela `home`. Um painel transparente por cima apanha o toque que acorda |
 | `notify` | `from`, `text` | Aviso de mensagem direta por cima de tudo (acende o ecrã). Um toque responde `{"t":"notify","act":"open"}` |
@@ -121,9 +122,12 @@ está na placa) seria o próximo passo se um dia a tela ficar solta.
   caracteres base64url (`A-Z a-z 0-9 - _`), 2 por coordenada, com o valor `px + 1024` (aceita
   pontos fora do canvas). O firmware escreve as linhas direto no buffer (Bresenham), sem alocar
   objetos do LVGL. O host gasta no máximo cerca de 2,8 KB de trajetos por tela.
-- `ctrl`: `[id, posição, rótulo]`, até 10 botões por cima do canvas. Posições `tl`, `tr`, `bl`,
-  `br` (cantos) e `l`, `r`, `t`, `b` (meio das bordas; sem rótulo mostram uma seta). Um toque envia
-  `btn` com o `id`. O firmware só refaz os botões quando a lista muda.
+- `ctrl`: `[id, posição, rótulo, cor?]`, até 10 botões por cima do canvas. Posições `tl`, `tr`, `bl`,
+  `br` (cantos) e `l`, `r`, `t`, `b` (meio das bordas; sem rótulo mostram uma seta). A largura
+  acompanha o rótulo (mínimo 30 px) e a cor é opcional. Um toque envia `btn` com o `id`. O firmware
+  só refaz os botões quando a lista muda.
+- `live`: o canvas mostra imagens `jpg`; num `update` não é redesenhado (fica a última imagem) e só
+  mudam os `ctrl` e as `rows`.
 
 ### ESP → host
 
@@ -133,6 +137,7 @@ está na placa) seria o próximo passo se um dia a tela ficar solta.
 | `tap` | `id` (tela), `item` | Toque num item |
 | `btn` | `id`, `btn` | Botão (depois da confirmação, se houver) |
 | `back` | `id` | Botão ← ou BOOT (no relógio, também dois toques seguidos) |
+| `jpgack` | `ok`, `ms` (tempo da descodificação) | Depois da última parte de um `jpg` (ou logo, se um pedaço falhar) |
 | `swipe` | `id`, `dir` (`left`, `right`) | Gesto lateral (ignorado nos menus com scroll lateral) |
 | `dock` | `item` | Botão do dock |
 | `clock` | `face` ou `bl` (texto) | Gesto no relógio, já aplicado pelo ESP; o host guarda a escolha |

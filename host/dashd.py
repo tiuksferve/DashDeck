@@ -112,12 +112,14 @@ class Link:
         self.port = port
         self.events = events
         self.acks: queue.Queue = queue.Queue()   # confirmações "bgack" do ESP (fluxo do mapa)
+        self.jpg_acks: queue.Queue = queue.Queue()   # "jpgack" (visor da câmara, noutra thread)
         self.ser: serial.Serial | None = None
         self.lock = threading.Lock()
         threading.Thread(target=self._run, daemon=True, name="link").start()
 
-    def send(self, msg: dict) -> None:
-        data = (json.dumps(lcd_safe(msg), ensure_ascii=False, separators=(",", ":")) + "\n").encode()
+    def send(self, msg: dict, raw: bool = False) -> None:
+        """raw=True: sem adaptar o texto à fonte do ESP (dados base64, ex.: imagens da câmara)."""
+        data = (json.dumps(msg if raw else lcd_safe(msg), ensure_ascii=False, separators=(",", ":")) + "\n").encode()
         with self.lock:
             if not self.ser:
                 return
@@ -166,6 +168,8 @@ class Link:
                     m = json.loads(text)
                     if m.get("t") in ("bgack", "iconack", "emojiack"):
                         self.acks.put(m)
+                    elif m.get("t") == "jpgack":
+                        self.jpg_acks.put(m)
                     else:
                         self.events.put(("msg", m))
                 except json.JSONDecodeError:

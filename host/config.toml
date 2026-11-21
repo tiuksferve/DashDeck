@@ -7,7 +7,7 @@
 #   shell    — executa um comando em segundo plano e mostra um aviso (cmd, done)
 #   service  — liga/para/reinicia uma unidade systemd (unit, group opcional)
 #              Serviços com o mesmo "group" são exclusivos: ligar um pára os outros (ex.: um só SDR).
-#   provider — tela com dados ao vivo (provider = system | gps | adsb | ais | mesh | clock | aio | sdr | net | console | windows)
+#   provider — tela com dados ao vivo (provider = system | gps | adsb | ais | mesh | clock | aio | sdr | net | console | windows | camera)
 #   text     — tela de texto fixo
 #   home     — volta ao menu inicial
 #   backlight — alterna o brilho (levels = [25, 50, 75, 100])
@@ -134,6 +134,19 @@ type = "provider"
 provider = "sdr"
 # Monitor do RTL-SDR: alimentação na AIO, dongle, quem o usa, frequência, há quanto tempo e o histórico.
 # "Libertar SDR" pára o serviço (ou fecha o programa) que o tem aberto.
+
+[[menu]]
+id = "camera"
+label = "Câmara"
+icon = "image"
+img = "emoji:📷"
+color = "#F778BA"
+type = "provider"
+provider = "camera"
+url = "http://127.0.0.1:8090"      # camd do CamDeck (entra com o token de ~/.config/camdeck/local-token)
+quality = 70                       # qualidade JPEG do visor (mais baixa = mais quadros por segundo)
+# Páginas (swipe): Visor (vídeo ao vivo; Foto e Gravar por cima da imagem) · Estado (sensor, fps,
+# temperatura, gravação, disco; botões para a resolução do vídeo e das fotos e Abrir no uConsole).
 
 [[menu]]
 id = "net"
