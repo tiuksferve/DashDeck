@@ -1,8 +1,9 @@
-"""Rotas dos voos (origem e destino) pelo indicativo, no hexdb.io.
+"""Rotas dos voos (origem e destino) pelo indicativo, no adsbdb.com e, se faltar, no hexdb.io.
 
-O ADS-B não transmite a rota: só o indicativo (ex.: TAP1352). O hexdb.io devolve a rota registada
-para esse indicativo ("LPPT-EGLL") e os dados de cada aeroporto. Só o indicativo sai do uConsole
-(nunca a posição). As respostas ficam em ~/.cache/dashd/routes.json: rotas 24 h, "sem rota" 6 h,
+O ADS-B não transmite a rota: só o indicativo (ex.: TAP1352). O adsbdb.com devolve numa consulta a
+companhia e os aeroportos de origem e destino; o hexdb.io (usado quando o adsbdb não conhece o
+voo) devolve a rota registada ("LPPT-EGLL") e depois os dados de cada aeroporto. Só o indicativo
+sai do uConsole (nunca a posição). As respostas ficam em ~/.cache/dashd/routes.json: rotas 24 h, "sem rota" 6 h,
 aeroportos para sempre. As consultas correm numa thread, uma de cada vez, sem atrasar a tela.
 """
 from __future__ import annotations
@@ -20,6 +21,7 @@ from pathlib import Path
 log = logging.getLogger("dashd.routes")
 
 API = "https://hexdb.io/api/v1"
+ADSBDB = "https://api.adsbdb.com/v0/callsign/"
 CACHE = Path.home() / ".cache" / "dashd" / "routes.json"
 ROUTE_TTL, MISS_TTL = 24 * 3600, 6 * 3600
 OLD = 2 * 365 * 86400          # rota registada há mais de 2 anos: mostrada a cinza
@@ -69,8 +71,8 @@ class Routes:
             log.debug("rotas: não gravou a cache: %s", e)
 
     # ---- consultas
-    def _get(self, path: str):
-        req = urllib.request.Request(API + path, headers={"User-Agent": "dashd"})
+    def _get(self, path: str, base: str = API):
+        req = urllib.request.Request(base + path, headers={"User-Agent": "dashd"})
         try:
             with urllib.request.urlopen(req, timeout=8) as r:
                 body = r.read().decode("utf-8", "replace").strip()
@@ -82,7 +84,37 @@ class Routes:
             return None
         return json.loads(body)
 
+    def _adsbdb(self, cs: str) -> bool:
+        """Rota pelo adsbdb.com (companhia e aeroportos numa só consulta). False se não a conhecer."""
+        d = self._get(cs, ADSBDB)
+        fr = (d or {}).get("response")
+        fr = fr.get("flightroute") if isinstance(fr, dict) else None
+        if not fr or not fr.get("origin") or not fr.get("destination"):
+            return False
+        legs = [fr["origin"]] + ([fr["midpoint"]] if fr.get("midpoint") else []) + [fr["destination"]]
+        codes = []
+        with self._lock:
+            for a in legs:
+                icao = (a.get("icao_code") or "").upper()
+                if not re.fullmatch(r"[A-Z0-9]{4}", icao):
+                    return False
+                codes.append(icao)
+                if not self.airports.get(icao):
+                    city = a.get("municipality") or ""
+                    self.airports[icao] = {"iata": a.get("iata_code") or "", "name": city or short_name(a.get("name") or ""),
+                                           "city": city, "cc": a.get("country_iso_name") or ""}
+            self.routes[cs] = {"route": "-".join(codes), "upd": 0, "t": time.time(),
+                               "airline": (fr.get("airline") or {}).get("name") or ""}
+        self._dirty = True
+        return True
+
     def _fetch(self, cs: str) -> None:
+        try:
+            if self._adsbdb(cs):
+                return
+        except (OSError, ValueError) as e:   # adsbdb indisponível: tenta o hexdb
+            log.debug("rotas: adsbdb %s: %s", cs, e)
+        time.sleep(self.interval)
         d = self._get(f"/route/icao/{cs}")
         route = (d or {}).get("route") or ""
         with self._lock:
@@ -131,13 +163,13 @@ class Routes:
         self._q.put(cs)
 
     def get(self, callsign: str) -> dict | None:
-        """{"from": aeroporto, "to": aeroporto, "via": [..], "old": bool} ou None (sem rota conhecida)."""
+        """{"from", "to", "via": [..], "old": bool, "airline": str} ou None (sem rota conhecida)."""
         r = self.routes.get((callsign or "").strip().upper())
         if not r or not r["route"]:
             return None
         legs = r["route"].split("-")
         ap = [dict(self.airports.get(i) or {}, icao=i) for i in legs]
-        return {"from": ap[0], "to": ap[-1], "via": ap[1:-1],
+        return {"from": ap[0], "to": ap[-1], "via": ap[1:-1], "airline": r.get("airline", ""),
                 "old": bool(r["upd"]) and time.time() - r["upd"] > OLD}
 
     @staticmethod

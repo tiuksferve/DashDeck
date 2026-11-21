@@ -28,7 +28,7 @@
 - **Relógio:** as nuvens, as estrelas e o reflexo do lago só mudam quando a cena é refeita (a cada 5 min); só a chuva, a neve e os relâmpagos são animados no ESP. Os gestos do relógio são medidos do toque ao soltar (24 px), sem o detetor do LVGL.
 - **Uma linha JSON tem até 8 KB.** Por isso a lista de nós mostra 30.
 - **Perfis da AIO:** aplicar um perfil só foi testado no caminho "já está ativo"; a sequência completa (parar, desligar, ligar, arrancar serviços) não foi corrida no hardware.
-- **Rotas dos voos:** vêm do hexdb.io, uma base feita por voluntários; algumas são antigas (mostradas a cinza) ou faltam. O AIS não transmite o porto de saída, só o destino escrito pela tripulação.
+- **Rotas dos voos:** vêm do adsbdb.com e, quando falta, do hexdb.io, bases feitas por voluntários; algumas faltam e as do hexdb podem ser antigas (mostradas a cinza). O AIS não transmite o porto de saída, só o destino escrito pela tripulação.
 - **Abertas:** precisa de um compositor com `wlr-foreign-toplevel-management` (labwc, wayfire, sway). Num ambiente X11 puro a lista fica vazia com o erro.
 - **Rede:** ligar a uma rede nova com palavra-passe é no uConsole (sem teclado no DashDeck). A página VPN só foi vista vazia (não há VPN configurada no uConsole).
 - **Mensagens:** o envio pela tela só foi testado com a interface falsa dos testes do MeshDeckWeb, não pela rede real.
@@ -64,6 +64,12 @@
 | 0.15.2 | Frase "TELA PEQUENA, GRANDES POSSIBILIDADES!" na animação Pixels (fonte com `!` e `,`) |
 | 0.15.3 | Tela de carregamento com 5 s no mínimo (a animação estica-se) |
 | 0.15.4 | A frase também no Nascer do sol |
+| — | (só host) ADS-B e AIS com três páginas: Controlo (ligar/desligar, monitor, resumo), Lista e Mapa |
+| 0.25.5 | Cabeçalho com o avião do monitor: a hora, a bateria e a ligação ficam à direita (um espaçador ocupa o lugar que o título deixa; na 0.25.4 deslizavam para cima do avião) |
+| 0.25.4 | Avião no cabeçalho (`{"t":"hdr","plane"}`), laranja com o monitor de emergências ligado e vermelho depois de uma emergência. No host: o aviso de emergência passa a ser opcional, pelo cartão **Monitor de emergências** no ADS-B (mantém o readsb ligado fora da tela; estado em `state.json`) |
+| 0.25.3 | Aviso de emergência do ADS-B (`notify` com `kind:"squawk"`): avião vermelho em pixel art que pisca, faixa vermelha. No host: o dashd verifica o readsb a cada 3 s em qualquer tela e avisa uma vez por avião e código (7500, 7600, 7700) a cada 30 min; o toque abre o detalhe do avião |
+| 0.25.2 | Aplicações fluidas também depois de muito uso: os ícones voltam do cartão para a RAM enquanto sobrarem 20 KB (eram 36 KB, e os do fim da lista ficavam no cartão, com bloqueios de ~400 ms no scroll); o fundo do mapa é libertado ao abrir uma tela que não é mapa. Aplicações a 44-45 quadros/s depois de relógio, mapa e câmara |
+| 0.25.1 | Inércia do scroll mais longa (`scroll_throw` 4 em vez de 10: o toque é lido ~100 vezes/s e o scroll parava logo ao soltar); `stats` traz `heap`, `largest`, `icons_ram`, `icons_sd`, `emojis` e `emoji_kb` |
 | 0.25.0 | Imagens JPEG no canvas (`{"t":"jpg"}`, TJpgDec da ROM, ~40 ms por quadro de 242×136, resposta `jpgack`), plot `live` (o update não apaga a imagem), botões `ctrl` com largura do rótulo e cor. No host: box **Câmara** (CamDeck) com visor ao vivo, Foto e Gravar; visor a ~16 quadros/s quando a câmara os dá |
 | 0.24.2 | Sombra do relógio ainda mais leve (`SCRIM_A` 85). No host: dock com ícones a cores (emoji) em Início, Captura, Brilho e Bloquear; Aplicações continuam a 44 quadros/s |
 | 0.24.1 | Sombra atrás do texto do relógio mais leve (opacidade 100 em vez de 165, `SCRIM_A` em `clockface.c`) |

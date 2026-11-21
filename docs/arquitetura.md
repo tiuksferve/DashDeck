@@ -19,7 +19,7 @@ está na placa) seria o próximo passo se um dia a tela ficar solta.
            ├─ App (loop)         pilha de navegação, build() de cada tela, envio só do que mudou
            ├─ providers.py       system · gps (NmeaReader) · adsb, ais (+maptiles) · mesh (+meshbridge) · clock (+clockscene) · aio (aiov2_ctl) · sdr · net · console · windows (+wltop)
            ├─ icons.py           ícones (tema GTK, ficheiros, emoji) → RGB565A8 32×32
-           ├─ routes.py          rotas dos voos pelo indicativo (hexdb.io, thread, cache em disco)
+           ├─ routes.py          rotas dos voos pelo indicativo (adsbdb.com/hexdb.io, thread, cache em disco)
            ├─ wltop.py           janelas abertas (cliente Wayland em Python puro, wlr-foreign-toplevel)
            └─ xdgapps.py         aplicações a partir dos .desktop (cache de 30 s) e o .desktop de cada app_id
 ```
@@ -83,6 +83,7 @@ está na placa) seria o próximo passo se um dia a tela ficar solta.
 |---|---|---|
 | `screen` | `id`, `tpl`, `title`, `back`, `layout`, `dock`, `pages`, `page` e os dados do template | Desenha uma tela nova |
 | `update` | `id` e os dados | Atualiza a tela aberta (só se o `id` for igual). Com o mesmo número de itens, atualiza no lugar; senão refaz o corpo e mantém o scroll |
+| `hdr` | `plane` (0, 1 laranja, 2 vermelho) | Avião no cabeçalho (ao centro na horizontal, junto da hora na vertical): monitor de emergências do ADS-B ligado |
 | `status` | `text` | Texto da barra (hora e bateria) |
 | `toast` | `text`, `level` (`ok`, `warn`, `err`, `info`) | Aviso de 2,5 s |
 | `bl` | `v` (0 a 100) | Brilho |
@@ -96,7 +97,7 @@ está na placa) seria o próximo passo se um dia a tela ficar solta.
 | `jpg` | `id` (tela), `off`, `d` (base64), na 1.ª parte `size` (até 24 KB), na última `last` | JPEG desenhado no canvas do plot da tela `id` (centrado; reduzido 1/2 a 1/8 se não couber), descodificado com o TJpgDec da ROM do C6 (~40 ms para 242×136). Pedaços até ~5,4 KB; só a última parte tem resposta: `jpgack` com `ok` e `ms`. Usado pelo visor da câmara |
 | `dock` | `items` (`id`, `label`, `icon`, `img`, `color`) | Constrói o dock (só aparece nas telas com `"dock":true`) |
 | `idle` | `home` (segundos, 0 = nunca) | Apaga o backlight após N s sem toques na tela `home`. Um painel transparente por cima apanha o toque que acorda |
-| `notify` | `from`, `text` | Aviso de mensagem direta por cima de tudo (acende o ecrã). Um toque responde `{"t":"notify","act":"open"}` |
+| `notify` | `from`, `text`; opcionais `kind` (`alarm` despertador dourado, `squawk` avião em emergência vermelho), `title`, `dur` | Aviso de mensagem direta por cima de tudo (acende o ecrã). Um toque responde `{"t":"notify","act":"open"}` |
 | `time` | `epoch` (segundos, já em hora local) | Acerta o relógio do ESP, que depois conta sozinho. Enviado no `hello` e a cada 10 min |
 
 ### Templates (`tpl`)
@@ -142,7 +143,7 @@ está na placa) seria o próximo passo se um dia a tela ficar solta.
 | `dock` | `item` | Botão do dock |
 | `clock` | `face` ou `bl` (texto) | Gesto no relógio, já aplicado pelo ESP; o host guarda a escolha |
 | `iconsfreed` | — | O relógio libertou os ícones e o dock; o host volta a enviá-los |
-| `stats` | toque, quadros, `lock_max_ms`, `lock_type`, `clk_draws`, `clk_avg_ms`, `clk_max_ms` (desenho do relógio) | Resposta a `{"t":"stats"}` (o dashd pede-a com SIGUSR1 e escreve-a no log) |
+| `stats` | toque, quadros, `lock_max_ms`, `lock_type`, `clk_draws`, `clk_avg_ms`, `clk_max_ms` (desenho do relógio), `heap`, `largest`, `icons_ram`, `icons_sd`, `emojis`, `emoji_kb` | Resposta a `{"t":"stats"}` (o dashd pede-a com SIGUSR1 e escreve-a no log) |
 | `bench` | `frames`, `avg_ms`, `max_ms`, `fps` | Resposta a `{"t":"bench"}`: rola a tela atual 2 s (na horizontal ou, se não houver scroll lateral, na vertical) e mede cada quadro |
 | `iconlost` | `id` | O ESP precisou do lugar deste ícone (96 ocupados); o host volta a enviá-lo quando for preciso |
 | `pong`, `iconack`, `bgack` | — | Respostas |

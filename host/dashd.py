@@ -192,14 +192,12 @@ def wayland_env() -> dict:
 def launch_desktop(path: str) -> None:
     """Abre um .desktop como o menu do uConsole (trata Exec, %U e Terminal=true)."""
     log.info("launch: %s", path)
-    subprocess.Popen(["gio", "launch", path], env=wayland_env(), start_new_session=True,
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    providers.spawn_detached(["gio", "launch", path], env=wayland_env())
 
 
 def launch(cmd: str) -> None:
     log.info("launch: %s", cmd)
-    subprocess.Popen(cmd, shell=True, env=wayland_env(), start_new_session=True,
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    providers.spawn_detached(cmd, shell=True, env=wayland_env())
 
 
 def service_state(unit: str) -> dict:
@@ -251,7 +249,11 @@ class App:
         self.last_time = 0.0
         self._owners: set = set()   # providers com tela na pilha
         self.notified: tuple | None = None   # (nó do Meshtastic, mensagem) do último aviso, para o toque
+        self.notified_sq: tuple | None = None   # (nó do ADS-B, hex) do último aviso de emergência
+        self.squawk_seen: dict[tuple, float] = {}   # (hex, squawk) -> quando avisou
         self.last_dm_check = 0.0
+        self.last_sq_check = 0.0
+        self.header_sent = -1
         self.bg_hold = 0.0
         self.esp_sd = False   # não reenviar o fundo antes disto (o aviso de mensagem está com a memória)
         self.last_tpl = ""
@@ -543,8 +545,8 @@ class App:
             scr = {"id": self.node()["id"], "title": "Erro", "tpl": "text", "text": str(e),
                    "back": len(self.stack) > 1}
         if scr.get("tpl") != "clock":
-            if self.last_tpl == "clock":
-                self.bg_sent = None      # o ESP liberta o fundo do relógio ao sair
+            if self.last_tpl == "clock" or scr.get("tpl") != "plot":
+                self.bg_sent = None      # o ESP liberta o fundo do relógio ao sair, e o do mapa fora dos mapas
             if self.dock_lost:
                 self.dock_lost = False
                 self.send_dock()
@@ -595,6 +597,78 @@ class App:
             log.info("mensagem direta de %s", name)
             self.link.send({"t": "notify", "from": name, "text": text})
             self.notified = (node, m)
+            self.notified_sq = None
+
+    SQUAWK = {"7500": "sequestro", "7600": "falha de rádio", "7700": "emergência"}
+    SQUAWK_RED = 300   # s com o avião do cabeçalho a vermelho depois de um aviso
+
+    def adsb(self) -> tuple[dict | None, object]:
+        node = next((n for n in self.cfg.get("menu", []) if n.get("provider") == "adsb"), None)
+        return (node, self.provider(node)) if node else (None, None)
+
+    def send_header(self) -> None:
+        """Avião ao centro do cabeçalho: 1 = monitor de emergências ligado (laranja), 2 = emergência
+        recente (vermelho), 0 = nada. Só é enviado quando muda (e a cada hello)."""
+        _, prov = self.adsb()
+        v = 0
+        if prov is not None and getattr(prov, "monitor", False):
+            v = 2 if self.squawk_seen and time.monotonic() - max(self.squawk_seen.values()) < self.SQUAWK_RED else 1
+        if v != self.header_sent and self.esp_ready:
+            self.link.send({"t": "hdr", "plane": v})
+            self.header_sent = v
+
+    def monitor_restore(self) -> None:
+        """No arranque: se o monitor ficou ligado, volta a ligar o readsb (só se o SDR estiver livre)."""
+        node, prov = self.adsb()
+        if not getattr(prov, "monitor", False) or prov.active():
+            return
+        busy = prov._start_confirm_now()
+        if busy:
+            prov.set_monitor(False, "SDR ocupado no arranque")
+            return
+        log.info("monitor de emergências: a ligar o %s", prov.unit)
+        prov._start()
+        prov.started_here = False
+
+    def check_squawk(self) -> None:
+        """Aviso animado ({"t":"notify","kind":"squawk"}) quando um avião transmite 7500, 7600 ou 7700,
+        em qualquer tela, com o monitor de emergências ligado (box ADS-B). Um aviso por avião e código
+        a cada 30 min. Se o readsb parar (o SDR passou para outro programa), o monitor desliga-se."""
+        node, prov = self.adsb()
+        if not node or not getattr(prov, "monitor", False):
+            self.send_header()
+            return
+        if time.monotonic() - prov.monitor_since > 30 and not prov.active():
+            prov.set_monitor(False, f"{prov.unit} parado")
+            self.toast("Monitor de emergências desligado: o ADS-B parou", "warn")
+            return
+        self.send_header()
+        try:
+            if not prov.load():
+                return
+        except Exception as e:
+            log.debug("squawk: %s", e)
+            return
+        now = time.monotonic()
+        for t in prov.targets:
+            sq = str(t["raw"].get("squawk") or "")
+            if sq not in self.SQUAWK or now - self.squawk_seen.get((t["id"], sq), -1e9) < 1800:
+                continue
+            self.squawk_seen[(t["id"], sq)] = now
+            a = t["raw"]
+            alt = a.get("alt_baro", a.get("altitude"))
+            parts = [prov.routes.short(t["name"]) if t["label"] else "",
+                     "no solo" if alt == "ground" else (f"{alt} ft" if isinstance(alt, (int, float)) else ""),
+                     f"{a['r_dst']:.0f} nm" if isinstance(a.get("r_dst"), (int, float)) else ""]
+            text = " · ".join(p for p in parts if p) or "toque para ver no ADS-B"
+            log.warning("squawk %s (%s): %s %s", sq, self.SQUAWK[sq], t["name"], text)
+            self.link.send({"t": "notify", "kind": "squawk", "from": t["name"],
+                            "title": f"Squawk {sq} · {self.SQUAWK[sq]} · {t['name']}", "text": text,
+                            "dur": int(node.get("squawk_secs", 12))})
+            self.notified_sq = (node, t["id"])
+            self.notified = None
+            self.send_header()
+            break
 
     def clock_providers(self) -> list:
         nodes = [n for n in self.cfg.get("dock", []) + self.cfg.get("menu", []) if n.get("provider") == "clock"]
@@ -615,6 +689,15 @@ class App:
             for p in ringing:
                 p.stop_ring()
             self.show(full=False)
+            return
+        if self.notified_sq:
+            node, hexid = self.notified_sq
+            self.notified_sq = None
+            prov = self.provider(node)
+            self.page[node["id"]] = prov.LIST_PAGE
+            res = prov.on_tap(hexid)   # detalhe do avião (se ainda estiver na lista)
+            self.stack = [self.root, node] + ([{"type": "detail", **res}] if isinstance(res, dict) else [])
+            self.show()
             return
         if not self.notified:
             return
@@ -791,6 +874,8 @@ class App:
                 self.link.send({"t": "idle", "home": self.screen_off})
                 self.send_status(force=True)
                 self.send_dock()
+                self.header_sent = -1
+                self.send_header()
                 self.show()
             elif not self.esp_ready:
                 self.link.send({"t": "hello?"})
@@ -830,6 +915,7 @@ class App:
         import signal   # kill -USR1: pede ao ESP as estatísticas do toque e do desenho (aparecem no log)
         if threading.current_thread() is threading.main_thread():
             signal.signal(signal.SIGUSR1, lambda *_: self.link.send({"t": "stats"}))
+        self.run_bg(self.monitor_restore)   # monitor de emergências que ficou ligado
         last_ping = last_refresh = last_tick = 0.0
         while True:
             try:
@@ -850,6 +936,9 @@ class App:
             if self.esp_ready and now - self.last_dm_check >= 3:
                 self.last_dm_check = now
                 self.check_direct()
+            if self.esp_ready and now - self.last_sq_check >= 3:
+                self.last_sq_check = now
+                self.check_squawk()
             if self.esp_ready and now - last_refresh >= self.refresh:
                 self.show(full=False)
                 last_refresh = now

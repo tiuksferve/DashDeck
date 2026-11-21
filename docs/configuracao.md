@@ -94,7 +94,9 @@ O nome e o ícone vêm do `.desktop` com o mesmo `app_id` (nome do ficheiro, `St
 | `map_style` | `simples` | `simples` (Esri Dark Gray), `satelite` (Esri com nomes) ou `osm` (OpenStreetMap escurecido) |
 | `map_url` | — | Outro servidor de tiles `https://.../{z}/{x}/{y}.png` (substitui o estilo) |
 | `track_minutes` | `30` | Minutos de trajeto guardados por aeronave |
-| `routes` | `true` | Origem e destino de cada voo pelo indicativo no hexdb.io (só o indicativo sai do uConsole; cache em `~/.cache/dashd/routes.json`). `false` desliga |
+| `squawk_alert` | `true` | Mostra o cartão **Monitor de emergências** (aviso animado em qualquer tela com 7500, 7600 ou 7700; o readsb fica ligado enquanto o monitor estiver ligado). `false` esconde-o |
+| `squawk_secs` | `12` | Segundos que o aviso de emergência fica no ecrã |
+| `routes` | `true` | Origem e destino de cada voo pelo indicativo no adsbdb.com (e no hexdb.io, se faltar; só o indicativo sai do uConsole; cache em `~/.cache/dashd/routes.json`). `false` desliga |
 
 ### `ais`
 | Opção | Padrão | Descrição |

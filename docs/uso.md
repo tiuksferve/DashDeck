@@ -35,7 +35,7 @@ parado, a barra mostra "offline".
 - Mostra os mesmos programas do menu **Acessórios** do uConsole (categoria `Utility`, sem `System`
   e `Accessibility`), com o ícone real e por ordem alfabética.
 - A seguir vêm Terminal, Gqrx, Arquivos e PyCharm (instalado em `/opt/pycharm`, sem `.desktop`, por isso está no `config.toml`).
-- Tocar abre o programa no uConsole, com `gio launch`, como o menu do sistema. Os programas de terminal, como o Vim, abrem numa janela de terminal.
+- Tocar abre o programa no uConsole, com `gio launch`, como o menu do sistema. Os programas de terminal, como o Vim, abrem numa janela de terminal. Cada programa corre fora do serviço dashd (num scope próprio do systemd), por isso continua aberto quando o dashd reinicia ou o firmware é gravado.
 - Instalar ou remover um programa atualiza a lista em até 30 s.
 - **Abertas** (o primeiro box): os programas abertos no uConsole, com o ícone de cada um. O que está em uso fica com o fundo azul e "em uso" a verde; os outros dizem "aberta" ou "minimizada". Com duas janelas do mesmo programa, o box mostra o título da janela. Um toque abre a janela com **Mostrar** (traz para a frente, mesmo minimizada), **Minimizar** e **Fechar** (com confirmação; o programa pode ainda perguntar se quer gravar). Lê as janelas pelo compositor (labwc), por isso vê também as janelas Wayland que o `wmctrl` não vê.
 
@@ -76,7 +76,11 @@ Precisa do MeshDeckWeb a correr, ligado ao nó e com `--local-api on` (ver [inst
 Os dois funcionam da mesma forma. O ADS-B usa o serviço `readsb` (aeronaves) e o AIS o serviço
 `ais-catcher` (navios). Os dois precisam do RTL-SDR, que só serve um programa de cada vez.
 
-- **Ligar e desligar:** o primeiro card da lista mostra o serviço.
+Três páginas (swipe): **Controlo** (ligar e desligar, o monitor de emergências no ADS-B, o alvo
+seguido e o resumo: quantos há e quantos têm posição; tocar no resumo abre a lista ou o mapa) ·
+**Lista** (só os aviões ou navios) · **Mapa**.
+
+- **Ligar e desligar:** o primeiro card da página Controlo mostra o serviço.
   - **Ligado** (fundo verde): tocar desliga o serviço, com confirmação, e liberta o SDR.
   - **Desligado** (fundo castanho): tocar liga. Se o SDR estiver ocupado (o outro serviço, o
     `rtl_tcp` do SDR Server, o Intercept, o Gqrx…), a confirmação diz por quem; ao aceitar, o
@@ -87,12 +91,16 @@ Os dois funcionam da mesma forma. O ADS-B usa o serviço `readsb` (aeronaves) e 
   para outros programas (Gqrx, SDR++, tar1090…). Abrir o detalhe ou o mapa não conta como sair. Um
   serviço ligado fora do DashDeck (pela tela Serviços ou por outro programa) não é desligado. Para o
   manter ligado em segundo plano, use `keep_running = true` no `config.toml`.
-- **Lista:**
+- **Lista** (página 2; sem dados diz se o serviço está desligado ou à espera):
   - ADS-B: voo ou hex com a rota (ex.: `TAP1352  LIS » LHR`), altitude, velocidade e squawk. Emergências (7500, 7600, 7700) em vermelho.
+  - **Monitor de emergências (ADS-B):** o segundo cartão da página Controlo do ADS-B. Ligado, o readsb fica a correr mesmo fora da tela (o SDR fica ocupado pelo ADS-B) e aparece um **avião laranja ao centro do cabeçalho**, em qualquer tela. Quando um avião transmite o squawk 7500 (sequestro), 7600 (falha de rádio) ou 7700 (emergência), aparece um aviso animado em qualquer tela: os pixels formam um avião vermelho que pisca, o indicativo escreve-se por baixo e a faixa diz o código, o significado, a rota, a altitude e a distância. Fica 12 s; um toque abre o detalhe do avião. O avião do cabeçalho fica vermelho durante 5 min. Cada avião avisa uma vez por código a cada 30 min.
+    - Sem o monitor, o ADS-B funciona como antes: liga-se na tela e desliga-se ao sair, e não há avisos fora dela.
+    - Desligar o monitor deixa o readsb ligado até sair da tela. Desligar o readsb (ou libertar o SDR, ou outro programa ficar com ele) desliga também o monitor, com um aviso.
+    - O estado fica gravado: se o dashd reiniciar com o monitor ligado, volta a ligar o readsb (só se o SDR estiver livre).
   - AIS: nome ou MMSI com o destino (ex.: `SANTA MARIA  » PT LIS`), tipo, velocidade, distância, há quanto tempo foi ouvido e país. Navios sem sinal há mais de 15 min saem da lista.
   - Tocar abre o detalhe, com o botão **Seguir no mapa**.
 - **Origem e destino:**
-  - ADS-B: o avião só transmite o indicativo do voo, por isso o dashd procura a rota no [hexdb.io](https://hexdb.io) (só o indicativo sai do uConsole, nunca a posição). O detalhe mostra **Origem**, as **Escalas** e o **Destino** com o código IATA, o nome do aeroporto e o país; o painel do mapa mostra a rota curta. Enquanto procura aparece "a procurar..."; sem resultado, "desconhecida". A base é feita por voluntários: uma rota registada há mais de 2 anos fica a cinza, porque pode ter mudado. Voos privados e militares (sem indicativo de companhia) não têm rota. As respostas ficam em `~/.cache/dashd/routes.json` (24 h); `routes = false` desliga as consultas.
+  - ADS-B: o avião só transmite o indicativo do voo, por isso o dashd procura a rota no [adsbdb.com](https://www.adsbdb.com) e, se faltar, no [hexdb.io](https://hexdb.io) (só o indicativo sai do uConsole, nunca a posição). O detalhe mostra a **Companhia**, a **Origem**, as **Escalas** e o **Destino** com o código IATA, o nome do aeroporto e o país; o painel do mapa mostra a rota curta. Enquanto procura aparece "a procurar..."; sem resultado, "desconhecida". As bases são feitas por voluntários: uma rota do hexdb registada há mais de 2 anos fica a cinza, porque pode ter mudado. Voos privados e militares (sem indicativo de companhia) não têm rota. As respostas ficam em `~/.cache/dashd/routes.json` (24 h); `routes = false` desliga as consultas.
   - AIS: o navio transmite o **Destino** (texto livre escrito pela tripulação, muitas vezes o código do porto, ex.: `PT LIS`) e a **Chegada** prevista, que aparece na hora local; "(passou)" quando a hora já passou. O porto de saída não faz parte do AIS.
 - **Mapa:**
   - O mesmo mapa escuro, com cada alvo, um traço na direção do rumo e o nome.
@@ -107,7 +115,7 @@ Os dois funcionam da mesma forma. O ADS-B usa o serviço `readsb` (aeronaves) e 
   - O mapa só anda quando o alvo se afasta do centro, para não refazer o fundo a cada atualização.
   - O painel ao lado mostra o alvo (rota, altitude e velocidade, ou tipo, destino, velocidade e estado do navio).
   - As setas também funcionam enquanto segue: o mapa fica parado onde o deixou até tocar em **Centrar**.
-  - **Soltar** (no mapa, no topo da lista ou no detalhe) volta ao mapa normal.
+  - **Soltar** (no mapa, na página Controlo ou no detalhe) volta ao mapa normal.
 
 ### Relógio
 Abre-se pelo botão **Relógio** do dock. É um ecrã inteiro, sem barra nem dock, com a hora, a data e a previsão do dia em pixel art.

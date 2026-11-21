@@ -6,6 +6,7 @@
 //    "items":[{"id","label","sub","icon","color","right"}], "rows":[["k","v","#color"?]],
 //    "lines":[".."], "text":"..", "buttons":[{"id","label","color","confirm"}]}
 //   {"t":"update","id":"..", <mesmos campos de dados>, "append":[".."]}
+//   {"t":"hdr","plane":0|1|2}  avião no cabeçalho: monitor de emergências ligado (1 laranja, 2 vermelho)
 //   {"t":"status","text":"12:34"}   {"t":"toast","text":"..","level":"ok|warn|err|info"}
 //   {"t":"bl","v":0..100}           {"t":"ping"}   {"t":"hello?"}
 //   Páginas: "pages":N,"page":i no screen/update mostram pontos; o swipe lateral envia "swipe".
@@ -57,7 +58,8 @@
 //   No mostrador 4 os toques nas zonas enviam {"t":"clock","tset":"300"}, {"tact":"start|pause|reset"},
 //   {"alarm":"07:30"}, {"aon":"1"}; manter o dedo numa seta repete. No retro, um toque longo muda a cor
 //   do LCD -> {"t":"clock","pal":"1"}.
-//   notify: "kind":"alarm" (despertador dourado), "title" (1.ª linha da faixa), "dur" (s até fechar).
+//   notify: "kind":"alarm" (despertador dourado) ou "squawk" (avião em emergência, vermelho),
+//   "title" (1.ª linha da faixa), "dur" (s até fechar).
 //   Os gestos do relógio são medidos do toque ao soltar (não pelo detetor do LVGL). O brilho normal volta ao sair.
 #include "ui.h"
 
@@ -204,7 +206,9 @@ static char s_btn_ids[MAX_BTNS][ID_LEN];
 // sobrar pelo menos isto de heap. A RAM vai para os ícones da tela aberta e do dock: ao construir uma
 // tela, os que lá aparecem carregam-se do cartão e libertam as cópias de telas que já não se veem.
 // Os que não couberem desenham-se do cartão através da cache de imagens.
-#define ICON_RAM_RESERVE (36 * 1024)
+// (36 KB até à 0.25.0: depois de algum uso, os ícones das Aplicações ficavam no cartão e o scroll
+// bloqueava ~400 ms; com todos na RAM sobram ~24 KB e tudo funciona.)
+#define ICON_RAM_RESERVE (20 * 1024)
 typedef struct {
     char id[24];
     lv_image_dsc_t dsc;
@@ -2352,6 +2356,15 @@ static void render_screen(const cJSON *msg)
     strlcpy(s_screen_id, jstr(msg, "id", ""), ID_LEN);
     s_tpl = parse_tpl(jstr(msg, "tpl", "menu"));
     if (s_tpl != TPL_CLOCK) clock_exit();
+    if (s_tpl != TPL_PLOT && s_tpl != TPL_CLOCK && s_bg && !s_ntf_borrowed) {
+        // o fundo do mapa (~21 KB) não fica preso fora dos mapas: a RAM vai para os ícones da tela
+        // (o host volta a enviá-lo quando um mapa abrir)
+        free(s_bg);
+        s_bg = NULL;
+        s_bg_size = 0;
+        s_bg_ready = false;
+        s_bg_key[0] = '\0';
+    }
     s_has_screen = true;
     s_n = 0;
     s_log_lbl = NULL;
@@ -2609,6 +2622,7 @@ static void ntf_show(const cJSON *msg)
     }
     lv_display_trigger_activity(NULL);
     bool alarm = !strcmp(jstr(msg, "kind", ""), "alarm");
+    bool sq = !strcmp(jstr(msg, "kind", ""), "squawk");
     int dur = jint(msg, "dur", 0);
     s_ntf_total = dur > 0 && dur <= 300 ? (float)dur : NOTIFY_TOTAL;
     s_ntf = lv_obj_create(lv_layer_top());
@@ -2637,7 +2651,7 @@ static void ntf_show(const cJSON *msg)
     }
     if (s_ntf_mem) {   // sem memória fica só a faixa
         lv_draw_buf_init(&s_ntf_buf, NOTIFY_W, NOTIFY_H, LV_COLOR_FORMAT_RGB565A8, NOTIFY_W * 2, s_ntf_mem, need);
-        notify_start(jstr(msg, "from", ""), alarm ? NOTIFY_ALARM : NOTIFY_DM);
+        notify_start(jstr(msg, "from", ""), alarm ? NOTIFY_ALARM : sq ? NOTIFY_SQUAWK : NOTIFY_DM);
         notify_draw(s_ntf_mem, 0);
         s_ntf_cv = lv_canvas_create(s_ntf);
         lv_obj_remove_flag(s_ntf_cv, LV_OBJ_FLAG_CLICKABLE);
@@ -2648,7 +2662,8 @@ static void ntf_show(const cJSON *msg)
     lv_obj_set_size(s_ntf_bar, s_W, 42);
     lv_obj_set_pos(s_ntf_bar, 0, s_H);
     lv_obj_set_style_bg_opa(s_ntf_bar, LV_OPA_COVER, 0);
-    const uint32_t bar_bg = alarm ? 0x3B2A00 : 0x0E3B1C, bar_fg = alarm ? 0xFFC94A : 0x67EA94;
+    const uint32_t bar_bg = alarm ? 0x3B2A00 : sq ? 0x3D0808 : 0x0E3B1C,
+                   bar_fg = alarm ? 0xFFC94A : sq ? 0xFF7B72 : 0x67EA94;
     lv_obj_set_style_bg_color(s_ntf_bar, lv_color_hex(bar_bg), 0);
     lv_obj_set_style_border_side(s_ntf_bar, LV_BORDER_SIDE_TOP, 0);
     lv_obj_set_style_border_width(s_ntf_bar, 1, 0);
@@ -2662,7 +2677,8 @@ static void ntf_show(const cJSON *msg)
     lv_obj_t *l1 = mk_label(s_ntf_bar, &dash_font_14, bar_fg, head);
     lv_obj_set_width(l1, LV_PCT(100));
     lv_label_set_long_mode(l1, LV_LABEL_LONG_DOT);
-    lv_obj_t *l2 = mk_label(s_ntf_bar, &dash_font_12, alarm ? 0xFFF6E0 : 0xE7FFE9, jstr(msg, "text", ""));
+    lv_obj_t *l2 = mk_label(s_ntf_bar, &dash_font_12, alarm ? 0xFFF6E0 : sq ? 0xFFECEC : 0xE7FFE9,
+                            jstr(msg, "text", ""));
     lv_obj_set_width(l2, LV_PCT(100));
     lv_label_set_long_mode(l2, LV_LABEL_LONG_DOT);
     s_ntf_t0 = esp_timer_get_time();
@@ -2704,6 +2720,61 @@ static void button_poll_cb(lv_timer_t *t)
 }
 
 // ---------- API ----------
+
+// ---------- avião do cabeçalho (monitor de emergências do ADS-B) ----------
+#define HDR_PW 16
+#define HDR_PH 12
+static const char *const HDR_PLANE[HDR_PH] = {
+    "       ##       ", "       ##       ", "      ####      ", "      ####      ",
+    "    ########    ", "  ############  ", "################", "###   ####   ###",
+    "      ####      ", "       ##       ", "     ######     ", "    ###  ###    ",
+};
+static uint8_t s_hdr_px[HDR_PW * HDR_PH * 3];
+static lv_image_dsc_t s_hdr_dsc;
+static lv_obj_t *s_hdr_plane, *s_hdr_spacer;
+static int s_hdr_state;
+
+static void hdr_plane_draw(uint32_t color)
+{
+    uint16_t c = rgb565(color);
+    uint16_t *px = (uint16_t *)s_hdr_px;
+    uint8_t *al = s_hdr_px + HDR_PW * HDR_PH * 2;
+    for (int y = 0; y < HDR_PH; y++)
+        for (int x = 0; x < HDR_PW; x++) {
+            bool on = HDR_PLANE[y][x] == '#';
+            px[y * HDR_PW + x] = on ? c : 0;
+            al[y * HDR_PW + x] = on ? 255 : 0;
+        }
+    s_hdr_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+    s_hdr_dsc.header.cf = LV_COLOR_FORMAT_RGB565A8;
+    s_hdr_dsc.header.w = HDR_PW;
+    s_hdr_dsc.header.h = HDR_PH;
+    s_hdr_dsc.header.stride = HDR_PW * 2;
+    s_hdr_dsc.data_size = sizeof(s_hdr_px);
+    s_hdr_dsc.data = s_hdr_px;
+}
+
+// {"t":"hdr","plane":0|1|2}: 0 escondido, 1 laranja (monitor ligado), 2 vermelho (emergência recente).
+// Na horizontal o título encolhe para não passar por baixo do avião.
+static void hdr_set(int v)
+{
+    if (v == s_hdr_state || !s_hdr_plane) return;
+    s_hdr_state = v;
+    if (v) {
+        hdr_plane_draw(v == 2 ? 0xF85149 : 0xF0883E);
+        lv_image_cache_drop(&s_hdr_dsc);
+        lv_obj_invalidate(s_hdr_plane);
+        lv_obj_remove_flag(s_hdr_plane, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s_hdr_plane, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_land) {
+        lv_obj_set_flex_grow(s_title, v ? 0 : 1);
+        lv_obj_set_style_max_width(s_title, v ? s_W / 2 - 46 : LV_COORD_MAX, 0);
+        if (v) lv_obj_remove_flag(s_hdr_spacer, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(s_hdr_spacer, LV_OBJ_FLAG_HIDDEN);
+    }
+}
 
 void ui_init(lv_display_t *disp)
 {
@@ -2752,6 +2823,11 @@ void ui_init(lv_display_t *disp)
     s_title = mk_label(bar, &dash_font_14, C_TEXT, "DashDeck");
     lv_obj_set_flex_grow(s_title, 1);
     lv_label_set_long_mode(s_title, LV_LABEL_LONG_DOT);
+    // com o avião ao centro, o título encolhe e este espaçador ocupa o resto (a hora fica à direita)
+    s_hdr_spacer = plain_box(bar);
+    lv_obj_set_size(s_hdr_spacer, 0, 1);
+    lv_obj_set_flex_grow(s_hdr_spacer, 1);
+    lv_obj_add_flag(s_hdr_spacer, LV_OBJ_FLAG_HIDDEN);
     s_pager = plain_box(bar);
     lv_obj_set_size(s_pager, LV_SIZE_CONTENT, 6);
     lv_obj_set_flex_flow(s_pager, LV_FLEX_FLOW_ROW);
@@ -2759,6 +2835,15 @@ void ui_init(lv_display_t *disp)
     lv_obj_set_style_pad_column(s_pager, 3, 0);
     lv_obj_set_style_pad_right(s_pager, 4, 0);
     lv_obj_add_flag(s_pager, LV_OBJ_FLAG_HIDDEN);
+    // avião do monitor de emergências ({"t":"hdr"}): ao centro na horizontal, junto da hora na vertical
+    s_hdr_plane = lv_image_create(bar);
+    hdr_plane_draw(0xF0883E);
+    lv_image_set_src(s_hdr_plane, &s_hdr_dsc);
+    if (s_land) {
+        lv_obj_add_flag(s_hdr_plane, LV_OBJ_FLAG_IGNORE_LAYOUT);
+        lv_obj_align(s_hdr_plane, LV_ALIGN_CENTER, 0, 0);
+    }
+    lv_obj_add_flag(s_hdr_plane, LV_OBJ_FLAG_HIDDEN);
     s_status = mk_label(bar, &dash_font_12, C_SUB, "");
     s_link = mk_label(bar, &dash_font_12, C_ERR, LV_SYMBOL_USB);
 
@@ -2834,6 +2919,10 @@ void ui_init(lv_display_t *disp)
     lv_timer_create(button_poll_cb, 40, NULL);
 
     ts_hook();
+    // Inércia do scroll: o LVGL tira esta % à velocidade a cada leitura do toque. O padrão (10) conta
+    // com ~30 leituras/s; o toque daqui é lido ~100 vezes/s e o scroll parava logo ao soltar.
+    lv_indev_t *tin = lv_indev_get_next(NULL);
+    if (tin) lv_indev_set_scroll_throw(tin, 4);
     lvgl_port_unlock();
     send_hello();
 }
@@ -2901,14 +2990,29 @@ static void ts_hook(void)
 static void ts_report(void)
 {
     double secs = s_ts_time / 1e6;
-    char buf[300];
+    int ic_ram = 0, ic_sd = 0, em = 0;
+    size_t em_b = 0;
+    for (int i = 0; i < ICON_MAX; i++) {
+        if (s_icons[i].data) ic_ram++;
+        else if (s_icons[i].path[0]) ic_sd++;
+    }
+    for (int i = 0; i < EMOJI_MAX; i++) {
+        if (s_emoji[i].data) {
+            em++;
+            em_b += s_emoji[i].dsc.data_size;
+        }
+    }
+    char buf[460];
     snprintf(buf, sizeof(buf), "{\"t\":\"stats\",\"presses\":%d,\"press_s\":%.2f,\"reads_per_s\":%.1f,"
              "\"gap_max_ms\":%.1f,\"frames\":%d,\"frame_avg_ms\":%.1f,\"frame_max_ms\":%.1f,"
              "\"lock_max_ms\":%.1f,\"lock_type\":\"%s\",\"clk_draws\":%d,\"clk_avg_ms\":%.1f,"
-             "\"clk_max_ms\":%.1f}",
+             "\"clk_max_ms\":%.1f,\"heap\":%u,\"largest\":%u,\"icons_ram\":%d,\"icons_sd\":%d,"
+             "\"emojis\":%d,\"emoji_kb\":%u}",
              s_ts_presses, secs, secs > 0 ? s_ts_reads / secs : 0.0, s_ts_gap_max / 1000.0, s_ts_frames,
              s_ts_frames ? s_ts_fsum / 1000.0 / s_ts_frames : 0.0, s_ts_fmax / 1000.0, s_lock_max / 1000.0,
-             s_lock_type, s_clk_dn, s_clk_dn ? s_clk_dsum / 1000.0 / s_clk_dn : 0.0, s_clk_dmax / 1000.0);
+             s_lock_type, s_clk_dn, s_clk_dn ? s_clk_dsum / 1000.0 / s_clk_dn : 0.0, s_clk_dmax / 1000.0,
+             (unsigned)esp_get_free_heap_size(), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+             ic_ram, ic_sd, em, (unsigned)(em_b / 1024));
     s_lock_max = 0;
     s_clk_dsum = s_clk_dmax = 0;
     s_clk_dn = 0;
@@ -3091,6 +3195,8 @@ void ui_handle(const cJSON *msg)
         }
     } else if (!strcmp(t, "status")) {
         set_text(s_status, jstr(msg, "text", ""));
+    } else if (!strcmp(t, "hdr")) {
+        hdr_set(jint(msg, "plane", 0));
     } else if (!strcmp(t, "dock")) {
         build_dock(cJSON_GetObjectItemCaseSensitive(msg, "items"));
         layout_content(s_has_screen ? s_dock_want : true);

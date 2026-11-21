@@ -109,7 +109,8 @@ group = "sdr"
 # map = false desliga o fundo; map_url = "https://.../{z}/{x}/{y}.png" usa outro servidor.
 map_style = "simples"
 track_minutes = 30                 # trajeto guardado de cada aeronave (o AIS usa o do AIS-catcher)
-routes = true                      # origem e destino pelo indicativo no hexdb.io (só o indicativo sai do uConsole)
+squawk_alert = true                # cartão "Monitor de emergências" (avisa em qualquer tela com 7500/7600/7700)
+routes = true                      # origem e destino pelo indicativo no adsbdb.com/hexdb.io (só o indicativo sai do uConsole)
 
 [[menu]]
 id = "ais"

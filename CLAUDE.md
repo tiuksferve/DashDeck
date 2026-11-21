@@ -11,7 +11,7 @@ mensagem, até 8 KB (descrito no cabeçalho de `firmware/main/ui.c` e em `docs/a
 
 - **Menu inicial (boxes):** AIO v2, Meshtastic, GPS, ADS-B, AIS, SDR, Câmara, Rede, Aplicações, Serviços, Sistema.
 - **Dock** (início e Aplicações): Início, Relógio, Captura, Brilho, Som (volume e brilho do uConsole), Bloquear.
-- **Firmware atual:** 0.25.0 (gravado em 21/11).
+- **Firmware atual:** 0.25.5 (gravado em 21/11).
 
 ## Onde está cada coisa
 - `host/providers.py`: telas com dados (system, gps, adsb, ais, mesh, clock, aio, sdr, net, console, windows, camera).
@@ -36,7 +36,7 @@ mensagem, até 8 KB (descrito no cabeçalho de `firmware/main/ui.c` e em `docs/a
 - **MeshDeckWeb** (outro repositório): documentação em inglês e português, CHANGELOG, suíte completa de testes (`.venv/bin/python -m pytest`), branch a partir da `main`. As novidades ficam opcionais e desligadas por omissão.
 
 ## Medir o desempenho
-- `kill -USR1 $(systemctl --user show -p MainPID --value dashd)`: o ESP responde com `stats` no log do dashd (leituras do toque por segundo, tempo dos quadros com o dedo no ecrã e o maior bloqueio do LVGL por uma mensagem, com o tipo).
+- `kill -USR1 $(systemctl --user show -p MainPID --value dashd)`: o ESP responde com `stats` no log do dashd (leituras do toque por segundo, tempo dos quadros com o dedo no ecrã, o maior bloqueio do LVGL por uma mensagem, com o tipo, e a memória: heap, maior bloco, ícones na RAM/cartão). Os contadores zeram a cada pedido.
 - `{"t":"bench"}` (com o dashd parado, por um script que use `dashd.App`): rola a tela atual 2 s e devolve quadros, média e pior tempo.
 - Referência na 0.23.0: scroll a 44-46 quadros/s na tela inicial e nas Aplicações (lista toda: `{"t":"bench","px":3000}`), atualizações até 2,4 ms, abrir Aplicações ~100-160 ms. Memória livre nas Aplicações ~43-52 KB (os ícones ocupam o resto; relógio e aviso libertam-nos com o `make_room`).
 - Regra: nas funções `update_*` do `ui.c`, usar `set_text`, `set_text_color`, `set_bg_color`, `set_hidden` e `set_img` (só mudam se o valor for outro).
@@ -45,12 +45,15 @@ mensagem, até 8 KB (descrito no cabeçalho de `firmware/main/ui.c` e em `docs/a
 - **USB da AIO v2:** com o interruptor USB da AIO ligado, a ligação ao ESP perde dados (gravação falha com "Packet content transfer stopped", o ESP pode deixar de ser reconhecido com erro -71). Mantê-lo desligado; o box pede confirmação antes de o ligar.
 - **Barramento USB partilhado:** o ESP, o RTL-SDR e discos USB estão no mesmo controlador (dwc2). Cópias grandes pioram a ligação.
 - **SDR:** só serve um programa de cada vez. O ADS-B e o AIS ligados pelo DashDeck desligam-se ao sair da tela (`keep_running` mantém-nos). A tela SDR mostra quem o usa e tem "Libertar SDR".
-- **Memória do ESP:** o LVGL usa o heap do sistema (`CONFIG_LV_USE_CLIB_MALLOC`); 110 KB ficam reservados para o buffer de ecrã (relógio, mapas, arranque) e sobram ~150 KB. Os ícones vão para o cartão SD (sem reenvio entre arranques) com cópia na RAM para os da tela aberta e do dock (carregados ao construir a tela, libertando os de outras telas, enquanto sobram 36 KB de heap; ler do cartão no barramento do display tornava swipes e animações lentos) e uma cache de imagens de 32 KB para os outros; 96 lugares, os do dock nunca são substituídos (`iconlost` avisa o host). O fundo do relógio fica na RAM, porque ler do cartão leva 120+ ms por quadro. O aviso de mensagem (46 KB) usa a memória do fundo do relógio quando o relógio está aberto (`bgfreed`). O `hello` traz `largest` e `sd`.
+- **Memória do ESP:** o LVGL usa o heap do sistema (`CONFIG_LV_USE_CLIB_MALLOC`); 110 KB ficam reservados para o buffer de ecrã (relógio, mapas, arranque) e sobram ~150 KB. Os ícones vão para o cartão SD (sem reenvio entre arranques) com cópia na RAM para os da tela aberta e do dock (carregados ao construir a tela, libertando os de outras telas, enquanto sobram 20 KB de heap (eram 36 KB até à 0.25.1: depois de algum uso os ícones das Aplicações ficavam no cartão e o scroll bloqueava ~400 ms); ler do cartão no barramento do display tornava swipes e animações lentos) e uma cache de imagens de 32 KB para os outros; 96 lugares, os do dock nunca são substituídos (`iconlost` avisa o host). O fundo do relógio fica na RAM, porque ler do cartão leva 120+ ms por quadro. O aviso de mensagem (46 KB) usa a memória do fundo do relógio quando o relógio está aberto (`bgfreed`). O `hello` traz `largest` e `sd`; o `stats` traz `heap`, `largest`, ícones na RAM e no cartão e emojis. O fundo do mapa é libertado fora dos mapas (0.25.2).
 - **Disco do uConsole:** tem pouco espaço livre; por isso o build fica em `/dev/shm`.
 
 ## Feito recentemente (19 a 21/11)
+- **Monitor de emergências ADS-B** (21/11): cartão no ADS-B (`AdsbProvider.monitor`, `adsb_monitor` em `state.json`) que mantém o readsb ligado; `check_squawk()` no dashd só corre com ele ligado; aviso `notify` `kind:"squawk"` (avião em `notify.c`) e avião no cabeçalho (`hdr`). Testado com readsb simulado e avião fictício (7700); falta um caso real.
+- **Scroll** (21/11): inércia mais longa (`scroll_throw` 4), ícones na RAM até sobrarem 20 KB, fundo do mapa libertado fora dos mapas.
 - **Câmara** (21/11): box com visor ao vivo (JPEG reduzido no host, `{"t":"jpg"}` descodificado pela ROM do C6 em ~40 ms, fluxo com `jpgack`), Foto e Gravar por cima da imagem, página Galeria (miniaturas do camd; vídeos tocados pelo ffmpeg a partir de uma cópia em `/dev/shm`, para o token não aparecer na linha de comando) e página Estado. ~16 quadros/s quando a câmara os dá. Precisa do camd com o token local e o `?after=n` no `/api/frame.jpg` (alterações no CamDeck, 21/11). Os toques nos botões ainda não foram feitos com o dedo (só por eventos simulados).
-- **Rotas** (20/11): ADS-B com origem/destino pelo indicativo (`host/routes.py`, hexdb.io, cache em `~/.cache/dashd/routes.json`); AIS com destino na lista e no mapa e chegada (ETA) no detalhe. Não testado com aviões e navios reais (readsb e AIS-catcher parados).
+- **Rotas** (20/11): ADS-B com origem/destino pelo indicativo (`host/routes.py`: adsbdb.com com companhia, hexdb.io como reserva; cache em `~/.cache/dashd/routes.json`); AIS com destino na lista e no mapa e chegada (ETA) no detalhe. Visto a funcionar com voos reais a 21/11 (o AFR36JZ só existe no adsbdb).
+- **Programas abertos pelo DashDeck** (21/11) correm num scope próprio (`spawn_detached`, `systemd-run --user --scope`): antes ficavam no grupo do dashd.service e o systemd fechava-os quando o dashd parava (fechou o PyCharm).
 - **Relógio legível** (20/11): `scrim()` (sombra translúcida esbatida, opacidade `SCRIM_A`) atrás dos blocos de texto e `outline_px()` (contorno 2 px + sombra) em `clockface.c`. Desenho ~14 ms por quadro.
 - **Abertas** (20/11): box à frente nas Aplicações com os programas abertos (labwc, protocolo wlr-foreign-toplevel); Mostrar, Minimizar, Fechar. Testado com o gestor de ficheiros.
 - **Rotação pelo menu** (20/11): Sistema, página DashDeck (Vertical/Horizontal, Inverter), gravada em `~/.config/dashd/state.json`. Em retrato, 43 quadros/s na tela inicial e nas Aplicações.
@@ -67,7 +70,7 @@ mensagem, até 8 KB (descrito no cabeçalho de `firmware/main/ui.c` e em `docs/a
 
 ## Por fazer (por prioridade sugerida)
 1. Pequenas melhorias sugeridas (20/11), por esta ordem: nomes dos portos no AIS (tabela UN/LOCODE pequena: `PT LIS` → Lisboa);
-   alerta animado de squawk 7500/7600/7700 no ADS-B (como o aviso de DM); aviso de bateria fraca do uConsole (15% e 5%);
+   aviso de bateria fraca do uConsole (15% e 5%);
    resumo do dia no ADS-B/AIS (vistos hoje, o mais distante); filtros (altitude no ADS-B, tipo no AIS); guardar os trajetos do ADS-B.
    Histórico de mensagens no MeshDeckWeb.
 2. **Atualizar o firmware pelo cartão SD** (por último; o cartão já está montado em `/sd` desde a 0.17.0): copiar o `.bin` para o cartão; o ESP grava-o em `ota_1` ao arrancar. Exige gravar esta funcionalidade uma vez pela USB.

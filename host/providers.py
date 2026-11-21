@@ -30,6 +30,16 @@ import xdgapps
 log = logging.getLogger("dashd.providers")
 
 
+def spawn_detached(cmd, shell: bool = False, env: dict | None = None) -> None:
+    """Abre um programa fora do serviço dashd (num scope próprio do systemd), para não ser fechado
+    quando o dashd reinicia ou pára (o systemd mata todo o grupo do serviço)."""
+    argv = ["/bin/sh", "-c", cmd] if shell else list(cmd)
+    if shutil.which("systemd-run"):
+        argv = ["systemd-run", "--user", "--scope", "--collect", "--quiet", "--"] + argv
+    subprocess.Popen(argv, env=env, start_new_session=True,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def battery() -> tuple[int, str] | None:
     for d in Path("/sys/class/power_supply").glob("*battery*"):
         try:
@@ -870,8 +880,7 @@ class MeshtasticProvider(Provider):
         if btn_id == "dm" and self._detail_node:
             return self._reply_screen(("dm", self._detail_node))
         if btn_id == "start" and self.start_cmd:
-            subprocess.Popen(self.start_cmd, shell=True, start_new_session=True,
-                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            spawn_detached(self.start_cmd, shell=True)
             return ("A iniciar o MeshDeckWeb...", "info")
         return None
 
@@ -1265,7 +1274,8 @@ class TargetMapProvider(Provider):
     NICE = [0.25, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]   # passos dos anéis (nm)
     TRACK_BUDGET = 2800        # caracteres de trajetos por tela (a linha JSON tem até 8 KB)
     LEGEND = ""
-    MAP_PAGE = 1               # página do mapa (o "Seguir no mapa" abre-a)
+    CTRL_PAGE, LIST_PAGE = 0, 1   # páginas: Controlo (ligar/desligar, resumo) · Lista · Mapa
+    MAP_PAGE = 2               # página do mapa (o "Seguir no mapa" abre-a)
     UNIT, UNIT_PER_NM = "nm", 1.0   # unidade dos anéis e distâncias (o Meshtastic usa km)
     STATION_LABEL = "receptor"
 
@@ -1379,7 +1389,7 @@ class TargetMapProvider(Provider):
         return next((t for t in self.targets if t["id"] == tid), None) if tid else None
 
     def pages(self) -> int:
-        return 2
+        return 3
 
     def summary(self) -> str:
         if not self.load():
@@ -1410,24 +1420,50 @@ class TargetMapProvider(Provider):
 
     def render(self, page: int = 0) -> dict:
         label = self.node.get("label", self.NOUN_PL)
-        if page == 1:
+        if page == self.MAP_PAGE:
             return {"title": f"{label} · Mapa", **self.render_map()}
-        out = self.render_list()
-        return {"title": f"{label} ({len(self.targets)})" if self.targets else label, **out}
+        if page == self.LIST_PAGE:
+            out = self.render_list()
+            return {"title": f"{label} · Lista ({len(self.targets)})" if self.targets else f"{label} · Lista", **out}
+        return {"title": label, **self.render_ctrl()}
+
+    def ctrl_items(self) -> list[dict]:
+        """Cartões da página Controlo (a subclasse pode acrescentar, ex.: o monitor do ADS-B)."""
+        return [self.svc_item()]
+
+    def render_ctrl(self) -> dict:
+        """Página Controlo: ligar/desligar o serviço, o alvo seguido e o resumo (toque abre a lista ou o mapa)."""
+        has = self.load()
+        items = self.ctrl_items()
+        t = self.find(self.follow)
+        if t:
+            items.append({"id": "unfollow", "label": f"Seguindo {t['name']}", "sub": "Toque para deixar de seguir",
+                          "right": "Soltar", "color": "#58A6FF", "bg": "#172638"})
+        if has:
+            pos = sum(1 for x in self.targets if x.get("lat") is not None)
+            items.append({"id": "go_list", "label": f"{len(self.targets)} {self.NOUN_PL if len(self.targets) != 1 else self.NOUN}",
+                          "sub": "Toque para ver a lista (ou deslize)", "right": "Lista", "color": "#E6EDF3"})
+            items.append({"id": "go_map", "label": f"{pos} com posição", "sub": "Toque para ver o mapa",
+                          "right": "Mapa", "color": "#E6EDF3"})
+        elif self.active():
+            items.append({"id": "wait", "label": "Sem dados", "sub": f"A aguardar o {self.unit}...", "color": "#8B98A5"})
+        return {"tpl": "list", "items": items}
 
     def render_list(self) -> dict:
         has = self.load()
-        items = [self.svc_item()]
-        if self.follow and self.find(self.follow):
-            t = self.find(self.follow)
-            items.append({"id": "unfollow", "label": f"Seguindo {t['name']}", "sub": "Toque para deixar de seguir",
-                          "right": "Soltar", "color": "#58A6FF", "bg": "#172638"})
-        items += [self.list_item(t) for t in self.targets[:40]]
-        empty = "" if has else (f"Sem dados. A aguardar o {self.unit}..." if self.active() else "")
-        out = {"tpl": "list", "items": items}
-        if len(items) == 1 and empty:
-            items[0]["sub"] = empty
-        return out
+        items = [self.list_item(t) for t in self.targets[:40]]
+        if has:
+            empty = f"Nenhum {self.NOUN} recebido por agora"
+        elif self.active():
+            empty = f"Sem dados. A aguardar o {self.unit}..."
+        else:
+            empty = f"{self.unit} desligado. Ligue-o na página anterior (deslize para a direita)."
+        return {"tpl": "list", "items": items, "empty": empty}
+
+    def _goto(self, page: int):
+        self.app.page[self.node["id"]] = page
+        self.app.show()
+        return None
 
     def render_map(self) -> dict:
         W, H = self.app.canvas_area()
@@ -1623,6 +1659,12 @@ class TargetMapProvider(Provider):
             return (f"Ligando {self.unit}...", "info")
         if item_id == "unfollow":
             return self.on_button("unfollow")
+        if item_id == "go_list":
+            return self._goto(self.LIST_PAGE)
+        if item_id == "go_map":
+            return self._goto(self.MAP_PAGE)
+        if item_id == "wait":
+            return None
         t = self.find(item_id)
         if not t:
             return None
@@ -1699,9 +1741,65 @@ class AdsbProvider(TargetMapProvider):
         self.paths = [node["json"]] if node.get("json") else self.PATHS
         self.receiver: tuple[float, float] | None = None
         self.tracker = Tracker(max_age=float(node.get("track_minutes", 30)) * 60)
-        self.routes = routes.Routes(enabled=bool(node.get("routes", True)))   # origem e destino (hexdb.io)
+        self.routes = routes.Routes(enabled=bool(node.get("routes", True)))   # origem e destino (adsbdb/hexdb)
         self._loaded = (0.0, False)
+        # Monitor de emergências: o readsb fica ligado fora da tela e o dashd avisa em qualquer tela
+        # quando um avião transmite 7500/7600/7700. Gravado em ~/.config/dashd/state.json.
+        self.monitor = bool(node.get("squawk_alert", True)) and bool(app.load_state().get("adsb_monitor"))
+        self.monitor_since = time.monotonic()
         threading.Thread(target=self._poll, daemon=True).start()
+
+    def set_monitor(self, on: bool, why: str = "") -> None:
+        self.monitor = on
+        self.monitor_since = time.monotonic()
+        self.app.save_state(adsb_monitor=on)
+        log.info("monitor de emergências %s%s", "ligado" if on else "desligado", f" ({why})" if why else "")
+        self.app.send_header()
+
+    def mon_item(self) -> dict:
+        """Segundo card: monitor de emergências (o readsb fica ligado em qualquer tela)."""
+        if self.monitor:
+            return {"id": "mon", "label": "Monitor de emergências ligado",
+                    "sub": "Avisa em qualquer tela (7500, 7600, 7700). Toque para desligar",
+                    "right": "Desligar", "color": "#F0883E", "bg": "#2D1E10"}
+        it = {"id": "mon", "label": "Monitor de emergências",
+              "sub": "Liga o ADS-B e avisa em qualquer tela, mesmo fora daqui",
+              "right": "Ligar", "color": "#8B98A5", "bg": "#1C2128"}
+        conf = "" if self.active() else self._start_confirm()
+        it["confirm"] = conf or "Ligar o monitor? O SDR fica ocupado pelo ADS-B até o desligar."
+        return it
+
+    def ctrl_items(self) -> list[dict]:
+        items = super().ctrl_items()
+        if self.node.get("squawk_alert", True):
+            items.append(self.mon_item())
+        return items
+
+    def on_leave(self) -> None:
+        if self.monitor:   # o monitor mantém o readsb ligado
+            self.started_here = False
+            return
+        super().on_leave()
+
+    def on_tap(self, item_id: str):
+        if item_id == "mon":
+            if self.monitor:
+                self.set_monitor(False, "pelo utilizador")
+                if self.active():
+                    self.started_here = True   # desliga-se ao sair da tela, como um arranque normal
+                return ("Monitor desligado (o ADS-B desliga-se ao sair desta tela)", "info")
+            if not self.active():
+                self.app.run_bg(self._start)
+            self.set_monitor(True)
+            return ("Monitor de emergências ligado", "ok")
+        if item_id == "svc" and self.active() and self.monitor:
+            self.set_monitor(False, "ADS-B desligado")
+        return super().on_tap(item_id)
+
+    def on_button(self, btn_id: str):
+        if btn_id == "stop" and self.monitor:
+            self.set_monitor(False, "ADS-B desligado")
+        return super().on_button(btn_id)
 
     def _poll(self) -> None:
         """Acumula os trajetos mesmo com a tela fechada (o readsb só dá a posição atual)."""
@@ -1819,6 +1917,8 @@ class AdsbProvider(TargetMapProvider):
                      ["Destino", routes.Routes.place(r["to"])] + ([col] if col else [])]
             if r["old"]:
                 route.append(["", "rota registada há mais de 2 anos", "sub"])
+            if r.get("airline"):
+                route.insert(0, ["Companhia", r["airline"]])
         elif t["label"] and self.routes.enabled:
             route = [["Rota", "desconhecida" if (t["name"].upper() in self.routes.routes)
                       else "a procurar...", "sub"]]
@@ -3640,8 +3740,7 @@ class CameraProvider(Provider):
         if btn_id == "open":
             env = dict(os.environ, XDG_RUNTIME_DIR=os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"),
                        WAYLAND_DISPLAY=os.environ.get("WAYLAND_DISPLAY", "wayland-0"))
-            subprocess.Popen(["xdg-open", self.cam.url + "/"], env=env, start_new_session=True,
-                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            spawn_detached(["xdg-open", self.cam.url + "/"], env=env)
             return ("CamDeck aberto no uConsole", "ok")
         try:
             if btn_id in ("prev", "next", "play", "del", "delok"):

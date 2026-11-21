@@ -55,7 +55,8 @@ Os detalhes de cada tela estão em [docs/uso.md](docs/uso.md).
 
 | Módulo | O que faz | Estado |
 |---|---|---|
-| ADS-B e AIS (rotas) | Origem e destino de cada voo (hexdb.io, pelo indicativo); destino e chegada prevista de cada navio (do próprio AIS) | ok |
+| ADS-B (emergências) | Monitor opcional: com ele ligado, aviso animado em qualquer tela quando um avião transmite 7500, 7600 ou 7700, e um avião laranja no cabeçalho | ok |
+| ADS-B e AIS (rotas) | Origem, destino e companhia de cada voo (adsbdb.com e hexdb.io, pelo indicativo); destino e chegada prevista de cada navio (do próprio AIS) | ok |
 | Aplicações | Os programas de Acessórios do uConsole, lidos dos `.desktop` com o ícone real, mais Terminal, Gqrx, Arquivos e PyCharm; box **Abertas** com os programas abertos (mostrar, minimizar, fechar) | ok |
 | Meshtastic | Painel, Nós, Conversas e Mapa dos nós (canais e diretas; cada uma abre as suas mensagens, verdes para RF e lilás para MQTT), com Responder em cada mensagem, Mensagem direta no detalhe do nó e o aviso animado de mensagem direta. As não lidas aparecem como selo vermelho no box. Os dados vêm pela API local do MeshDeckWeb | ok |
 | GPS | GPS ao vivo pelo MeshDeckWeb (com o gpsmux, partilhado com o meshtasticd), posição pelo Meshtastic, ou NMEA direto do `/dev/ttyAMA0`. Página com o céu dos satélites | ok |

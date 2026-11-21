@@ -9,8 +9,11 @@
 
 #define NOTIFY_DM 0
 #define NOTIFY_ALARM 1
+#define NOTIFY_SQUAWK 2
 
-// kind: NOTIFY_DM (envelope verde) ou NOTIFY_ALARM (despertador dourado).
+
+// kind: NOTIFY_DM (envelope verde), NOTIFY_ALARM (despertador dourado) ou NOTIFY_SQUAWK (avião em
+// emergência, vermelho a piscar).
 void notify_start(const char *name, int kind);
 // buf: NOTIFY_W x NOTIFY_H em RGB565A8 (cor e depois alfa), apagado e redesenhado a cada chamada.
 void notify_draw(uint8_t *buf, float t);

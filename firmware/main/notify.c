@@ -1,6 +1,7 @@
 // Aviso de mensagem direta, animação "Ondas LoRa": ondas de rádio fecham-se no centro, os pixels
 // juntam-se num envelope verde que pulsa e o nome do remetente escreve-se por baixo.
 // Alarme (kind 1): o mesmo, em dourado, com os pixels a formar um despertador que abana enquanto toca.
+// Emergência ADS-B (kind 2): em vermelho, os pixels formam um avião (visto de cima) que pisca.
 // Desenho num canvas pequeno (NOTIFY_W x NOTIFY_H) ao centro; o resto (fundo escurecido, faixa com o
 // texto) são objetos do LVGL em ui.c. Contas inteiras por pixel (o C6 não tem FPU).
 #include "notify.h"
@@ -185,6 +186,35 @@ static void alarm_clock(int cx, int cy, int glow)
     disc(cx - 8, cy - 6, 2, light);                  // brilho
 }
 
+// avião visto de cima na caixa 64 x 42 (nariz para cima)
+static bool plane_mask(int x, int y)
+{
+    int dx = abs(x - 32);
+    if (dx <= 3 && y >= 3 && y <= 39) return y > 5 || dx <= 2;          // fuselagem (nariz arredondado)
+    if (y >= 15 && y <= 25) {                                            // asas em flecha
+        int reach = 30 - (25 - y) * 2;
+        if (dx <= reach && y >= 15 + dx / 3) return true;
+    }
+    if (y >= 33 && y <= 39 && dx <= 12 && y >= 33 + dx / 3) return true; // estabilizador
+    return false;
+}
+
+static void plane(int cx, int cy, bool lit)
+{
+    uint16_t body = c565(lit ? LIGHT : GREEN), dark = c565(DARK), win = c565(0xFFECEC);
+    for (int y = 0; y < 42; y++)
+        for (int x = 0; x < 64; x++) {
+            if (!plane_mask(x, y)) continue;
+            bool edge = !plane_mask(x - 1, y) || !plane_mask(x + 1, y) || !plane_mask(x, y - 1) || !plane_mask(x, y + 1);
+            put(cx - 32 + x, cy - 21 + y, edge ? dark : body);
+        }
+    rect(cx - 1, cy - 15, 3, 3, win);                                    // cabina
+    if (lit) {                                                           // luzes nas pontas das asas
+        disc(cx - 29, cy + 3, 2, c565(0xFFFFFF));
+        disc(cx + 29, cy + 3, 2, c565(0xFFFFFF));
+    }
+}
+
 static uint32_t s_seed;
 static int rnd(int n)
 {
@@ -197,11 +227,13 @@ void notify_start(const char *name, int kind)
     s_kind = kind;
     if (kind == NOTIFY_ALARM) {
         GREEN = 0xF2B21B; LIGHT = 0xFFE27A; DARK = 0x4A2A00; INK = 0xFFF6E0;
+    } else if (kind == NOTIFY_SQUAWK) {
+        GREEN = 0xDA3633; LIGHT = 0xFF7B72; DARK = 0x3D0808; INK = 0xFFECEC;
     } else {
         GREEN = 0x2EA043; LIGHT = 0x67EA94; DARK = 0x0E3B1C; INK = 0xE7FFE9;
     }
     for (int i = 0, y = 0; y < 42; y += 2)
-        for (int x = 0; x < 64; x += 2, i++) s_mask[i] = kind != NOTIFY_ALARM || alarm_mask(x, y);
+        for (int x = 0; x < 64; x += 2, i++) s_mask[i] = kind == NOTIFY_ALARM ? alarm_mask(x, y) : kind == NOTIFY_SQUAWK ? plane_mask(x, y) : true;
     // nome em maiúsculas (a fonte pixel só tem maiúsculas); o que não existir fica em branco
     int n = 0;
     for (const char *p = name; *p && n < (int)sizeof(s_name) - 1; p++) {
@@ -247,7 +279,9 @@ void notify_draw(uint8_t *buf, float t)
     } else {
         float k = clampf((t - 1.25f) / 0.3f);
         float pulse = 1 + sinf(k * 3.14159f) * 0.12f;
-        if (s_kind == NOTIFY_ALARM) {   // toca em rajadas de 0,6 s: abana de um lado para o outro
+        if (s_kind == NOTIFY_SQUAWK) {   // pisca 3 vezes por segundo
+            plane(cx, cy, ((int)((t - 1.25f) * 6)) % 2 == 0);
+        } else if (s_kind == NOTIFY_ALARM) {   // toca em rajadas de 0,6 s: abana de um lado para o outro
             float ph = fmodf(t - 1.25f, 1.0f);
             int dx = ph < 0.6f ? (((int)(t * 28)) % 2 ? 2 : -2) : 0;
             alarm_clock(cx + dx, cy + 2, 200);
