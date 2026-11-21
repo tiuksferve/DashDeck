@@ -230,7 +230,21 @@ Aberto pelo **Som** no dock: volume do uConsole (PipeWire) e brilho do ecrã do 
 - O **Brilho** do dock continua a ser o do ecrã do DashDeck.
 
 ### Serviços
-- Cada serviço mostra o estado (ativo, parado, falhou), desde quando, o PID, a memória e o grupo, com os botões **Ligar**, **Parar** (com confirmação) e **Reiniciar**.
+Os serviços do uConsole que interessam ao DashDeck, em boxes com o estado ("ativo · auto" quer dizer
+que arranca sozinho no boot):
+
+| Box | Serviço | Para quê |
+|---|---|---|
+| ADS-B, AIS | `readsb`, `ais-catcher` | Recetores de aviões e navios (grupo `sdr`) |
+| tar1090 | `tar1090` | Mapa web do ADS-B (só trabalha com o readsb ligado) |
+| meshtasticd, GPS mux, gpsd | `meshtasticd`, `meshdeck-gpsmux`, `gpsd` | Rádio LoRa e GPS |
+| DashDeck, CamDeck | `dashd`, `camd` (do utilizador) | Este ecrã (só **Reiniciar**, com confirmação) e o servidor da câmara |
+| SSH, VNC, Pi Connect | `ssh`, `wayvnc`, `rpi-connect` (do utilizador) | Acesso remoto |
+| Bluetooth, Modem 4G, Impressão | `bluetooth`, `ModemManager`, `cups` | Sistema |
+| PostgreSQL, lighttpd | `postgresql`, `lighttpd` | Base de dados (Intercept) e servidor web (página do tar1090) |
+
+- O detalhe mostra a descrição, o estado, se arranca no boot, uma nota, desde quando, o PID e a memória, com **Ligar**, **Parar** (com confirmação) e **Reiniciar**, e **Auto no boot** / **Sem arranque** (com confirmação) para escolher se o serviço arranca sozinho.
+- Ficaram de fora o NetworkManager, o wpa_supplicant e outros essenciais (pará-los pelo ecrã cortava a rede), o `direwolf` (sem `/etc/direwolf.conf`, não arranca) e o `uconsole-4g-cm4` (é para o CM4).
 - Os serviços do grupo **`sdr`** (readsb, AIS-catcher) são exclusivos, porque só há um RTL-SDR: ligar um para os outros. As telas ADS-B e AIS também ligam e desligam o seu serviço.
 
 ### Sistema

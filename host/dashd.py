@@ -200,18 +200,36 @@ def launch(cmd: str) -> None:
     providers.spawn_detached(cmd, shell=True, env=wayland_env())
 
 
-def service_state(unit: str) -> dict:
-    props = "ActiveState,SubState,ActiveEnterTimestamp,MainPID,MemoryCurrent,Description"
+SVC_PROPS = "Id,ActiveState,SubState,ActiveEnterTimestamp,MainPID,MemoryCurrent,Description,UnitFileState"
+_svc_cache: dict[tuple[str, bool], tuple[float, dict]] = {}
+
+
+def service_states(units: list[str], user: bool = False) -> None:
+    """Lê o estado de vários serviços numa só chamada ao systemctl (o menu Serviços tem muitos)."""
+    if not units:
+        return
+    cmd = ["systemctl"] + (["--user"] if user else []) + ["show", "-p", SVC_PROPS] + units
     try:
-        out = subprocess.run(["systemctl", "show", unit, "-p", props], capture_output=True,
-                             text=True, timeout=5).stdout
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=5).stdout
     except subprocess.TimeoutExpired:
-        return {}
-    return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+        return
+    now = time.monotonic()
+    for block, unit in zip(out.split("\n\n"), units):
+        _svc_cache[(unit, user)] = (now, dict(l.split("=", 1) for l in block.splitlines() if "=" in l))
 
 
-def systemctl(action: str, unit: str) -> tuple[bool, str]:
-    r = subprocess.run(["sudo", "-n", "systemctl", action, unit], capture_output=True, text=True, timeout=30)
+def service_state(unit: str, user: bool = False, max_age: float = 1.5) -> dict:
+    t, st = _svc_cache.get((unit, user), (0.0, {}))
+    if time.monotonic() - t > max_age:
+        service_states([unit], user)
+        st = _svc_cache.get((unit, user), (0.0, {}))[1]
+    return st
+
+
+def systemctl(action: str, unit: str, user: bool = False) -> tuple[bool, str]:
+    cmd = ["systemctl", "--user", action, unit] if user else ["sudo", "-n", "systemctl", action, unit]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    _svc_cache.pop((unit, user), None)
     return r.returncode == 0, (r.stderr or r.stdout).strip()
 
 
@@ -456,10 +474,14 @@ class App:
             v["color"] = it["color"]
         sub = it.get("sub", "")
         if it.get("type") == "service":
-            st = service_state(it["unit"]).get("ActiveState", "?")
+            s = service_state(it["unit"], bool(it.get("user")))
+            st = s.get("ActiveState", "?")
             txt, col = STATE_PT.get(st, (st, "sub"))
-            sub = f"{it['unit']}: {txt}"
-            v["color"] = {"ok": "#3FB950", "err": "#F85149", "warn": "#D29922"}.get(col, it.get("color", "#8B98A5"))
+            sub = txt + (" · auto" if s.get("UnitFileState") == "enabled" else "")
+            c = {"ok": "#3FB950", "err": "#F85149", "warn": "#D29922"}.get(col, "#8B98A5")
+            v["sub_color"] = c
+            if not v.get("img"):
+                v["color"] = c
         elif it.get("type") == "provider":
             try:
                 prov = self.provider(it)
@@ -487,6 +509,9 @@ class App:
         t = node.get("type")
         scr = {"id": node["id"], "title": node.get("label", node["id"]), "back": len(self.stack) > 1}
         if t == "submenu":
+            svcs = [i for i in node.get("items", []) if i.get("type") == "service"]
+            for user in (False, True):   # o estado de todos de uma vez (um systemctl por tipo)
+                service_states([i["unit"] for i in svcs if bool(i.get("user")) == user], user)
             layout = node.get("layout", self.layout)
             items = [self.item_view(i) for i in self.menu_items(node)]
             if layout == "grid":   # nos boxes, a descrição dos apps só ocupa espaço; o status fica
@@ -496,12 +521,25 @@ class App:
                         v.pop("sub", None)
             scr.update(tpl="menu", items=items, layout=layout)
         elif t == "service":
-            s = service_state(node["unit"])
+            user = bool(node.get("user"))
+            s = service_state(node["unit"], user, max_age=0.5)
             st = s.get("ActiveState", "?")
             txt, col = STATE_PT.get(st, (st, "sub"))
-            rows = [["Unidade", node["unit"]], ["Estado", f"{txt} ({s.get('SubState', '')})", col]]
+            rows = [["Unidade", node["unit"] + (" (utilizador)" if user else "")],
+                    ["Estado", f"{txt} ({s.get('SubState', '')})", col]]
+            if s.get("Description"):
+                rows.insert(0, ["Serviço", s["Description"][:60]])
+            auto = s.get("UnitFileState", "")
+            rows.append(["Arranque", {"enabled": "automático", "disabled": "manual", "static": "por outro serviço",
+                                      "masked": "bloqueado"}.get(auto, auto or "?"),
+                         "ok" if auto == "enabled" else "sub"])
+            if node.get("note"):
+                rows.append(["Nota", node["note"]])
             if st == "active":
-                rows.append(["Desde", (s.get("ActiveEnterTimestamp") or "").split(" ", 1)[-1][:14]])
+                ts = (s.get("ActiveEnterTimestamp") or "").split()
+                if len(ts) >= 3:   # "Sat 2026-11-21 01:06:43 WET" -> "21/11 01:06"
+                    y, mo, d = ts[1].split("-")
+                    rows.append(["Desde", f"{d}/{mo} {ts[2][:5]}"])
                 if s.get("MainPID", "0") != "0":
                     rows.append(["PID", s["MainPID"]])
                 mem = s.get("MemoryCurrent", "")
@@ -509,9 +547,20 @@ class App:
                     rows.append(["Memória", f"{int(mem) / 1048576:.0f} MB"])
             if node.get("group"):
                 rows.append(["Grupo", node["group"]])
-            btns = ([{"id": "stop", "label": "Parar", "color": "err", "confirm": f"Parar {node['unit']}?"},
-                     {"id": "restart", "label": "Reiniciar", "color": "warn"}]
-                    if st == "active" else [{"id": "start", "label": "Ligar", "color": "ok"}])
+            if st == "active":
+                btns = [] if node.get("restart_only") else \
+                    [{"id": "stop", "label": "Parar", "color": "err", "confirm": f"Parar {node['unit']}?"}]
+                rb = {"id": "restart", "label": "Reiniciar", "color": "warn"}
+                if node.get("restart_only") or node.get("confirm_restart"):
+                    rb["confirm"] = node.get("confirm_restart") or f"Reiniciar {node['unit']}?"
+                btns.append(rb)
+            else:
+                btns = [{"id": "start", "label": "Ligar", "color": "ok"}]
+            if auto in ("enabled", "disabled") and not node.get("restart_only") and not node.get("group"):
+                btns.append({"id": "disable", "label": "Sem arranque", "color": "#30363D",
+                             "confirm": f"{node['unit']} deixa de arrancar sozinho no boot?"} if auto == "enabled" else
+                            {"id": "enable", "label": "Auto no boot", "color": "#1F6FEB",
+                             "confirm": f"{node['unit']} passa a arrancar sozinho no boot?"})
             scr.update(tpl="kv", rows=rows, buttons=btns)
         elif t == "provider":
             prov = self.provider(node)
@@ -793,22 +842,30 @@ class App:
         cur = self.node()
         if cur.get("type") == "service":
             unit = cur["unit"]
-            self.run_bg(lambda: self.service_action(btn, unit, cur.get("group")))
+            if btn not in ("start", "stop", "restart", "enable", "disable"):
+                return
+            if cur.get("restart_only") and btn != "restart":
+                return
+            self.run_bg(lambda: self.service_action(btn, unit, cur.get("group"), bool(cur.get("user"))))
         elif cur.get("type") in ("provider", "detail"):
             owner = cur["id"] if cur.get("type") == "provider" else cur.get("owner")
             if owner not in self.providers:
                 return
             self.handle_result(self.providers[owner].on_button(btn))
 
-    def service_action(self, action: str, unit: str, group: str | None = None) -> None:
+    def service_action(self, action: str, unit: str, group: str | None = None, user: bool = False) -> None:
         """Executa numa thread. Com grupo (ex.: 'sdr'), ao ligar pára os outros do grupo."""
         if action == "start" and group:
             for other in self.service_groups().get(group, []):
                 if other != unit and service_state(other).get("ActiveState") == "active":
                     self.events.put(("toast", (f"Parando {other}", "warn")))
                     systemctl("stop", other)
-        ok, err = systemctl(action, unit)
-        verb = {"start": "ligado", "stop": "parado", "restart": "reiniciado"}.get(action, action)
+        if user and unit in ("dashd", "dashd.service"):
+            self.toast("A reiniciar o DashDeck...", "warn")
+            time.sleep(0.5)
+        ok, err = systemctl(action, unit, user)
+        verb = {"start": "ligado", "stop": "parado", "restart": "reiniciado",
+                "enable": "arranca no boot", "disable": "já não arranca no boot"}.get(action, action)
         self.events.put(("toast", (f"{unit} {verb}" if ok else f"Falhou: {err[:60]}", "ok" if ok else "err")))
         self.events.put(("refresh", None))
 

@@ -218,36 +218,144 @@ label = "Serviços"
 icon = "power"
 color = "#F0883E"
 type = "submenu"
+layout = "grid"
+# Cada box mostra o estado ("ativo · auto" = arranca no boot). O detalhe tem Ligar/Parar/Reiniciar e
+# "Auto no boot"/"Sem arranque". user = true: serviço do utilizador (systemctl --user, sem sudo).
+# restart_only = true: só Reiniciar (o próprio dashd). group: ao ligar, pára os outros do grupo (SDR).
+# Fora de propósito: NetworkManager, wpa_supplicant e afins (pará-los pelo ecrã cortava a rede).
 
   [[menu.items]]
   id = "svc_readsb"
-  label = "readsb (ADS-B)"
-  icon = "eye"
+  label = "ADS-B"
+  img = "emoji:✈"
   type = "service"
   unit = "readsb"
   group = "sdr"
+  note = "Recetor de aviões (usa o SDR)"
 
   [[menu.items]]
   id = "svc_ais"
-  label = "AIS-catcher"
-  icon = "loop"
+  label = "AIS"
+  img = "emoji:🚢"
   type = "service"
   unit = "ais-catcher"
   group = "sdr"
+  note = "Recetor de navios (usa o SDR)"
+
+  [[menu.items]]
+  id = "svc_tar1090"
+  label = "tar1090"
+  img = "emoji:🗺"
+  type = "service"
+  unit = "tar1090"
+  note = "Mapa web do ADS-B (porta 80/tar1090); só trabalha com o readsb ligado"
 
   [[menu.items]]
   id = "svc_mesh"
   label = "meshtasticd"
-  icon = "mail"
+  img = "emoji:📡"
   type = "service"
   unit = "meshtasticd"
+  note = "Rádio LoRa do Meshtastic"
+
+  [[menu.items]]
+  id = "svc_gpsmux"
+  label = "GPS mux"
+  img = "emoji:🛰"
+  type = "service"
+  unit = "meshdeck-gpsmux"
+  note = "Partilha o GPS entre o meshtasticd e outras apps (MeshDeck)"
 
   [[menu.items]]
   id = "svc_gpsd"
   label = "gpsd"
-  icon = "gps"
+  img = "emoji:📍"
   type = "service"
   unit = "gpsd"
+
+  [[menu.items]]
+  id = "svc_dashd"
+  label = "DashDeck"
+  img = "emoji:🖥"
+  type = "service"
+  unit = "dashd"
+  user = true
+  restart_only = true
+  confirm_restart = "Reiniciar o DashDeck? O ecrã fica uns segundos sem resposta."
+  note = "Este ecrã (só reiniciar)"
+
+  [[menu.items]]
+  id = "svc_camd"
+  label = "CamDeck"
+  img = "emoji:📷"
+  type = "service"
+  unit = "camd"
+  user = true
+  note = "Servidor da câmara (porta 8090)"
+
+  [[menu.items]]
+  id = "svc_ssh"
+  label = "SSH"
+  img = "emoji:🔑"
+  type = "service"
+  unit = "ssh"
+  note = "Acesso remoto pelo terminal"
+
+  [[menu.items]]
+  id = "svc_vnc"
+  label = "VNC"
+  img = "emoji:🔭"
+  type = "service"
+  unit = "wayvnc"
+  note = "Ecrã remoto do uConsole"
+
+  [[menu.items]]
+  id = "svc_connect"
+  label = "Pi Connect"
+  img = "emoji:🌐"
+  type = "service"
+  unit = "rpi-connect"
+  user = true
+  note = "Raspberry Pi Connect (acesso pela Internet)"
+
+  [[menu.items]]
+  id = "svc_bt"
+  label = "Bluetooth"
+  icon = "bluetooth"
+  type = "service"
+  unit = "bluetooth"
+
+  [[menu.items]]
+  id = "svc_modem"
+  label = "Modem 4G"
+  img = "emoji:📶"
+  type = "service"
+  unit = "ModemManager"
+  note = "Gere modems 4G/LTE"
+
+  [[menu.items]]
+  id = "svc_cups"
+  label = "Impressão"
+  img = "emoji:🖨"
+  type = "service"
+  unit = "cups"
+  note = "CUPS (impressoras)"
+
+  [[menu.items]]
+  id = "svc_pg"
+  label = "PostgreSQL"
+  img = "emoji:🗄"
+  type = "service"
+  unit = "postgresql"
+  note = "Base de dados (usada pelo Intercept)"
+
+  [[menu.items]]
+  id = "svc_web"
+  label = "lighttpd"
+  img = "emoji:🌍"
+  type = "service"
+  unit = "lighttpd"
+  note = "Servidor web (serve a página do tar1090)"
 
 [[menu]]
 id = "system"

@@ -64,6 +64,7 @@
 | 0.15.2 | Frase "TELA PEQUENA, GRANDES POSSIBILIDADES!" na animação Pixels (fonte com `!` e `,`) |
 | 0.15.3 | Tela de carregamento com 5 s no mínimo (a animação estica-se) |
 | 0.15.4 | A frase também no Nascer do sol |
+| — | (só host) Serviços: 16 serviços (DashDeck, CamDeck, SSH, VNC, tar1090, GPS mux...), serviços do utilizador, arranque no boot, estado lido numa só chamada |
 | — | (só host) ADS-B e AIS com três páginas: Controlo (ligar/desligar, monitor, resumo), Lista e Mapa |
 | 0.25.5 | Cabeçalho com o avião do monitor: a hora, a bateria e a ligação ficam à direita (um espaçador ocupa o lugar que o título deixa; na 0.25.4 deslizavam para cima do avião) |
 | 0.25.4 | Avião no cabeçalho (`{"t":"hdr","plane"}`), laranja com o monitor de emergências ligado e vermelho depois de uma emergência. No host: o aviso de emergência passa a ser opcional, pelo cartão **Monitor de emergências** no ADS-B (mantém o readsb ligado fora da tela; estado em `state.json`) |

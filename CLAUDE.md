@@ -49,6 +49,7 @@ mensagem, até 8 KB (descrito no cabeçalho de `firmware/main/ui.c` e em `docs/a
 - **Disco do uConsole:** tem pouco espaço livre; por isso o build fica em `/dev/shm`.
 
 ## Feito recentemente (19 a 21/11)
+- **Serviços** (21/11): 16 serviços revistos no uConsole, incluindo os do utilizador (`user = true`: dashd com `restart_only`, camd, rpi-connect); botões de arranque no boot; `service_states()` lê todos numa chamada.
 - **Monitor de emergências ADS-B** (21/11): cartão no ADS-B (`AdsbProvider.monitor`, `adsb_monitor` em `state.json`) que mantém o readsb ligado; `check_squawk()` no dashd só corre com ele ligado; aviso `notify` `kind:"squawk"` (avião em `notify.c`) e avião no cabeçalho (`hdr`). Testado com readsb simulado e avião fictício (7700); falta um caso real.
 - **Scroll** (21/11): inércia mais longa (`scroll_throw` 4), ícones na RAM até sobrarem 20 KB, fundo do mapa libertado fora dos mapas.
 - **Câmara** (21/11): box com visor ao vivo (JPEG reduzido no host, `{"t":"jpg"}` descodificado pela ROM do C6 em ~40 ms, fluxo com `jpgack`), Foto e Gravar por cima da imagem, página Galeria (miniaturas do camd; vídeos tocados pelo ffmpeg a partir de uma cópia em `/dev/shm`, para o token não aparecer na linha de comando) e página Estado. ~16 quadros/s quando a câmara os dá. Precisa do camd com o token local e o `?after=n` no `/api/frame.jpg` (alterações no CamDeck, 21/11). Os toques nos botões ainda não foram feitos com o dedo (só por eventos simulados).

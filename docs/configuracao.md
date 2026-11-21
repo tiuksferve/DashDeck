@@ -41,7 +41,7 @@ Campos comuns:
 | `submenu` | `items`, `layout`, `xdg_category`, `xdg_exclude` | Abre outro menu. Com `xdg_category`, junta as aplicações dos `.desktop` dessa categoria |
 | `launch` | `cmd`, `app_icon` | Abre um programa no uConsole. O ícone vem de `app_icon` ou do nome do comando |
 | `shell` | `cmd`, `done` | Corre um comando em segundo plano e mostra `done` (ou o código de erro) |
-| `service` | `unit`, `group` | Tela de um serviço systemd. Com `group`, ligar um serviço para os outros do mesmo grupo |
+| `service` | `unit`, `group`, `user`, `restart_only`, `confirm_restart`, `note` | Tela de um serviço systemd. Com `group`, ligar um serviço pára os outros do mesmo grupo (e não há "Auto no boot"). `user = true`: serviço do utilizador (`systemctl --user`, sem sudo). `restart_only = true`: só Reiniciar (ex.: o próprio dashd). `note`: linha de texto no detalhe |
 | `provider` | `provider` e as opções do provider | Tela com dados ao vivo (ver abaixo) |
 | `text` | `text` | Tela de texto fixo |
 | `home` | — | Volta ao menu principal (útil no dock) |
