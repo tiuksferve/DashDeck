@@ -3161,15 +3161,16 @@ class WindowsProvider(Provider):
 # ------------------------------------------------------------------ câmara (CamDeck)
 
 class CameraProvider(Provider):
-    """Câmara do CamDeck (XIAO ESP32-S3 Sense, servidor camd no uConsole). Página 1: visor ao vivo,
-    com Foto e Gravar por cima da imagem. Página 2: estado e resoluções. O visor corre numa thread:
-    pede o último quadro ao camd, reduz para o tamanho do canvas, envia-o em JPEG ({"t":"jpg"}) e
-    espera o "jpgack" do ESP antes do seguinte (a cadência acompanha o que o ESP consegue)."""
+    """Câmara do CamDeck (XIAO ESP32-S3 Sense, servidor camd no uConsole). Páginas: Visor (vídeo ao
+    vivo, com Foto e Gravar por cima da imagem), Galeria (fotos e vídeos um a um; os vídeos tocam no
+    ecrã, sem som) e Estado. As imagens correm numa thread: cada quadro é reduzido para o tamanho do
+    canvas, enviado em JPEG ({"t":"jpg"}) e o seguinte só sai depois do "jpgack" do ESP."""
     VIDEO_SIZES = ["VGA", "SVGA", "XGA", "HD"]
     PHOTO_SIZES = ["HD", "UXGA", "QXGA"]
     CHUNK = 5400                 # bytes por linha (base64 ~7,2 KB; o ESP aceita linhas até 8 KB)
     JPG_MAX = 24000              # o ESP guarda JPEG até 24 KB
     REC = "#DA3633"
+    P_VISOR, P_GALLERY, P_INFO = 0, 1, 2
 
     def __init__(self, node, app):
         super().__init__(node, app)
@@ -3184,6 +3185,13 @@ class CameraProvider(Provider):
         self.dec_ms = 0
         self._font = None
         self._frame_n = -1
+        # galeria
+        self._gl: tuple[float, list[dict]] = (0.0, [])
+        self._gname = ""                                 # ficheiro mostrado
+        self._gsent: tuple = (None, 0.0)                 # (chave, quando) da última imagem enviada
+        self._thumbs: dict[str, bytes] = {}
+        self._play: dict | None = None                   # vídeo a tocar
+        self._del: dict | None = None
 
     # ---- estado do camd
     def state(self, max_age: float = 1.5) -> tuple[dict | None, str]:
@@ -3214,25 +3222,34 @@ class CameraProvider(Provider):
         return "pronta" if st["camera"].get("ready") else "desligada"
 
     def pages(self) -> int:
-        return 2
+        return 3
 
     # ---- telas
-    def render(self, page: int = 0) -> dict:
-        st, err = self.state()
-        if page == 1:
-            return self._info(st, err)
+    def _canvas(self, title: str) -> tuple[dict, dict, bool]:
         W, H = self.app.canvas_area()
         portrait = W < H
         if portrait:
             H = W * 3 // 4
         self._box = (W, H)
         plot = {"w": W, "h": H, "center": False, "cross": False, "pts": []}
-        out = {"tpl": "plot", "title": "Câmara", "plot": plot, "buttons": []}
+        return plot, {"tpl": "plot", "title": title, "plot": plot, "buttons": []}, portrait
+
+    @staticmethod
+    def _down(out: dict, plot: dict, err: str) -> dict:
+        plot["msg"] = "CamDeck parado"
+        out["buttons"] = [{"id": "start", "label": "Ligar o CamDeck", "color": "ok"}]
+        out["rows"] = [["Erro", err[:60], "err"]]
+        return out
+
+    def render(self, page: int = 0) -> dict:
+        st, err = self.state()
+        if page == self.P_INFO:
+            return self._info(st, err)
+        if page == self.P_GALLERY:
+            return self._gallery(err)
+        plot, out, portrait = self._canvas("Câmara")
         if err:
-            plot["msg"] = "CamDeck parado"
-            out["buttons"] = [{"id": "start", "label": "Ligar o CamDeck", "color": "ok"}]
-            out["rows"] = [["Erro", err[:60], "err"]]
-            return out
+            return self._down(out, plot, err)
         cam, rec = st["camera"], st["rec"]
         if not cam.get("ready"):
             plot["msg"] = "Câmara a arrancar..." if cam.get("connected") else "Câmara desligada\nLigue-a à USB"
@@ -3280,11 +3297,176 @@ class CameraProvider(Provider):
         out["buttons"] = btns
         return out
 
-    # ---- visor
-    def _visible(self) -> bool:
+    # ---- galeria
+    def _gitems(self, max_age: float = 10.0) -> list[dict]:
+        t, items = self._gl
+        if time.monotonic() - t > max_age:
+            try:
+                items = self.cam.media()
+            except camclient.CamError:
+                pass
+            self._gl = (time.monotonic(), items)
+        return items
+
+    def _gsel(self) -> tuple[int, dict | None]:
+        items = self._gitems()
+        if not items:
+            return -1, None
+        i = next((k for k, it in enumerate(items) if it["name"] == self._gname), 0)
+        self._gname = items[i]["name"]
+        return i, items[i]
+
+    @staticmethod
+    def _when(it: dict) -> str:
+        return time.strftime("%d/%m %H:%M", time.localtime(it.get("mtime", 0)))
+
+    @staticmethod
+    def _size(n: int) -> str:
+        return f"{n / 1048576:.1f} MB".replace(".", ",") if n >= 1048576 else f"{n // 1024} KB"
+
+    def _gallery(self, err: str) -> dict:
+        plot, out, portrait = self._canvas("Câmara · Galeria")
+        if err:
+            return self._down(out, plot, err)
+        i, it = self._gsel()
+        if not it:
+            plot["msg"] = "Sem fotos nem vídeos"
+            return out
+        self._ensure_thread()
+        plot.update(live=True, msg="A carregar...")
+        ctrl = [["prev", "l", ""], ["next", "r", ""], ["del", "br", "Apagar"]]
+        if it["kind"] == "videos":
+            playing = bool(self._play and self._play["name"] == it["name"])
+            ctrl.append(["play", "bl", "Parar", self.REC] if playing else ["play", "bl", "Ver"])
+        plot["ctrl"] = ctrl
+        if portrait:
+            kind = f"vídeo {self._mmss(it.get('duration', 0))}" if it["kind"] == "videos" else "foto"
+            out["rows"] = [["Ficheiro", it["name"]], [kind.capitalize(), f"{self._when(it)} · {self._size(it['bytes'])}"]]
+        return out
+
+    def _thumb(self, it: dict) -> bytes:
+        key = f"{it['kind']}/{it['name']}"
+        if key not in self._thumbs:
+            if len(self._thumbs) > 30:
+                self._thumbs.clear()
+            self._thumbs[key] = self.cam.thumb(it["kind"], it["name"])
+        return self._thumbs[key]
+
+    def _gallery_jpeg(self) -> bytes | None:
+        """Imagem seguinte da galeria, ou None se não houver nada novo para mostrar."""
+        play = self._play
+        if play:
+            if play.get("done"):
+                self._stop_play()
+                self.app.events.put(("refresh", None))   # o botão volta a "Ver"
+                return None
+            n, src = play["frame"]
+            if n == play["sent"]:
+                return None
+            play["sent"] = n
+            pos = time.monotonic() - play["t0"]
+            return self._compose(src, lambda d, w, h: self._label(
+                d, w, f"▶ {self._mmss(pos)} / {self._mmss(play['dur'])}", (255, 255, 255)))
+        i, it = self._gsel()
+        if not it:
+            return None
+        key = (it["name"], self._box, len(self._gl[1]))
+        if key == self._gsent[0] and time.monotonic() - self._gsent[1] < 3.0:
+            return None   # (reenviada a cada 3 s: uma tela refeita apaga o canvas)
+        n = len(self._gl[1])
+        video = it["kind"] == "videos"
+        text = f"{i + 1}/{n} · {self._when(it)}" + (f" · {self._mmss(it.get('duration', 0))}" if video else "")
+
+        def deco(d, w, h):
+            self._label(d, w, text, (255, 255, 255))
+            if video:   # símbolo de "tocar" ao centro
+                cx, cy, r = w // 2, h // 2, 16
+                d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(0, 0, 0), outline=(255, 255, 255), width=2)
+                d.polygon([(cx - 5, cy - 8), (cx - 5, cy + 8), (cx + 9, cy)], fill=(255, 255, 255))
+
+        data = self._compose(self._thumb(it), deco)
+        self._gsent = (key, time.monotonic())
+        return data
+
+    def _start_play(self, it: dict) -> None:
+        self._stop_play()
+        W, H = self._box
+        play = {"name": it["name"], "frame": (0, b""), "sent": 0, "t0": time.monotonic(),
+                "dur": it.get("duration", 0), "proc": None, "file": None}
+        self._play = play
+
+        def run():
+            import tempfile
+            try:
+                data = self.cam.download("videos", it["name"])
+                d = "/dev/shm" if os.path.isdir("/dev/shm") else None
+                fd, path = tempfile.mkstemp(suffix=".mp4", prefix="dashd-cam-", dir=d)
+                with os.fdopen(fd, "wb") as f:
+                    f.write(data)
+                play["file"] = path
+                if self._play is not play:
+                    return
+                proc = subprocess.Popen(
+                    ["ffmpeg", "-hide_banner", "-loglevel", "error", "-re", "-i", path, "-an",
+                     "-vf", f"scale={W}:{H}:force_original_aspect_ratio=decrease",
+                     "-c:v", "mjpeg", "-q:v", "5", "-f", "image2pipe", "-"],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                play["proc"] = proc
+                play["t0"] = time.monotonic()
+                buf, n = b"", 0
+                while True:
+                    chunk = proc.stdout.read(16384)
+                    if not chunk:
+                        break
+                    buf += chunk
+                    while True:   # cada quadro MJPEG acaba em FFD9 (não aparece dentro dos dados)
+                        end = buf.find(b"\xff\xd9")
+                        if end < 0:
+                            break
+                        n += 1
+                        play["frame"] = (n, buf[:end + 2])
+                        buf = buf[end + 2:]
+            except (camclient.CamError, OSError) as e:
+                self.app.toast(f"Vídeo falhou: {str(e)[:50]}", "err")
+            finally:
+                play["done"] = True
+
+        threading.Thread(target=run, daemon=True, name="video").start()
+
+    def _stop_play(self) -> None:
+        play, self._play = self._play, None
+        if not play:
+            return
+        play["done"] = True
+        p = play.get("proc")
+        if p and p.poll() is None:
+            p.kill()
+        if play.get("file"):
+            try:
+                os.remove(play["file"])
+            except OSError:
+                pass
+        self._gsent = (None, 0.0)
+
+    def render_detail(self, kind: str) -> dict:
+        it = self._del
+        if kind != "del" or not it:
+            return {"tpl": "text", "text": "Nada para apagar."}
+        video = it["kind"] == "videos"
+        rows = [["Ficheiro", it["name"]],
+                ["Tipo", f"vídeo · {self._mmss(it.get('duration', 0))}" if video else "foto"],
+                ["Data", self._when(it)], ["Tamanho", self._size(it["bytes"])]]
+        return {"tpl": "kv", "rows": rows,
+                "buttons": [{"id": "delok", "label": "Apagar", "color": "err",
+                             "confirm": f"Apagar {'este vídeo' if video else 'esta foto'}? Não se pode desfazer."}]}
+
+    # ---- envio das imagens
+    def _page_shown(self) -> int | None:
         a = self.app
-        return bool(a.esp_ready) and a.node().get("id") == self.node["id"] and \
-            a.page.get(self.node["id"], 0) == 0
+        if not a.esp_ready or a.node().get("id") != self.node["id"]:
+            return None
+        pg = a.page.get(self.node["id"], 0)
+        return pg if pg in (self.P_VISOR, self.P_GALLERY) else None
 
     def _ensure_thread(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -3294,19 +3476,24 @@ class CameraProvider(Provider):
 
     def on_leave(self) -> None:
         self.fps = 0.0   # a thread vê que a tela saiu e acaba sozinha
+        self._stop_play()
 
     def _stream(self) -> None:
         away, n, t0 = 0, 0, time.monotonic()
         while True:
-            if not self._visible():
+            pg = self._page_shown()
+            if pg is None:
                 away += 1
-                if away > 15:      # 3 s fora do visor: acaba (o render volta a ligá-la)
+                if away > 15:      # 3 s fora: acaba (o render volta a ligá-la)
+                    self._stop_play()
                     return
                 time.sleep(0.2)
                 continue
             away = 0
+            if pg != self.P_GALLERY and self._play:
+                self._stop_play()
             try:
-                data = self._next_jpeg()
+                data = self._next_jpeg() if pg == self.P_VISOR else self._gallery_jpeg()
             except camclient.CamError as e:
                 log.info("câmara: %s", e)
                 self._fresh()
@@ -3317,38 +3504,47 @@ class CameraProvider(Provider):
                 log.exception("câmara: quadro")
                 time.sleep(1)
                 continue
-            if data and self._send(data):
+            if data is None:
+                time.sleep(0.04)
+                continue
+            if data and self._send(data) and pg == self.P_VISOR:
                 n += 1
             dt = time.monotonic() - t0
             if dt >= 3:
                 self.fps, n, t0 = n / dt, 0, time.monotonic()
 
-    def _next_jpeg(self) -> bytes:
+    def _compose(self, src: bytes, deco=None) -> bytes:
+        """JPEG reduzido ao canvas (sem deformar), com `deco(draw, w, h)` por cima."""
         from PIL import Image, ImageDraw
         W, H = self._box
-        flash = self._flash
-        if flash and time.monotonic() < flash[0]:
-            src = flash[1]
-        else:
-            self._frame_n, src = self.cam.frame(self._frame_n)   # espera por um quadro novo
         img = Image.open(io.BytesIO(src))
         img.draft("RGB", (W, H))   # o JPEG já é descodificado reduzido (muito mais rápido)
         img = img.convert("RGB")
         k = min(W / img.width, H / img.height)
-        img = img.resize((max(16, round(img.width * k)), max(16, round(img.height * k))), Image.BILINEAR)
-        d = ImageDraw.Draw(img)
-        st, _ = self.state(max_age=1.0)
-        if flash and time.monotonic() < flash[0]:
-            d.rectangle((0, 0, img.width - 1, img.height - 1), outline=(255, 255, 255), width=2)
-            self._label(d, img.width, "FOTO", (255, 255, 255))
-        elif st and st["rec"]["recording"]:
-            self._label(d, img.width, "REC " + self._mmss(st["rec"]["elapsed"]), (255, 80, 70), dot=True)
+        if abs(k - 1) > 0.01:
+            img = img.resize((max(16, round(img.width * k)), max(16, round(img.height * k))), Image.BILINEAR)
+        if deco:
+            deco(ImageDraw.Draw(img), img.width, img.height)
         for q in (self.quality, 50, 35):
             buf = io.BytesIO()
             img.save(buf, "JPEG", quality=q)
             if buf.tell() <= self.JPG_MAX:
                 return buf.getvalue()
         return b""
+
+    def _next_jpeg(self) -> bytes:
+        flash = self._flash
+        if flash and time.monotonic() < flash[0]:
+            def deco(d, w, h):
+                d.rectangle((0, 0, w - 1, h - 1), outline=(255, 255, 255), width=2)
+                self._label(d, w, "FOTO", (255, 255, 255))
+            return self._compose(flash[1], deco)
+        self._frame_n, src = self.cam.frame(self._frame_n)   # espera por um quadro novo
+        st, _ = self.state(max_age=1.0)
+        if st and st["rec"]["recording"]:
+            text = "REC " + self._mmss(st["rec"]["elapsed"])
+            return self._compose(src, lambda d, w, h: self._label(d, w, text, (255, 80, 70), dot=True))
+        return self._compose(src)
 
     def _label(self, d, w: int, text: str, col, dot: bool = False) -> None:
         from PIL import ImageFont
@@ -3388,6 +3584,7 @@ class CameraProvider(Provider):
     def _snap(self) -> None:
         try:
             r = self.cam.snap()
+            self._gl = (0.0, self._gl[1])   # a galeria volta a ler a lista
             try:
                 self._flash = (time.monotonic() + 1.5, self.cam.thumb("photos", r["name"]))
             except camclient.CamError:
@@ -3397,6 +3594,42 @@ class CameraProvider(Provider):
             self.app.toast(f"Foto falhou: {str(e)[:50]}", "err")
         finally:
             self._busy = False
+
+    def _gallery_button(self, btn_id: str):
+        if btn_id == "delok":
+            it, self._del = self._del, None
+            if not it:
+                return ("back", "Nada para apagar")
+            if self._play and self._play["name"] == it["name"]:
+                self._stop_play()
+            items = self._gitems()
+            i = next((k for k, x in enumerate(items) if x["name"] == it["name"]), 0)
+            self.cam.delete(it["kind"], it["name"])
+            rest = [x for x in items if x["name"] != it["name"]]
+            self._gname = rest[min(i, len(rest) - 1)]["name"] if rest else ""
+            self._gl = (0.0, rest)
+            self._thumbs.pop(f"{it['kind']}/{it['name']}", None)
+            return ("back", "Vídeo apagado" if it["kind"] == "videos" else "Foto apagada")
+        i, it = self._gsel()
+        if not it:
+            return ("Sem fotos nem vídeos", "info")
+        items = self._gl[1]
+        if btn_id in ("prev", "next"):
+            self._stop_play()
+            self._gname = items[(i + (1 if btn_id == "next" else -1)) % len(items)]["name"]
+            self._gsent = (None, 0.0)
+            return None
+        if btn_id == "play":
+            if self._play and self._play["name"] == it["name"]:
+                self._stop_play()
+            else:
+                self._start_play(it)
+            return None
+        if btn_id == "del":
+            self._stop_play()
+            self._del = it
+            return {"id": "camdel", "label": "Apagar", "dynamic": "del", "owner": self.node["id"]}
+        return None
 
     def on_button(self, btn_id: str):
         if btn_id == "start":
@@ -3410,6 +3643,11 @@ class CameraProvider(Provider):
             subprocess.Popen(["xdg-open", self.cam.url + "/"], env=env, start_new_session=True,
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return ("CamDeck aberto no uConsole", "ok")
+        try:
+            if btn_id in ("prev", "next", "play", "del", "delok"):
+                return self._gallery_button(btn_id)
+        except camclient.CamError as e:
+            return (str(e)[:60], "err")
         st, err = self.state(max_age=0)
         if err:
             return (err[:60], "err")
@@ -3424,6 +3662,8 @@ class CameraProvider(Provider):
                 on = not st["rec"]["recording"]
                 self.cam.record(on)
                 self._fresh()
+                if not on:
+                    self._gl = (0.0, self._gl[1])
                 return ("A gravar", "ok") if on else ("Gravação parada: a converter para MP4", "ok")
             if btn_id in ("vsize", "psize"):
                 cam = st["camera"]

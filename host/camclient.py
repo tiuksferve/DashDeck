@@ -28,9 +28,11 @@ class CamClient:
         except OSError:
             raise CamError("sem token do CamDeck (o camd já arrancou?)") from None
 
-    def _req(self, path: str, data: dict | None = None, timeout: float = 5.0, hdrs: dict | None = None) -> bytes:
+    def _req(self, path: str, data: dict | None = None, timeout: float = 5.0, hdrs: dict | None = None,
+             method: str | None = None) -> bytes:
         body = json.dumps(data).encode() if data is not None else None
-        req = urllib.request.Request(self.url + path, data=body, method="POST" if data is not None else "GET",
+        req = urllib.request.Request(self.url + path, data=body,
+                                     method=method or ("POST" if data is not None else "GET"),
                                      headers={"X-CamDeck-Token": self._token(),
                                               "Content-Type": "application/json"})
         try:
@@ -63,6 +65,17 @@ class CamClient:
 
     def thumb(self, kind: str, name: str) -> bytes:
         return self._req(f"/thumb/{kind}/{name}", timeout=6)
+
+    def media(self) -> list[dict]:
+        """Fotos e vídeos, o mais recente primeiro (kind, name, bytes, mtime, duration...)."""
+        return self._json("/api/media", timeout=5).get("items", [])
+
+    def delete(self, kind: str, name: str) -> None:
+        self._req(f"/api/media/{kind}/{name}", timeout=5, method="DELETE")
+
+    def download(self, kind: str, name: str) -> bytes:
+        """Ficheiro da galeria (o token não vai para a linha de comando de outros programas)."""
+        return self._req(f"/media/{kind}/{name}", timeout=30)
 
     def snap(self) -> dict:
         return self._json("/api/snap", {}, timeout=15)

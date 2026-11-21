@@ -184,12 +184,17 @@ Monitor do RTL-SDR, para saber se está livre para outros programas.
 
 ### Câmara
 Câmara do CamDeck (projeto irmão: XIAO ESP32-S3 Sense ligada ao uConsole por USB),
-pelo servidor `camd`. Duas páginas (swipe):
+pelo servidor `camd`. Três páginas (swipe):
 
 - **Visor:** o vídeo ao vivo no ecrã inteiro, com **Foto** (canto inferior esquerdo) e **Gravar**
   (canto inferior direito; fica vermelho, **Parar**, durante a gravação). A foto é tirada na resolução
   das fotos e aparece 1,5 s no visor com uma moldura branca; durante uma gravação, a foto é o quadro
   atual. A gravar, o visor mostra "● REC" e o tempo. Os vídeos ficam em MP4 com som, como no browser.
+- **Galeria:** as fotos e os vídeos, um de cada vez no ecrã inteiro, o mais recente primeiro, com a
+  posição, a data e (nos vídeos) a duração por cima. As setas dos lados passam ao anterior e ao
+  seguinte. Nos vídeos, **Ver** toca-o no ecrã (sem som, à velocidade a que foi gravado) e **Parar**
+  pára. **Apagar** abre os dados do ficheiro e pede confirmação. A lista é relida a cada 10 s e
+  depois de uma foto ou gravação.
 - **Estado:** sensor e firmware, resolução e fps do vídeo, resolução das fotos, quadros por segundo do
   visor e o tempo de descodificação no ESP, temperatura, gravação e disco livre. Botões **Vídeo**
   (VGA, SVGA, XGA, HD) e **Fotos** (HD, UXGA, QXGA) mudam a resolução num toque; **Abrir** abre a

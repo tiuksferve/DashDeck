@@ -145,7 +145,8 @@ type = "provider"
 provider = "camera"
 url = "http://127.0.0.1:8090"      # camd do CamDeck (entra com o token de ~/.config/camdeck/local-token)
 quality = 70                       # qualidade JPEG do visor (mais baixa = mais quadros por segundo)
-# Páginas (swipe): Visor (vídeo ao vivo; Foto e Gravar por cima da imagem) · Estado (sensor, fps,
+# Páginas (swipe): Visor (vídeo ao vivo; Foto e Gravar por cima da imagem) · Galeria (fotos e vídeos
+# um a um; os vídeos tocam no ecrã, sem som; Apagar com confirmação) · Estado (sensor, fps,
 # temperatura, gravação, disco; botões para a resolução do vídeo e das fotos e Abrir no uConsole).
 
 [[menu]]
