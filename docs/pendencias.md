@@ -66,6 +66,7 @@
 | 0.15.4 | A frase também no Nascer do sol |
 | — | (só host) Serviços: 16 serviços (DashDeck, CamDeck, SSH, VNC, tar1090, GPS mux...), serviços do utilizador, arranque no boot, estado lido numa só chamada |
 | — | (só host) ADS-B e AIS com três páginas: Controlo (ligar/desligar, monitor, resumo), Lista e Mapa |
+| 0.25.6 | Título do cabeçalho visível com o avião do monitor: largura fixa até antes do avião (na 0.25.5 ficava só "...") |
 | 0.25.5 | Cabeçalho com o avião do monitor: a hora, a bateria e a ligação ficam à direita (um espaçador ocupa o lugar que o título deixa; na 0.25.4 deslizavam para cima do avião) |
 | 0.25.4 | Avião no cabeçalho (`{"t":"hdr","plane"}`), laranja com o monitor de emergências ligado e vermelho depois de uma emergência. No host: o aviso de emergência passa a ser opcional, pelo cartão **Monitor de emergências** no ADS-B (mantém o readsb ligado fora da tela; estado em `state.json`) |
 | 0.25.3 | Aviso de emergência do ADS-B (`notify` com `kind:"squawk"`): avião vermelho em pixel art que pisca, faixa vermelha. No host: o dashd verifica o readsb a cada 3 s em qualquer tela e avisa uma vez por avião e código (7500, 7600, 7700) a cada 30 min; o toque abre o detalhe do avião |

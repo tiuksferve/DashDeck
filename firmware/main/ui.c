@@ -2769,8 +2769,10 @@ static void hdr_set(int v)
         lv_obj_add_flag(s_hdr_plane, LV_OBJ_FLAG_HIDDEN);
     }
     if (s_land) {
+        // com o avião, o título tem largura fixa até pouco antes dele (texto curto fica à esquerda,
+        // comprido acaba em "..."); sem ele, volta a ocupar o espaço livre
         lv_obj_set_flex_grow(s_title, v ? 0 : 1);
-        lv_obj_set_style_max_width(s_title, v ? s_W / 2 - 46 : LV_COORD_MAX, 0);
+        lv_obj_set_width(s_title, v ? s_W / 2 - 46 : LV_SIZE_CONTENT);
         if (v) lv_obj_remove_flag(s_hdr_spacer, LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(s_hdr_spacer, LV_OBJ_FLAG_HIDDEN);
     }
