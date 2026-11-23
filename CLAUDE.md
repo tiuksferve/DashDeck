@@ -9,16 +9,18 @@ toque), ligada só por USB. O ESP é um renderizador fino (LVGL 9.2); quem decid
 `host/dashd.py` (systemd --user), configurado em `host/config.toml`. Protocolo: uma linha JSON por
 mensagem, até 8 KB (descrito no cabeçalho de `firmware/main/ui.c` e em `docs/arquitetura.md`).
 
-- **Menu inicial (boxes):** AIO v2, Meshtastic, GPS, ADS-B, AIS, SDR, Câmara, Rede, Aplicações, Serviços, Sistema.
+- **Menu inicial (boxes):** AIO v2, Meshtastic, GPS, ADS-B, AIS, SDR, Câmara, Stocks, Rede, Aplicações, Serviços, Sistema.
 - **Dock** (início e Aplicações): Início, Relógio, Captura, Brilho, Som (volume e brilho do uConsole), Bloquear.
-- **Firmware atual:** 0.25.6 (gravado em 21/11).
+- **Firmware atual:** 0.25.7 (gravado em 23/11).
 
 ## Onde está cada coisa
-- `host/providers.py`: telas com dados (system, gps, adsb, ais, mesh, clock, aio, sdr, net, console, windows, camera).
+- `host/providers.py`: telas com dados (system, gps, adsb, ais, mesh, clock, aio, sdr, net, console, windows, camera, stocks).
+- `host/stocks.py`: cotações (Yahoo Finance, `/v8/finance/chart`) e logotipos (companiesmarketcap.com, cache em `~/.cache/dashd/logos`, fora do repositório).
 - `host/camclient.py`: cliente do camd do CamDeck (`~/PycharmProjects/CamDeck`, porta 8090, token local em `~/.config/camdeck/local-token`).
 - `host/wltop.py`: janelas abertas no uConsole (cliente Wayland em Python puro; listar, mostrar, minimizar, fechar).
 - `host/dashd.py`: ligação serial, navegação, envio de ícones, fundos, emojis e avisos.
 - `host/clockscene.py`: relógio (Open-Meteo, cena da paisagem em 8 bpp, ícones do tempo).
+- **Fontes do ESP:** `firmware/tools/gen_fonts.py` (ASCII, Latin-1 e a lista `EXTRA`, que inclui o €). Um carácter novo tem de entrar também em `_EXTRA` no `dashd.py`, senão o host tira-o do texto.
 - `host/emojis.py`: emojis a cores no texto (códigos privados U+100000+, imgfont no ESP).
 - `host/meshbridge.py`: cliente da API local do MeshDeckWeb (`~/PycharmProjects/MeshDeckWeb`, `--local-api on`).
 - `firmware/main/ui.c`: templates, relógio, ecrã apagado, animação de arranque e aviso de mensagem.
@@ -48,7 +50,8 @@ mensagem, até 8 KB (descrito no cabeçalho de `firmware/main/ui.c` e em `docs/a
 - **Memória do ESP:** o LVGL usa o heap do sistema (`CONFIG_LV_USE_CLIB_MALLOC`); 110 KB ficam reservados para o buffer de ecrã (relógio, mapas, arranque) e sobram ~150 KB. Os ícones vão para o cartão SD (sem reenvio entre arranques) com cópia na RAM para os da tela aberta e do dock (carregados ao construir a tela, libertando os de outras telas, enquanto sobram 20 KB de heap (eram 36 KB até à 0.25.1: depois de algum uso os ícones das Aplicações ficavam no cartão e o scroll bloqueava ~400 ms); ler do cartão no barramento do display tornava swipes e animações lentos) e uma cache de imagens de 32 KB para os outros; 96 lugares, os do dock nunca são substituídos (`iconlost` avisa o host). O fundo do relógio fica na RAM, porque ler do cartão leva 120+ ms por quadro. O aviso de mensagem (46 KB) usa a memória do fundo do relógio quando o relógio está aberto (`bgfreed`). O `hello` traz `largest` e `sd`; o `stats` traz `heap`, `largest`, ícones na RAM e no cartão e emojis. O fundo do mapa é libertado fora dos mapas (0.25.2).
 - **Disco do uConsole:** tem pouco espaço livre; por isso o build fica em `/dev/shm`.
 
-## Feito recentemente (19 a 21/11)
+## Feito recentemente (19 a 23/11)
+- **Stocks** (23/11): box com Siemens, Tesla, SpaceX (SPCX), Apple e NVIDIA; logotipo, cotação e variação; gráfico do dia no detalhe (plot com `tracks`).
 - **Serviços** (21/11): 16 serviços revistos no uConsole, incluindo os do utilizador (`user = true`: dashd com `restart_only`, camd, rpi-connect); botões de arranque no boot; `service_states()` lê todos numa chamada.
 - **Monitor de emergências ADS-B** (21/11): cartão no ADS-B (`AdsbProvider.monitor`, `adsb_monitor` em `state.json`) que mantém o readsb ligado; `check_squawk()` no dashd só corre com ele ligado; aviso `notify` `kind:"squawk"` (avião em `notify.c`) e avião no cabeçalho (`hdr`). Testado com readsb simulado e avião fictício (7700); falta um caso real.
 - **Scroll** (21/11): inércia mais longa (`scroll_throw` 4), ícones na RAM até sobrarem 20 KB, fundo do mapa libertado fora dos mapas.

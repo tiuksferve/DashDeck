@@ -24,6 +24,7 @@ import camclient
 import maptiles
 import meshbridge
 import routes
+import stocks
 import wltop
 import xdgapps
 
@@ -3782,10 +3783,136 @@ class CameraProvider(Provider):
         return None
 
 
+# ------------------------------------------------------------------ ações (Stocks)
+
+class StocksProvider(Provider):
+    """Cotações (Yahoo Finance) em boxes: logotipo, nome e cotação, e a variação do dia (verde a subir,
+    vermelho a descer). Um toque abre o gráfico do dia com os valores."""
+    UP, DOWN, FLAT = "#3FB950", "#F85149", "#8B98A5"
+    CUR = {"USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥"}
+
+    def __init__(self, node, app):
+        super().__init__(node, app)
+        self.items = [dict(s) for s in node.get("symbols", [])]
+        self.quotes = stocks.Quotes([s["sym"] for s in self.items], fast=float(node.get("refresh", 60)),
+                                    crops={s["sym"]: s["logo_crop"] for s in self.items if "logo_crop" in s})
+        self.sel = ""
+
+    # ---- formatação
+    def _money(self, v, cur: str) -> str:
+        if v is None:
+            return "?"
+        txt = f"{v:,.2f}".replace(",", " ").replace(".", ",")
+        sym = self.CUR.get(cur, "")
+        return f"{sym}{txt}" if sym else f"{txt} {cur}"   # símbolo à frente, como $350,77 e €265,40
+
+    @staticmethod
+    def _change(q: dict) -> tuple[float, float] | None:
+        if not q or q.get("price") is None or not q.get("prev"):
+            return None
+        d = q["price"] - q["prev"]
+        return d, d / q["prev"] * 100
+
+    def _color(self, ch) -> str:
+        if not ch or abs(ch[1]) < 0.005:
+            return self.FLAT
+        return self.UP if ch[1] > 0 else self.DOWN
+
+    @staticmethod
+    def _pct(ch) -> str:
+        return f"{ch[1]:+.2f}%".replace(".", ",") if ch else ""
+
+    @staticmethod
+    def _open(q: dict) -> bool:
+        now = time.time()
+        return bool(q.get("start")) and q["start"] <= now <= q.get("end", 0)
+
+    def summary(self) -> str:
+        self.quotes.touch()
+        qs = [self.quotes.data.get(s["sym"]) for s in self.items]
+        chs = [self._change(q) for q in qs if q]
+        if not chs:
+            return "a carregar..." if not self.quotes.errors else "sem ligação"
+        up = sum(1 for c in chs if c and c[1] > 0)
+        return f"{up} a subir · {len(chs) - up} a descer"
+
+    def render(self, page: int = 0) -> dict:
+        self.quotes.touch(screen=True)
+        items = []
+        for s in self.items:
+            q = self.quotes.data.get(s["sym"])
+            name = s.get("name") or s["sym"]
+            it = {"id": f"q:{s['sym']}", "icon": "bars"}
+            logo = self.quotes.logos.get(s["sym"])
+            if logo:
+                it["img"] = logo
+            if q:
+                ch = self._change(q)
+                arrow = "📈" if ch and ch[1] > 0 else "📉" if ch and ch[1] < 0 else ""
+                it.update(label=f"{name}\n{self._money(q['price'], q['cur'])}",
+                          sub=f"{arrow} {self._pct(ch)}".strip() + ("" if self._open(q) else " · fechado"),
+                          sub_color=self._color(ch))
+            else:
+                err = self.quotes.errors.get(s["sym"])
+                it.update(label=name, sub="sem dados" if err else "a carregar...", sub_color=self.FLAT)
+            items.append(it)
+        return {"tpl": "menu", "layout": "grid", "items": items}
+
+    def on_tap(self, item_id: str):
+        if not item_id.startswith("q:"):
+            return None
+        self.sel = item_id[2:]
+        name = next((s.get("name") for s in self.items if s["sym"] == self.sel), self.sel)
+        return {"id": "stock", "label": name or self.sel, "dynamic": "q", "owner": self.node["id"]}
+
+    def render_detail(self, kind: str) -> dict:
+        self.quotes.touch(screen=True)
+        q = self.quotes.data.get(self.sel)
+        if not q:
+            return {"tpl": "text", "text": f"Sem dados de {self.sel}.\n{self.quotes.errors.get(self.sel, '')}"}
+        ch = self._change(q)
+        col = self._color(ch)
+        W, H = self.app.canvas_area()
+        portrait = W < H
+        pw, ph = (W, 110) if portrait else (W - 122, H)
+        plot = {"w": pw, "h": ph, "center": False, "cross": False, "pts": []}
+        ys = q["closes"]
+        if len(ys) >= 2:
+            lo, hi = min(ys + [q["prev"] or ys[0]]), max(ys + [q["prev"] or ys[0]])
+            pad = (hi - lo) * 0.08 or hi * 0.01 or 1
+            lo, hi = lo - pad, hi + pad
+            t0 = q["start"] or q["times"][0]
+            t1 = max(q["end"] or q["times"][-1], q["times"][-1])
+
+            def px(t, v):
+                x = 4 + (min(max(t, t0), t1) - t0) / max(1, t1 - t0) * (pw - 8)
+                return x, ph - 4 - (v - lo) / (hi - lo) * (ph - 8)
+
+            line = "".join(enc_px(*px(t, v)) for t, v in zip(q["times"], ys))
+            tracks = []
+            if q["prev"]:   # fecho anterior: linha cinzenta
+                y = px(t0, q["prev"])[1]
+                tracks.append(["#30363D", 1, enc_px(0, y) + enc_px(pw, y)])
+            tracks.append([col, 2, line])
+            plot["tracks"] = tracks
+            lx, ly = px(q["times"][-1], ys[-1])
+            plot["pts"] = [[round(lx), round(ly), col, "", None, 1]]
+        else:
+            plot["msg"] = "Sem gráfico do dia"
+        when = time.strftime("%d/%m %H:%M", time.localtime(q["t"])) if q.get("t") else "?"
+        rows = [["Cotação", self._money(q["price"], q["cur"]), col],
+                ["Variação", (f"{self._money(ch[0], q['cur'])} · {self._pct(ch)}" if ch else "?"), col],
+                ["Fecho ant.", self._money(q["prev"], q["cur"])],
+                ["Máx./mín.", f"{self._money(q.get('high'), q['cur'])} / {self._money(q.get('low'), q['cur'])}"],
+                ["Bolsa", f"{q['exch']} · {'aberta' if self._open(q) else 'fechada'}", "ok" if self._open(q) else "sub"],
+                ["Hora", when, "sub"]]
+        return {"tpl": "plot", "plot": plot, "rows": rows}
+
+
 REGISTRY = {"system": SystemProvider, "gps": GpsProvider, "adsb": AdsbProvider, "ais": AisProvider,
             "mesh": MeshtasticProvider, "clock": ClockProvider, "aio": AioProvider, "sdr": SdrProvider,
             "net": NetworkProvider, "console": ConsoleProvider, "windows": WindowsProvider,
-            "camera": CameraProvider}
+            "camera": CameraProvider, "stocks": StocksProvider}
 
 
 def create(name: str, node: dict, app) -> Provider:

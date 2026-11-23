@@ -34,7 +34,7 @@ HERE = Path(__file__).resolve().parent
 # Fontes do firmware (tools/gen_fonts.py): ASCII, Latin-1, alguns extras e os símbolos LVGL (U+F000..F8FF).
 # O que não existir é trocado pelo equivalente mais próximo (sem isto aparecem quadrados).
 # Exatamente o que está nas fontes (o • não está: vira ·; o hífen invisível U+00AD não tem desenho).
-_EXTRA = set("–—…←→−≤≥")
+_EXTRA = set("–—…€←→−≤≥")
 _CHAR_MAP = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"', "×": "x", "•": "·", "­": ""})
 # Emojis: cada sequência que o ESP já tem como imagem vai como o código privado dela (ver emojis.py).
 EMOJI = emojis.Registry()

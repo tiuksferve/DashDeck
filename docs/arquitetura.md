@@ -19,6 +19,7 @@ está na placa) seria o próximo passo se um dia a tela ficar solta.
            ├─ App (loop)         pilha de navegação, build() de cada tela, envio só do que mudou
            ├─ providers.py       system · gps (NmeaReader) · adsb, ais (+maptiles) · mesh (+meshbridge) · clock (+clockscene) · aio (aiov2_ctl) · sdr · net · console · windows (+wltop)
            ├─ icons.py           ícones (tema GTK, ficheiros, emoji) → RGB565A8 32×32
+           ├─ stocks.py          cotações (Yahoo Finance) e logotipos em cache (box Stocks)
            ├─ routes.py          rotas dos voos pelo indicativo (adsbdb.com/hexdb.io, thread, cache em disco)
            ├─ wltop.py           janelas abertas (cliente Wayland em Python puro, wlr-foreign-toplevel)
            └─ xdgapps.py         aplicações a partir dos .desktop (cache de 30 s) e o .desktop de cada app_id

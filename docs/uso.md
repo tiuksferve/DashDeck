@@ -213,6 +213,22 @@ pelo servidor `camd`. Três páginas (swipe):
 - Com o camd parado, o visor mostra "CamDeck parado" e o botão **Ligar o CamDeck**. No menu, o box
   mostra "pronta", "a gravar 0:12", "desligada" (câmara fora da USB) ou "parada".
 
+### Stocks
+Cotações de ações pelo Yahoo Finance (sem conta nem chave; só o símbolo sai do uConsole). Por omissão:
+Siemens (SIE.DE, em euros), Tesla (TSLA), SpaceX (SPCX, na Nasdaq desde 12/06/2026), Apple (AAPL) e
+NVIDIA (NVDA).
+
+- Cada box mostra o logotipo, o nome, a cotação (com o símbolo da moeda à frente: $350,77, €265,40) e a variação face ao fecho anterior, a **verde** com
+  📈 a subir e a **vermelho** com 📉 a descer; "· fechado" fora do horário da bolsa.
+- Um toque abre o **gráfico do dia** (de 5 em 5 min, na cor da variação, com o fecho anterior a
+  cinzento) e os valores: cotação, variação, fecho anterior, máximo e mínimo do dia, bolsa (aberta ou
+  fechada) e a hora da última cotação.
+- Atualiza a cada minuto com a tela aberta e a cada 5 min só com o box do menu ("3 a subir · 2 a
+  descer"). Sem ninguém a ver há 10 min, deixa de perguntar.
+- Os logotipos são marcas das empresas: são descarregados uma vez para `~/.cache/dashd/logos` e não
+  fazem parte do DashDeck. Os escuros (Apple, SpaceX) ficam claros para se verem no fundo escuro.
+- Mostra a cotação da ação; a capitalização bolsista precisaria de uma chave de API.
+
 ### Rede
 Rede do uConsole pelo NetworkManager, em três páginas (swipe):
 

@@ -117,6 +117,14 @@ precisa da palavra-passe.
 | `url` | `http://127.0.0.1:8090` | Endereço do camd |
 | `quality` | `70` | Qualidade JPEG do visor enviado ao ESP (o quadro já vai reduzido ao tamanho do canvas, ~4-8 KB) |
 
+### `stocks`
+Cotações de ações (ver [uso.md](uso.md#stocks)).
+
+| Opção | Padrão | Descrição |
+|---|---|---|
+| `symbols` | — | Lista de `{ sym = "AAPL", name = "Apple" }` com o símbolo do Yahoo Finance (ex.: `SIE.DE` na Xetra, `TSLA` na Nasdaq) e o nome no box. `logo_crop` (0 a 1) guarda só essa fração da largura do logotipo, da esquerda (a SpaceX usa 0.65: o X com a curva encurtada) |
+| `refresh` | `60` | Segundos entre atualizações com a tela aberta (só com o box do menu: 5 min) |
+
 ### `sdr`
 Monitor do RTL-SDR (ver [uso.md](uso.md#sdr)). Sem opções. Usa `sudo -n fuser` para ver quem tem o dongle aberto e, no "Libertar SDR", `sudo -n systemctl stop` ou `sudo -n kill`.
 

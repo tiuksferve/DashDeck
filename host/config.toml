@@ -7,7 +7,7 @@
 #   shell    — executa um comando em segundo plano e mostra um aviso (cmd, done)
 #   service  — liga/para/reinicia uma unidade systemd (unit, group opcional)
 #              Serviços com o mesmo "group" são exclusivos: ligar um pára os outros (ex.: um só SDR).
-#   provider — tela com dados ao vivo (provider = system | gps | adsb | ais | mesh | clock | aio | sdr | net | console | windows | camera)
+#   provider — tela com dados ao vivo (provider = system | gps | adsb | ais | mesh | clock | aio | sdr | net | console | windows | camera | stocks)
 #   text     — tela de texto fixo
 #   home     — volta ao menu inicial
 #   backlight — alterna o brilho (levels = [25, 50, 75, 100])
@@ -149,6 +149,26 @@ quality = 70                       # qualidade JPEG do visor (mais baixa = mais 
 # Páginas (swipe): Visor (vídeo ao vivo; Foto e Gravar por cima da imagem) · Galeria (fotos e vídeos
 # um a um; os vídeos tocam no ecrã, sem som; Apagar com confirmação) · Estado (sensor, fps,
 # temperatura, gravação, disco; botões para a resolução do vídeo e das fotos e Abrir no uConsole).
+
+[[menu]]
+id = "stocks"
+label = "Stocks"
+icon = "bars"
+img = "emoji:📈"
+color = "#3FB950"
+type = "provider"
+provider = "stocks"
+refresh = 60                       # s entre atualizações com a tela aberta (5 min só com o box do menu)
+# Cotações do Yahoo Finance (só o símbolo sai do uConsole). Cada box: logotipo, nome, cotação e a
+# variação do dia (verde a subir, vermelho a descer). Toque: gráfico do dia e valores.
+# Os logotipos são descarregados uma vez para ~/.cache/dashd/logos (não vão para o repositório).
+symbols = [
+  { sym = "SIE.DE", name = "Siemens" },
+  { sym = "TSLA", name = "Tesla" },
+  { sym = "SPCX", name = "SpaceX", logo_crop = 0.65 },   # só o X com a curva (o logotipo é muito largo)
+  { sym = "AAPL", name = "Apple" },
+  { sym = "NVDA", name = "NVIDIA" },
+]
 
 [[menu]]
 id = "net"
