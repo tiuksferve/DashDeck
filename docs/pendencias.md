@@ -67,6 +67,9 @@
 | — | (só host) Box Stocks: cotações do Yahoo Finance, logotipos em cache local, gráfico do dia |
 | — | (só host) Serviços: 16 serviços (DashDeck, CamDeck, SSH, VNC, tar1090, GPS mux...), serviços do utilizador, arranque no boot, estado lido numa só chamada |
 | — | (só host) ADS-B e AIS com três páginas: Controlo (ligar/desligar, monitor, resumo), Lista e Mapa |
+| 0.25.10 | Plot com textos soltos (`"texts":[[x,y,"#cor","texto","l\|c\|r"]]`, ex.: eixos); setas das boxes maiores e grossas (fonte própria `dash_arrows`, DejaVu Sans Bold 22 px, só ↑ ↓). No host: gráfico das ações com horas, valores e dia da sessão; antes da abertura mostra a sessão anterior no sítio certo (os pontos ficavam espremidos no início) |
+| 0.25.9 | Cantos das boxes da grade: `"dot":"#cor"` (ponto no canto superior direito) e `"mark":"up|down"` + `"mark_color"` (seta ↑/↓ no canto superior esquerdo); fontes com ↑ ↓. No host: Stocks com o ponto verde/vermelho da bolsa aberta/fechada e a seta da variação; o subtítulo fica só com a percentagem |
+| 0.25.8 | Boxes da grade com valor em destaque (`"value"`, `"value_color"`): letra maior entre o nome e o subtítulo. No host: cotação em destaque nas boxes do Stocks; detalhe de uma ação em duas páginas (gráfico na tela toda e informações), com páginas também nos detalhes dinâmicos (`detail_pages`) |
 | 0.25.7 | Fontes com o € (U+20AC); antes o dashd tirava-o do texto. No host: cotações com o símbolo da moeda à frente, logotipo da SpaceX maior (`logo_crop`) |
 | 0.25.6 | Título do cabeçalho visível com o avião do monitor: largura fixa até antes do avião (na 0.25.5 ficava só "...") |
 | 0.25.5 | Cabeçalho com o avião do monitor: a hora, a bateria e a ligação ficam à direita (um espaçador ocupa o lugar que o título deixa; na 0.25.4 deslizavam para cima do avião) |

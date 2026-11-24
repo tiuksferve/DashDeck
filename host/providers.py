@@ -3787,7 +3787,7 @@ class CameraProvider(Provider):
 
 class StocksProvider(Provider):
     """Cotações (Yahoo Finance) em boxes: logotipo, nome e cotação, e a variação do dia (verde a subir,
-    vermelho a descer). Um toque abre o gráfico do dia com os valores."""
+    vermelho a descer). Um toque abre o gráfico do dia; com swipe, as informações."""
     UP, DOWN, FLAT = "#3FB950", "#F85149", "#8B98A5"
     CUR = {"USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥"}
 
@@ -3848,13 +3848,17 @@ class StocksProvider(Provider):
                 it["img"] = logo
             if q:
                 ch = self._change(q)
-                arrow = "📈" if ch and ch[1] > 0 else "📉" if ch and ch[1] < 0 else ""
-                it.update(label=f"{name}\n{self._money(q['price'], q['cur'])}",
-                          sub=f"{arrow} {self._pct(ch)}".strip() + ("" if self._open(q) else " · fechado"),
-                          sub_color=self._color(ch))
-            else:
+                up = ch and ch[1] >= 0.005
+                down = ch and ch[1] <= -0.005
+                it.update(label=name, value=self._money(q["price"], q["cur"]),   # cotação em letra maior
+                          sub=self._pct(ch), sub_color=self._color(ch),
+                          mark="up" if up else "down" if down else "",           # seta no canto sup. esq.
+                          mark_color=self._color(ch),
+                          dot=self.UP if self._open(q) else self.DOWN)          # bolsa aberta / fechada
+            else:   # campos sempre presentes: a box é criada já com a cotação e os cantos
                 err = self.quotes.errors.get(s["sym"])
-                it.update(label=name, sub="sem dados" if err else "a carregar...", sub_color=self.FLAT)
+                it.update(label=name, value="—", value_color=self.FLAT, mark="", dot="",
+                          sub="sem dados" if err else "a carregar...", sub_color=self.FLAT)
             items.append(it)
         return {"tpl": "menu", "layout": "grid", "items": items}
 
@@ -3865,40 +3869,89 @@ class StocksProvider(Provider):
         name = next((s.get("name") for s in self.items if s["sym"] == self.sel), self.sel)
         return {"id": "stock", "label": name or self.sel, "dynamic": "q", "owner": self.node["id"]}
 
-    def render_detail(self, kind: str) -> dict:
+    def detail_pages(self, kind: str) -> int:
+        return 2    # 1.ª gráfico do dia, 2.ª informações (swipe)
+
+    def on_button(self, btn_id: str):
+        if btn_id == "info":   # toque na cotação por cima do gráfico: vai às informações
+            self.app.page["stock"] = 1
+            self.app.show()
+        return None
+
+    def render_detail(self, kind: str, page: int = 0) -> dict:
         self.quotes.touch(screen=True)
         q = self.quotes.data.get(self.sel)
         if not q:
             return {"tpl": "text", "text": f"Sem dados de {self.sel}.\n{self.quotes.errors.get(self.sel, '')}"}
         ch = self._change(q)
         col = self._color(ch)
-        W, H = self.app.canvas_area()
-        portrait = W < H
-        pw, ph = (W, 110) if portrait else (W - 122, H)
-        plot = {"w": pw, "h": ph, "center": False, "cross": False, "pts": []}
-        ys = q["closes"]
-        if len(ys) >= 2:
-            lo, hi = min(ys + [q["prev"] or ys[0]]), max(ys + [q["prev"] or ys[0]])
-            pad = (hi - lo) * 0.08 or hi * 0.01 or 1
-            lo, hi = lo - pad, hi + pad
-            t0 = q["start"] or q["times"][0]
-            t1 = max(q["end"] or q["times"][-1], q["times"][-1])
+        return self._info(q, ch, col) if page == 1 else self._chart(q, ch, col)
 
-            def px(t, v):
-                x = 4 + (min(max(t, t0), t1) - t0) / max(1, t1 - t0) * (pw - 8)
-                return x, ph - 4 - (v - lo) / (hi - lo) * (ph - 8)
+    @staticmethod
+    def _session(q: dict) -> tuple[float, float]:
+        """Início e fim da sessão dos dados. Antes da abertura o Yahoo dá a sessão de hoje mas os
+        valores da anterior (ex.: Siemens de madrugada): recua a sessão os dias que for preciso
+        (fim de semana incluído) para os pontos não ficarem todos espremidos no início."""
+        ts = q["times"]
+        t0, t1 = q.get("start") or ts[0], q.get("end") or ts[-1]
+        if ts and ts[0] < t0:
+            k = math.ceil((t0 - ts[0]) / 86400 - 0.05)
+            t0, t1 = t0 - k * 86400, t1 - k * 86400
+        return min(t0, ts[0]), max(t1, ts[-1])
 
-            line = "".join(enc_px(*px(t, v)) for t, v in zip(q["times"], ys))
-            tracks = []
-            if q["prev"]:   # fecho anterior: linha cinzenta
-                y = px(t0, q["prev"])[1]
-                tracks.append(["#30363D", 1, enc_px(0, y) + enc_px(pw, y)])
-            tracks.append([col, 2, line])
-            plot["tracks"] = tracks
-            lx, ly = px(q["times"][-1], ys[-1])
-            plot["pts"] = [[round(lx), round(ly), col, "", None, 1]]
-        else:
+    def _chart(self, q: dict, ch, col: str) -> dict:
+        """Gráfico do dia na tela toda: cotação e variação no canto superior esquerdo, dia da sessão
+        no direito, valores (máx., meio, mín.) à direita e as horas por baixo."""
+        pw, ph = self.app.canvas_area()
+        plot = {"w": pw, "h": ph, "center": False, "cross": False, "pts": [],
+                "ctrl": [["info", "tl", f"{self._money(q['price'], q['cur'])}  {self._pct(ch)}".strip(), col]]}
+        ys, ts = q["closes"], q["times"]
+        if len(ys) < 2:
             plot["msg"] = "Sem gráfico do dia"
+            return {"tpl": "plot", "plot": plot}
+        t0, t1 = self._session(q)
+        prev = q["prev"]
+        lo, hi = min(ys + [prev or ys[0]]), max(ys + [prev or ys[0]])
+        pad = (hi - lo) * 0.06 or hi * 0.01 or 1
+        vlo, vhi = lo - pad, hi + pad
+        top, bot = 34, ph - 16             # espaço para a cotação em cima e para as horas em baixo
+        x0, x1 = 4, pw - 56                # à direita ficam os valores
+        grid, sub = "#21262D", "#6E7681"
+
+        def px(t, v):
+            x = x0 + (min(max(t, t0), t1) - t0) / max(1, t1 - t0) * (x1 - x0)
+            return x, bot - (v - vlo) / (vhi - vlo) * (bot - top)
+
+        tracks, texts = [], []
+        # valores: máximo, meio e mínimo do dia, com linha de grelha
+        for v in (hi, (hi + lo) / 2, lo):
+            y = px(t0, v)[1]
+            tracks.append([grid, 1, enc_px(x0, y) + enc_px(x1, y)])
+            texts.append([pw - 2, round(y), sub, self._money(v, q["cur"]), "r"])
+        # horas: de hora a hora, ou de 2 em 2 se não couberem
+        hours = (t1 - t0) / 3600
+        step = 3600 if (x1 - x0) / max(hours, 1) >= 26 else 7200
+        lt = time.localtime(t0)
+        h = t0 - lt.tm_min * 60 - lt.tm_sec + (3600 if lt.tm_min or lt.tm_sec else 0)
+        while h <= t1:
+            if step == 3600 or time.localtime(h).tm_hour % 2 == 0:
+                x = px(h, vlo)[0]
+                tracks.append([grid, 1, enc_px(x, top) + enc_px(x, bot)])
+                texts.append([max(round(x), 9), ph - 7, sub, f"{time.localtime(h).tm_hour}h", "c"])
+            h += 3600
+        if prev:   # fecho anterior: linha cinzenta mais clara que a grelha
+            y = px(t0, prev)[1]
+            tracks.append(["#484F58", 1, enc_px(x0, y) + enc_px(x1, y)])
+        tracks.append([col, 2, "".join(enc_px(*px(t, v)) for t, v in zip(ts, ys))])
+        lx, ly = px(ts[-1], ys[-1])
+        plot["pts"] = [[round(lx), round(ly), col, "", None, 1]]
+        day = time.localtime(ts[-1])
+        wd = ("seg", "ter", "qua", "qui", "sex", "sáb", "dom")[day.tm_wday]
+        texts.append([pw - 2, 9, sub, f"{wd} {day.tm_mday:02d}/{day.tm_mon:02d}", "r"])
+        plot.update(tracks=tracks, texts=texts)
+        return {"tpl": "plot", "plot": plot}
+
+    def _info(self, q: dict, ch, col: str) -> dict:
         when = time.strftime("%d/%m %H:%M", time.localtime(q["t"])) if q.get("t") else "?"
         rows = [["Cotação", self._money(q["price"], q["cur"]), col],
                 ["Variação", (f"{self._money(ch[0], q['cur'])} · {self._pct(ch)}" if ch else "?"), col],
@@ -3906,7 +3959,7 @@ class StocksProvider(Provider):
                 ["Máx./mín.", f"{self._money(q.get('high'), q['cur'])} / {self._money(q.get('low'), q['cur'])}"],
                 ["Bolsa", f"{q['exch']} · {'aberta' if self._open(q) else 'fechada'}", "ok" if self._open(q) else "sub"],
                 ["Hora", when, "sub"]]
-        return {"tpl": "plot", "plot": plot, "rows": rows}
+        return {"tpl": "kv", "rows": rows}
 
 
 REGISTRY = {"system": SystemProvider, "gps": GpsProvider, "adsb": AdsbProvider, "ais": AisProvider,

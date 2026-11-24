@@ -34,7 +34,7 @@ HERE = Path(__file__).resolve().parent
 # Fontes do firmware (tools/gen_fonts.py): ASCII, Latin-1, alguns extras e os símbolos LVGL (U+F000..F8FF).
 # O que não existir é trocado pelo equivalente mais próximo (sem isto aparecem quadrados).
 # Exatamente o que está nas fontes (o • não está: vira ·; o hífen invisível U+00AD não tem desenho).
-_EXTRA = set("–—…€←→−≤≥")
+_EXTRA = set("–—…€←↑→↓−≤≥")
 _CHAR_MAP = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"', "×": "x", "•": "·", "­": ""})
 # Emojis: cada sequência que o ESP já tem como imagem vai como o código privado dela (ver emojis.py).
 EMOJI = emojis.Registry()
@@ -573,7 +573,12 @@ class App:
         elif t == "detail":
             prov = self.providers.get(node.get("owner"))
             if node.get("dynamic") and prov and hasattr(prov, "render_detail"):
-                scr.update(prov.render_detail(node["dynamic"]))   # refeito a cada atualização
+                n = self.detail_pages(node)
+                if n > 1:   # detalhe com várias páginas (swipe), ex.: gráfico e informações de uma ação
+                    pg = min(self.page.get(node["id"], 0), n - 1)
+                    scr.update(prov.render_detail(node["dynamic"], pg), pages=n, page=pg)
+                else:
+                    scr.update(prov.render_detail(node["dynamic"]))   # refeito a cada atualização
                 self._item_imgs(scr)
             else:
                 scr.update({k: v for k, v in node.items() if k in ("tpl", "rows", "items", "lines", "text", "buttons")})
@@ -791,6 +796,7 @@ class App:
         """Resposta de um provider a um toque ou botão: dict = tela de detalhe, (texto, nível) = aviso,
         ("back", texto) = fecha o detalhe (ex.: seletor, "Seguir no mapa") e avisa."""
         if isinstance(res, dict):
+            self.page.pop(res.get("id"), None)   # um detalhe novo abre sempre na 1.ª página
             self.stack.append({"type": "detail", **res})
             self.show()
         elif isinstance(res, tuple) and res[0] == "back":
@@ -872,10 +878,16 @@ class App:
     def run_bg(self, fn) -> None:
         threading.Thread(target=fn, daemon=True).start()
 
+    def detail_pages(self, node: dict) -> int:
+        prov = self.providers.get(node.get("owner"))
+        fn = getattr(prov, "detail_pages", None) if node.get("dynamic") else None
+        return max(1, fn(node["dynamic"])) if fn else 1
+
     def on_swipe(self, direction: str) -> None:
         """Esquerda = página seguinte, direita = anterior; direita na 1.ª página = voltar."""
         cur = self.node()
-        n = self.provider(cur).pages() if cur.get("type") == "provider" else 1
+        n = self.provider(cur).pages() if cur.get("type") == "provider" else \
+            self.detail_pages(cur) if cur.get("type") == "detail" else 1
         pg = min(self.page.get(cur["id"], 0), n - 1)
         if direction == "left" and pg < n - 1:
             self.page[cur["id"]] = pg + 1

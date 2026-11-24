@@ -15,6 +15,7 @@
 //            "cardinal":true,"cross":true,"center":true,"msg":"..","bg":"chave",
 //            "pts":[[x,y,"#cor","rótulo",rumo|null,cheio(0/1)],..],   coordenadas em px do canvas
 //            "tracks":[["#cor",largura(1|2),"xxyyxxyy.."],..],
+//            "texts":[[x,y,"#cor","texto","l|c|r"],..]  textos em fonte 12 (y = meio), ex.: eixos
 //            "ctrl":[["id","tl|tr|bl|br|l|r|t|b","rótulo"],..]}  botões por cima do canvas (ex.: setas
 //            e zoom do mapa) -> {"t":"btn","id":screen,"btn":id}; rótulo vazio nas bordas = seta  trajetos por baixo dos pontos; cada
 //            coordenada são 2 caracteres base64url (A-Z a-z 0-9 - _) com valor px+1024
@@ -33,7 +34,10 @@
 //   {"t":"emoji","cp":0x100000+i,"w":15,"h":14,"d":"base64 RGB565A8"} -> {"t":"emojiack","cp":..,"ok":..}
 //      imagem do emoji que o host pôs no texto como o código privado cp (até 48)
 //   item de menu: "badge":"3" mostra um selo vermelho (ex.: mensagens não lidas); nos boxes,
-//      "bg" (fundo) e "sub_color" (cor do subtítulo), ex.: interruptores do AIO v2
+//      "bg" (fundo) e "sub_color" (cor do subtítulo), ex.: interruptores do AIO v2; "value" (e
+//      "value_color"): valor em destaque, em letra maior, entre o nome (1 linha) e o subtítulo;
+//      "dot":"#cor" ponto no canto superior direito; "mark":"up|down" + "mark_color" seta ↑/↓ no
+//      canto superior esquerdo (só criados se o campo vier ao construir a tela)
 //   item de lista: "bg":"#rrggbb" fundo do card; "confirm":".." pede Não/Sim antes do "tap"
 //      ícones guardados na RAM; um item de menu com "img":"id" mostra-o no lugar do símbolo
 // ESP -> Host
@@ -194,6 +198,9 @@ static char s_item_ids[MAX_ITEMS][ID_LEN];
 static lv_obj_t *s_lbl_a[MAX_ITEMS];             // título / chave
 static lv_obj_t *s_lbl_b[MAX_ITEMS];             // sub / valor
 static lv_obj_t *s_lbl_c[MAX_ITEMS];             // ícone / texto à direita
+static lv_obj_t *s_lbl_d[MAX_ITEMS];             // valor em destaque da box da grade ("value") ou NULL
+static lv_obj_t *s_dot[MAX_ITEMS];               // ponto colorido no canto superior direito ("dot") ou NULL
+static lv_obj_t *s_mark[MAX_ITEMS];              // seta no canto superior esquerdo ("mark") ou NULL
 static lv_obj_t *s_log_lbl;
 static bool s_is_img[MAX_ITEMS];                 // s_lbl_c[i] é uma imagem (ícone de app)
 static lv_obj_t *s_badge[MAX_ITEMS];             // selo vermelho no canto (menu)
@@ -873,6 +880,52 @@ static void tile_style(lv_obj_t *card, lv_obj_t *sub, const cJSON *it)
     set_text_color(sub, parse_color(jstr(it, "sub_color", NULL), C_SUB));
 }
 
+// Cantos da box: "dot":"#cor" (ponto no canto superior direito, ex.: bolsa aberta/fechada) e
+// "mark":"up|down|" com "mark_color" (seta no canto superior esquerdo, ex.: ação a subir/descer).
+static const char *mark_text(const cJSON *it)
+{
+    const char *m = jstr(it, "mark", "");
+    return !strcmp(m, "up") ? "\xE2\x86\x91" : !strcmp(m, "down") ? "\xE2\x86\x93" : "";   // ↑ ↓
+}
+
+static void set_corners(int i, const cJSON *it)
+{
+    if (s_dot[i]) {
+        const char *d = jstr(it, "dot", "");
+        set_hidden(s_dot[i], !d[0]);
+        if (d[0]) set_bg_color(s_dot[i], parse_color(d, C_SUB));
+    }
+    if (s_mark[i]) {
+        const char *m = mark_text(it);
+        set_text(s_mark[i], m);
+        set_hidden(s_mark[i], !m[0]);
+        set_text_color(s_mark[i], parse_color(jstr(it, "mark_color", NULL), C_TEXT));
+    }
+}
+
+static void make_corners(lv_obj_t *card, int i, const cJSON *it)
+{
+    s_dot[i] = s_mark[i] = NULL;
+    if (cJSON_GetObjectItemCaseSensitive(it, "dot")) {
+        lv_obj_t *d = lv_obj_create(card);
+        lv_obj_remove_style_all(d);
+        lv_obj_add_flag(d, LV_OBJ_FLAG_FLOATING | LV_OBJ_FLAG_EVENT_BUBBLE);
+        lv_obj_remove_flag(d, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_size(d, 8, 8);
+        lv_obj_set_style_radius(d, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
+        lv_obj_align(d, LV_ALIGN_TOP_RIGHT, -3, 0);
+        s_dot[i] = d;
+    }
+    if (cJSON_GetObjectItemCaseSensitive(it, "mark")) {
+        lv_obj_t *m = mk_label(card, &dash_arrows, C_TEXT, "");   // seta grossa de 22 px
+        lv_obj_add_flag(m, LV_OBJ_FLAG_FLOATING | LV_OBJ_FLAG_EVENT_BUBBLE);
+        lv_obj_align(m, LV_ALIGN_TOP_LEFT, 2, -6);
+        s_mark[i] = m;
+    }
+    set_corners(i, it);
+}
+
 static void build_tile(int i, const cJSON *it)
 {
     int cols = s_land ? 4 : 2;
@@ -905,10 +958,21 @@ static void build_tile(int i, const cJSON *it)
         lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     }
     int32_t lh = lv_font_get_line_height(&dash_font_12);
+    const char *val = jstr(it, "value", NULL);
     lv_obj_t *t = mk_label(card, nf, C_TEXT, jstr(it, "label", "?"));
-    lv_obj_set_size(t, LV_PCT(100), 2 * lv_font_get_line_height(nf));
+    lv_obj_set_size(t, LV_PCT(100), (val ? 1 : 2) * lv_font_get_line_height(nf));
     lv_obj_set_style_text_align(t, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(t, LV_LABEL_LONG_DOT);
+    s_lbl_d[i] = NULL;
+    if (val) {   // valor em destaque (ex.: cotação), em letra maior por baixo do nome
+        const lv_font_t *vf = s_hgrid ? &dash_font_20 : &dash_font_16;
+        lv_obj_t *v = mk_label(card, vf, C_TEXT, val);
+        lv_obj_set_size(v, LV_PCT(100), lv_font_get_line_height(vf));
+        lv_obj_set_style_text_align(v, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_long_mode(v, LV_LABEL_LONG_DOT);
+        set_text_color(v, parse_color(jstr(it, "value_color", NULL), C_TEXT));
+        s_lbl_d[i] = v;
+    }
     const char *sub = jstr(it, "sub", "");
     lv_obj_t *sl = mk_label(card, &dash_font_12, C_SUB, sub);
     lv_obj_set_size(sl, LV_PCT(100), lh);
@@ -919,6 +983,7 @@ static void build_tile(int i, const cJSON *it)
     s_lbl_b[i] = sl;
     s_lbl_c[i] = ic;
     tile_style(card, sl, it);
+    make_corners(card, i, it);
     make_badge(card, i, it);
 }
 
@@ -927,6 +992,11 @@ static void update_menu_item(int i, const cJSON *it)
     set_badge(i, it);
     if (s_grid) tile_style(lv_obj_get_parent(s_lbl_a[i]), s_lbl_b[i], it);
     set_text(s_lbl_a[i], jstr(it, "label", "?"));
+    if (s_grid) set_corners(i, it);
+    if (s_grid && s_lbl_d[i]) {
+        set_text(s_lbl_d[i], jstr(it, "value", ""));
+        set_text_color(s_lbl_d[i], parse_color(jstr(it, "value_color", NULL), C_TEXT));
+    }
     const char *sub = jstr(it, "sub", "");
     set_text(s_lbl_b[i], sub);
     set_hidden(s_lbl_b[i], !sub[0]);
@@ -1588,6 +1658,20 @@ static void draw_plot(const cJSON *p)
             plot_text(&layer, jl->valuestring, left ? px - 5 : px + 5, py - 7, 50, col,
                       left ? LV_TEXT_ALIGN_RIGHT : LV_TEXT_ALIGN_LEFT);
         }
+    }
+
+    // textos soltos: [x, y, cor, texto, "l|c|r"] (y = meio da linha), ex.: horas e valores dos eixos
+    const cJSON *txs = cJSON_GetObjectItemCaseSensitive(p, "texts");
+    const cJSON *tx;
+    cJSON_ArrayForEach(tx, txs) {
+        const cJSON *jx = cJSON_GetArrayItem(tx, 0), *jy = cJSON_GetArrayItem(tx, 1);
+        const cJSON *jt = cJSON_GetArrayItem(tx, 3);
+        if (!cJSON_IsNumber(jx) || !cJSON_IsNumber(jy) || !cJSON_IsString(jt)) continue;
+        const cJSON *jc = cJSON_GetArrayItem(tx, 2), *ja = cJSON_GetArrayItem(tx, 4);
+        const char *al = cJSON_IsString(ja) ? ja->valuestring : "l";
+        plot_text(&layer, jt->valuestring, (int32_t)jx->valuedouble, (int32_t)jy->valuedouble, 80,
+                  parse_color(cJSON_IsString(jc) ? jc->valuestring : NULL, C_SUB),
+                  al[0] == 'c' ? LV_TEXT_ALIGN_CENTER : al[0] == 'r' ? LV_TEXT_ALIGN_RIGHT : LV_TEXT_ALIGN_LEFT);
     }
 
     const char *msg = jstr(p, "msg", NULL);

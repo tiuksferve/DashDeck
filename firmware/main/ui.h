@@ -2,7 +2,7 @@
 #include "cJSON.h"
 #include "lvgl.h"
 
-#define DASHDECK_FW_VERSION "0.25.7"
+#define DASHDECK_FW_VERSION "0.25.10"
 
 void ui_init(lv_display_t *disp);
 

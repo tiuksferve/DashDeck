@@ -14,8 +14,12 @@ HERE = Path(__file__).resolve().parent
 TTF = HERE / "fonts" / "Montserrat-Medium.ttf"
 OUT = HERE.parent / "main" / "fonts"
 SIZES = [12, 14, 16, 20]
-EXTRA = [0x2013, 0x2014, 0x2026, 0x20AC, 0x2190, 0x2192, 0x2212, 0x2264, 0x2265]   # – — … € ← → − ≤ ≥
+EXTRA = [0x2013, 0x2014, 0x2026, 0x20AC, 0x2190, 0x2191, 0x2192, 0x2193, 0x2212, 0x2264, 0x2265]   # – — … € ← ↑ → ↓ − ≤ ≥
 RANGES = [(0x20, 0x7E), (0xA0, 0xFF)]
+# Setas grandes e grossas das boxes ("mark"): a ↑ da Montserrat é fina e pequena. Só 2 glifos da
+# DejaVu Sans Bold (licença livre Bitstream Vera/DejaVu), sem fallback.
+ARROW_TTF = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
+ARROW_SIZE = 22
 
 
 def glyph(font, cp):
@@ -42,12 +46,13 @@ def has_glyph(font, cp, notdef):
     return cp == 0x20 or cp == 0xA0 or bytes(m) != notdef
 
 
-def gen(size):
-    font = ImageFont.truetype(str(TTF), size)
+def gen(size, ttf=TTF, name=None, ranges=RANGES, extra=EXTRA, fallback=True):
+    name = name or f"dash_font_{size}"
+    font = ImageFont.truetype(str(ttf), size)
     notdef = bytes(font.getmask2("", mode="L")[0])
     ascent, descent = font.getmetrics()
-    groups = [list(range(a, b + 1)) for a, b in RANGES]
-    groups.append([cp for cp in EXTRA if has_glyph(font, cp, notdef)])
+    groups = [list(range(a, b + 1)) for a, b in ranges]
+    groups.append([cp for cp in extra if has_glyph(font, cp, notdef)])
 
     bitmap = bytearray()
     dsc = ["    {.bitmap_index = 0, .adv_w = 0, .box_w = 0, .box_h = 0, .ofs_x = 0, .ofs_y = 0}"]
@@ -63,20 +68,23 @@ def gen(size):
                        f".ofs_x = {ox}, .ofs_y = {oy}}} /* U+{cp:04X} */")
             bitmap += data
             gid += 1
-        if gi < len(RANGES):
+        if gi < len(ranges):
             cmaps.append(f"    {{.range_start = {cps[0]}, .range_length = {len(cps)}, .glyph_id_start = {start}, "
                          f".unicode_list = NULL, .glyph_id_ofs_list = NULL, .list_length = 0, "
                          f".type = LV_FONT_FMT_TXT_CMAP_FORMAT0_TINY}}")
         else:
-            name = f"unicode_list_{gi}"
-            lists.append(f"static const uint16_t {name}[] = {{{', '.join(hex(cp - cps[0]) for cp in cps)}}};")
+            lname = f"unicode_list_{gi}"
+            lists.append(f"static const uint16_t {lname}[] = {{{', '.join(hex(cp - cps[0]) for cp in cps)}}};")
             cmaps.append(f"    {{.range_start = {cps[0]}, .range_length = {cps[-1] - cps[0] + 1}, "
-                         f".glyph_id_start = {start}, .unicode_list = {name}, .glyph_id_ofs_list = NULL, "
+                         f".glyph_id_start = {start}, .unicode_list = {lname}, .glyph_id_ofs_list = NULL, "
                          f".list_length = {len(cps)}, .type = LV_FONT_FMT_TXT_CMAP_SPARSE_TINY}}")
 
     hexes = ", ".join(f"0x{b:02x}" for b in bitmap)
-    src = f"""// Gerado por tools/gen_fonts.py — não editar. Montserrat Medium {size}px, 4 bpp, ASCII + Latin-1.
-// Licença da fonte: SIL Open Font License (tools/fonts/OFL.txt).
+    head = (f"Montserrat Medium {size}px, 4 bpp, ASCII + Latin-1.\n// Licença da fonte: SIL Open Font "
+            f"License (tools/fonts/OFL.txt).") if ttf == TTF else \
+        f"{Path(ttf).stem} {size}px, 4 bpp, só ↑ ↓.\n// Licença da fonte: Bitstream Vera / DejaVu (livre)."
+    fb = f"&lv_font_montserrat_{size},   // símbolos LV_SYMBOL_*" if fallback else "NULL,"
+    src = f"""// Gerado por tools/gen_fonts.py — não editar. {head}
 #include "lvgl.h"
 
 static LV_ATTRIBUTE_LARGE_CONST const uint8_t glyph_bitmap[] = {{{hexes}}};
@@ -103,7 +111,7 @@ static const lv_font_fmt_txt_dsc_t font_dsc = {{
     .bitmap_format = LV_FONT_FMT_TXT_PLAIN,
 }};
 
-lv_font_t dash_font_{size} = {{   // não const: o fallback recebe a fonte de emojis no arranque
+lv_font_t {name} = {{   // não const: o fallback recebe a fonte de emojis no arranque
     .get_glyph_dsc = lv_font_get_glyph_dsc_fmt_txt,
     .get_glyph_bitmap = lv_font_get_bitmap_fmt_txt,
     .line_height = {ascent + descent},
@@ -112,21 +120,24 @@ lv_font_t dash_font_{size} = {{   // não const: o fallback recebe a fonte de em
     .underline_position = -1,
     .underline_thickness = 1,
     .dsc = &font_dsc,
-    .fallback = &lv_font_montserrat_{size},   // símbolos LV_SYMBOL_*
+    .fallback = {fb}
     .user_data = NULL,
 }};
 """
-    (OUT / f"dash_font_{size}.c").write_text(src)
+    (OUT / f"{name}.c").write_text(src)
     return gid - 1, len(bitmap)
 
 
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
-    hdr = ["#pragma once", '#include "lvgl.h"', ""] + [f"extern lv_font_t dash_font_{s};" for s in SIZES]
+    hdr = ["#pragma once", '#include "lvgl.h"', ""] + [f"extern lv_font_t dash_font_{s};" for s in SIZES] \
+        + ["extern lv_font_t dash_arrows;"]
     (OUT / "dash_fonts.h").write_text("\n".join(hdr) + "\n")
     for s in SIZES:
         n, b = gen(s)
         print(f"dash_font_{s}: {n} glifos, {b} bytes")
+    n, b = gen(ARROW_SIZE, ARROW_TTF, "dash_arrows", [], [0x2191, 0x2193], fallback=False)
+    print(f"dash_arrows: {n} glifos, {b} bytes")
 
 
 if __name__ == "__main__":

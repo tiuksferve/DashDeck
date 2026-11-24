@@ -11,7 +11,7 @@ mensagem, até 8 KB (descrito no cabeçalho de `firmware/main/ui.c` e em `docs/a
 
 - **Menu inicial (boxes):** AIO v2, Meshtastic, GPS, ADS-B, AIS, SDR, Câmara, Stocks, Rede, Aplicações, Serviços, Sistema.
 - **Dock** (início e Aplicações): Início, Relógio, Captura, Brilho, Som (volume e brilho do uConsole), Bloquear.
-- **Firmware atual:** 0.25.7 (gravado em 23/11).
+- **Firmware atual:** 0.25.10 (gravado em 24/11).
 
 ## Onde está cada coisa
 - `host/providers.py`: telas com dados (system, gps, adsb, ais, mesh, clock, aio, sdr, net, console, windows, camera, stocks).
@@ -20,7 +20,7 @@ mensagem, até 8 KB (descrito no cabeçalho de `firmware/main/ui.c` e em `docs/a
 - `host/wltop.py`: janelas abertas no uConsole (cliente Wayland em Python puro; listar, mostrar, minimizar, fechar).
 - `host/dashd.py`: ligação serial, navegação, envio de ícones, fundos, emojis e avisos.
 - `host/clockscene.py`: relógio (Open-Meteo, cena da paisagem em 8 bpp, ícones do tempo).
-- **Fontes do ESP:** `firmware/tools/gen_fonts.py` (ASCII, Latin-1 e a lista `EXTRA`, que inclui o €). Um carácter novo tem de entrar também em `_EXTRA` no `dashd.py`, senão o host tira-o do texto.
+- **Fontes do ESP:** `firmware/tools/gen_fonts.py` (ASCII, Latin-1 e a lista `EXTRA`, que inclui o €). Um carácter novo tem de entrar também em `_EXTRA` no `dashd.py`, senão o host tira-o do texto. O mesmo script gera `dash_arrows` (só ↑ ↓, DejaVu Sans Bold 22 px, de `/usr/share/fonts`) para as setas das boxes.
 - `host/emojis.py`: emojis a cores no texto (códigos privados U+100000+, imgfont no ESP).
 - `host/meshbridge.py`: cliente da API local do MeshDeckWeb (`~/PycharmProjects/MeshDeckWeb`, `--local-api on`).
 - `firmware/main/ui.c`: templates, relógio, ecrã apagado, animação de arranque e aviso de mensagem.
@@ -51,7 +51,7 @@ mensagem, até 8 KB (descrito no cabeçalho de `firmware/main/ui.c` e em `docs/a
 - **Disco do uConsole:** tem pouco espaço livre; por isso o build fica em `/dev/shm`.
 
 ## Feito recentemente (19 a 23/11)
-- **Stocks** (23/11): box com Siemens, Tesla, SpaceX (SPCX), Apple e NVIDIA; logotipo, cotação e variação; gráfico do dia no detalhe (plot com `tracks`).
+- **Stocks** (23/11): box com Siemens, Tesla, SpaceX (SPCX), Apple e NVIDIA; logotipo, cotação em destaque (`value` da box, 0.25.8), variação, seta ↑/↓ (`mark`) e ponto da bolsa aberta/fechada (`dot`, 0.25.9); detalhe em duas páginas: gráfico do dia (plot com `tracks` e `texts` para horas e valores; antes da abertura a sessão é recuada para a dos dados) e informações. Detalhes dinâmicos podem ter páginas: o provider define `detail_pages(kind)` e `render_detail(kind, page)`.
 - **Serviços** (21/11): 16 serviços revistos no uConsole, incluindo os do utilizador (`user = true`: dashd com `restart_only`, camd, rpi-connect); botões de arranque no boot; `service_states()` lê todos numa chamada.
 - **Monitor de emergências ADS-B** (21/11): cartão no ADS-B (`AdsbProvider.monitor`, `adsb_monitor` em `state.json`) que mantém o readsb ligado; `check_squawk()` no dashd só corre com ele ligado; aviso `notify` `kind:"squawk"` (avião em `notify.c`) e avião no cabeçalho (`hdr`). Testado com readsb simulado e avião fictício (7700); falta um caso real.
 - **Scroll** (21/11): inércia mais longa (`scroll_throw` 4), ícones na RAM até sobrarem 20 KB, fundo do mapa libertado fora dos mapas.
