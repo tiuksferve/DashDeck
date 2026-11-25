@@ -27,9 +27,9 @@ dock_screens = ["home", "apps"]   # telas com o dock (ids; "home" = tela inicial
 
 [[menu]]
 id = "aio"
-label = "AIO v2"
+label = "AIO"
 icon = "power"
-img = "utilities-system-monitor"   # o ícone da aplicação AIO v2 Controller
+img = "board.svg"   # placa eletrónica (host/icons/board.svg)
 color = "#3FB950"
 type = "provider"
 provider = "aio"
@@ -126,6 +126,45 @@ url = "http://127.0.0.1:8119"      # servidor web do serviço ais-catcher (navio
 map_style = "simples"
 
 [[menu]]
+id = "sonde"
+label = "Sondas"
+icon = "upload"
+img = "emoji:🎈"
+color = "#58A6FF"
+type = "provider"
+provider = "sonde"
+unit = "dashd-sonde"               # serviço --user com o receptor sem janela (host/sonderx.py)
+group = "sdr"                      # partilha o SDR com o readsb e o ais-catcher (pára-os ao ligar)
+gain = 40                          # dB (0 = automático)
+ppm = 0
+idle_stop = 1800                   # s sem pacotes, depois de um voo, até o receptor sair e libertar o SDR
+# decoder = "~/PycharmProjects/SondeDeck/decoders/rs1729/demod/mod/rs41mod"   # (é o de omissão)
+# Radiossondas RS41 (balões meteorológicos). Páginas (swipe): Controlo (escolher a frequência liga o
+# receptor) · Mapa (trajeto, lançamento, rebentamento, pouso previsto) · Dados · Altitude · Estatísticas.
+# Frequências: RS41 ouvidas no SondeHub nas estações europeias em novembro de 2026 (podem mudar).
+# As estações francesas, Barcelona e Múrcia lançam M10/M20, que o rs41mod não descodifica.
+freqs = [
+  { mhz = 403.40, name = "Lisboa (Portela)" },
+  { mhz = 402.50, name = "Sevilha (Morón)" },
+  { mhz = 403.00, name = "Madrid (Barajas) · Jokioinen" },
+  { mhz = 404.00, name = "Corunha · Viena · Liubliana" },
+  { mhz = 401.50, name = "Santander" },
+  { mhz = 403.75, name = "Funchal (Madeira)" },
+  { mhz = 402.00, name = "Lajes (Açores)" },
+  { mhz = 401.00, name = "Valentia (Irlanda)" },
+  { mhz = 405.70, name = "Camborne (Reino Unido)" },
+  { mhz = 405.80, name = "Herstmonceux (Reino Unido)" },
+  { mhz = 403.10, name = "Lerwick (Reino Unido)" },
+  { mhz = 403.50, name = "Payerne (Suíça) · Uccle (Bélgica)" },
+  { mhz = 403.90, name = "De Bilt (Países Baixos) · Essen" },
+  { mhz = 405.30, name = "Essen · Zagreb" },
+  { mhz = 405.10, name = "Lindenberg (Alemanha)" },
+  { mhz = 404.20, name = "Praga" },
+  { mhz = 404.50, name = "Legionowo (Polónia)" },
+  { mhz = 403.70, name = "Budapeste" },
+]
+
+[[menu]]
 id = "sdr"
 label = "SDR"
 icon = "eye"
@@ -180,6 +219,19 @@ provider = "net"
 # Pelo NetworkManager. Páginas (swipe): Wi-Fi (estado, Procurar, ligar/desligar o Wi-Fi) ·
 # Redes (as guardadas e as abertas ligam-se com um toque; uma rede nova com palavra-passe liga-se
 # uma vez no uConsole) · VPN (ligações VPN/WireGuard do NetworkManager e o Tailscale, se existir).
+
+[[menu]]
+id = "shares"
+label = "Partilhas"
+img = "emoji:📂"
+color = "#3FB950"
+type = "provider"
+provider = "shares"
+# Pastas do home partilhadas pela rede Wi-Fi (Samba; configuração em /etc/samba/smb.conf, ver
+# docs/configuracao.md). A box só mostra o estado (ponto verde/vermelho), o endereço e quantos
+# aparelhos estão ligados, nunca que pastas são. Ligar/Desligar também liga/desliga o arranque no boot.
+units = ["smbd", "wsdd"]
+host = "UCONSOLE"                  # nome NetBIOS (netbios name no smb.conf)
 
 [[menu]]
 id = "apps"

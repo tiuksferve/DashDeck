@@ -117,6 +117,40 @@ seguido e o resumo: quantos há e quantos têm posição; tocar no resumo abre a
   - As setas também funcionam enquanto segue: o mapa fica parado onde o deixou até tocar em **Centrar**.
   - **Soltar** (no mapa, na página Controlo ou no detalhe) volta ao mapa normal.
 
+### Sondas
+Radiossondas **RS41** (os balões meteorológicos lançados duas vezes por dia pelos serviços de
+meteorologia, em Lisboa da Portela, por volta das 11:15 e das 23:15 UTC). Usa o descodificador do
+projeto **SondeDeck** (`rs41mod`, rs1729/RS) com um receptor sem janela, `host/sonderx.py`, no serviço
+`dashd-sonde` do utilizador. O SDR é o mesmo do ADS-B e do AIS: ligar um desliga os outros (com
+confirmação).
+
+Páginas (swipe):
+
+1. **Controlo:** o estado do receptor, a última sonda recebida (toque abre o mapa) e as frequências
+   RS41 mais usadas na Europa, com **Lisboa no topo**. Tocar numa frequência liga o receptor nela (ou
+   muda para ela); tocar na que está a ser ouvida desliga-o.
+2. **Mapa:** o trajeto, a **azul** a subir e a **laranja** a descer, com o ponto de **início**, o ponto
+   do **rebentamento** (vermelho, com a altitude) e, a descer, o **pouso previsto** (amarelo, vazio).
+   Zoom e setas como no ADS-B; o mapa segue a sonda.
+3. **Dados:** a última telemetria: sonda e modelo, hora, posição, altitude, velocidades vertical e
+   horizontal, rumo, temperatura, humidade, pressão, satélites, bateria, temporizador de corte e
+   frequência; com o GPS, a distância, o azimute e a elevação a partir do uConsole.
+4. **Altitude:** a altitude ao longo do tempo (subida a azul, descida a laranja) com o rebentamento
+   marcado.
+5. **Estatísticas:** lançamento, duração, altitude máxima, rebentamento (altitude e tempo de subida),
+   subida e descida médias, percurso e distância em linha reta, velocidade horizontal média e máxima,
+   temperatura mínima, distância máxima ao uConsole, pacotes recebidos e o pouso previsto.
+
+- **Rebentamento:** como no SondeDeck, só é confirmado com 8 pacotes seguidos a descer (abaixo de
+  −2 m/s e acima de 1000 m); o ponto marcado é o mais alto do voo. Aparece um aviso no ecrã.
+- **Pouso previsto:** estimativa simples, pela velocidade de descida atual até à altitude do
+  lançamento e pelo vento atual (a 60%).
+- Ao sair da tela o receptor desliga-se e liberta o SDR, a não ser que esteja a receber um voo: aí
+  continua, e sai sozinho 30 min depois do último pacote.
+- Os pacotes ficam em `~/.cache/dashd/sonde/<série>.jsonl`; é mostrado o voo mais recente.
+- Só RS41: as estações francesas, Barcelona e Múrcia lançam M10/M20 (Meteomodem), que o `rs41mod` não
+  descodifica.
+
 ### Relógio
 Abre-se pelo botão **Relógio** do dock. É um ecrã inteiro, sem barra nem dock, com a hora, a data e a previsão do dia em pixel art.
 Nas cenas (paisagem, previsão, cidade), a hora, a data e o tempo ficam sobre uma sombra escura translúcida com as bordas esbatidas, e os números grandes têm contorno de 2 px com sombra projetada, para se lerem sobre céu claro, neve, nevoeiro ou nuvens.
@@ -166,7 +200,7 @@ Depois de 5 min sem toques, o relógio escurece para 10%. O toque seguinte repõ
 - No menu, o box mostra a temperatura e o estado do tempo, o alarme quando está ligado e o temporizador quando está a contar.
 - **Memória:** se os ícones das aplicações ocuparem a memória do ESP, o relógio liberta-os e o dashd volta a enviá-los ao sair (o dock reaparece em menos de 0,2 s; os ícones das Aplicações voltam ao abrir esse menu).
 
-### AIO v2
+### AIO
 Os interruptores da placa AIO v2, como na aplicação **AIO v2 Controller**: um box para cada recurso,
 **GPS**, **LoRa**, **SDR** e **USB**.
 
@@ -178,7 +212,7 @@ Os interruptores da placa AIO v2, como na aplicação **AIO v2 Controller**: um 
   o SDR pára a receção do ADS-B e do AIS). Ligar o **USB** também pede confirmação: com ele ligado, a ligação USB ao DashDeck perde dados.
 - Enquanto muda, o box mostra "a mudar..."; o resultado aparece num aviso.
 - O estado é lido a cada 5 s, por isso também mostra o que for mudado na aplicação do uConsole.
-- No menu, o box AIO v2 mostra os recursos ligados.
+- No menu, o box AIO (ícone de placa eletrónica) mostra os recursos ligados.
 - **Perfis** (box antes da Energia): um toque põe vários recursos e serviços como ficam no perfil. Os de origem são **Meshtastic** (GPS e LoRa ligados, SDR desligado, ADS-B e AIS parados), **ADS-B** (GPS e SDR ligados, readsb ligado), **AIS** (GPS e SDR ligados, AIS-catcher ligado) e **Poupança** (tudo desligado). O perfil que corresponde ao estado atual aparece a verde como "Ativo"; os outros dizem quantas mudanças fazem e pedem confirmação com a lista ("ADS-B: liga SDR; liga readsb?"). O USB não entra nos perfis de origem. O box Perfis mostra o perfil ativo, ou "personalizado". Os perfis mudam-se no `config.toml` ([configuracao.md](configuracao.md#aio)).
 
 ### SDR
@@ -243,6 +277,13 @@ Rede do uConsole pelo NetworkManager, em três páginas (swipe):
 - **Redes:** a rede ligada (a verde), depois as guardadas e as outras, por sinal. As guardadas fora de alcance também aparecem (por exemplo o hotspot do telemóvel). Tocar numa guardada ou numa aberta liga-se a ela; na ligada, desliga. Uma rede nova com palavra-passe tem de ser ligada uma vez no uConsole (o DashDeck não tem teclado); depois fica guardada.
 - **VPN:** as ligações VPN e WireGuard do NetworkManager e o Tailscale (se estiver instalado). Um toque liga ou desliga, com confirmação.
 - No menu, o box Rede mostra a rede e o sinal, e "· VPN" com uma VPN ligada.
+
+### Partilhas
+Liga e desliga as pastas do uConsole partilhadas pela rede Wi-Fi (Samba). A box mostra um ponto verde (ligadas) ou vermelho (desligadas) e quantos aparelhos estão ligados; a tela mostra o estado, o endereço (`\\UCONSOLE` e o IP) e o número de aparelhos. As pastas partilhadas nunca aparecem no ecrã.
+
+- **Ligar:** arranca o Samba e fica a arrancar no boot.
+- **Desligar** (com confirmação, que avisa se há aparelhos ligados): pára o Samba e deixa de arrancar no boot; quem estiver ligado perde o acesso.
+- Só a rede de casa entra, sempre com utilizador e palavra-passe (ver [configuracao.md](configuracao.md#shares)).
 
 ### Som
 Aberto pelo **Som** no dock: volume do uConsole (PipeWire) e brilho do ecrã do uConsole.

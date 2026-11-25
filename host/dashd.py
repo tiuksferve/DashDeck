@@ -7,6 +7,7 @@ Protocolo: uma mensagem JSON por linha (ver firmware/main/ui.c).
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import logging
 import os
@@ -250,6 +251,8 @@ class App:
         self.root = {"id": "home", "type": "submenu", "label": d.get("title", "DashDeck"),
                      "items": cfg.get("menu", [])}
         self.stack: list[dict] = [self.root]
+        self.shot_parts: list[dict] = []   # captura do ecrã em curso (blocos "shotpx" do ESP)
+        self.shot_path: str | None = None
         self.providers: dict[str, providers.Provider] = {}
         self.last_sent = ""
         self.last_status = ""
@@ -489,6 +492,8 @@ class App:
                 badge = prov.badge()
                 if badge:
                     v["badge"] = badge
+                if hasattr(prov, "tile"):   # cantos e cor do texto do box (ponto ligado/desligado, setas)
+                    v.update(prov.tile())
             except Exception as e:  # um provider com erro não pode derrubar o menu
                 log.debug("summary %s: %s", it["id"], e)
         v["sub"] = sub
@@ -913,6 +918,9 @@ class App:
             self.toast(*data)
         elif kind == "refresh":
             self.show(full=False)
+        elif kind == "shot":
+            if self.esp_ready:
+                self.shot(data)
         elif kind == "notify":   # aviso pedido por um provider (alarme/temporizador do relógio)
             if self.esp_ready:
                 self.link.send({"t": "notify", **data})
@@ -960,11 +968,25 @@ class App:
                     self.activate(child)
             elif t == "swipe":
                 self.on_swipe(data.get("dir", ""))
+            elif t == "ntfack":   # o ESP diz se a animação do aviso teve memória e de onde
+                where = {1: "arena livre", 2: "arena do plot"}.get(data.get("arena"), "")
+                where = where or ("fundo do relógio" if data.get("borrowed") else "heap")
+                lvl = logging.INFO if data.get("anim") else logging.WARNING
+                log.log(lvl, "aviso no ESP: %s (tela %s, maior bloco antes %s)",
+                        f"com animação ({where})" if data.get("anim") else "SEM animação, falta memória",
+                        data.get("screen"), data.get("largest0"))
+            elif t == "redraw":   # o aviso usou a arena do plot desta tela: volta a desenhá-la
+                self.last_sent = ""
+                self.show()
             elif t == "bgfreed":   # o aviso usou a memória do fundo (relógio): volta a enviá-lo depois
                 self.bg_sent = None
                 self.bg_hold = time.monotonic() + 6
             elif t == "notify" and data.get("act") == "open":
                 self.open_notified()
+            elif t == "shotpx":   # captura do ecrã: um bloco de linhas em RGB565
+                self.shot_parts.append(data)
+            elif t == "shotend":
+                self.shot_save(int(data.get("w", self.esp_w)), int(data.get("h", self.esp_h)))
             elif t in ("stats", "bench"):   # medições de desempenho (kill -USR1 <pid do dashd>)
                 log.info("ESP %s: %s", t, {k: v for k, v in data.items() if k != "t"})
             elif t == "iconlost":   # o ESP precisou do lugar deste ícone: reenvia quando for preciso
@@ -980,10 +1002,36 @@ class App:
                     prov.on_event(data)
                     self.show(full=False)
 
+    def shot(self, path: str | None = None) -> None:
+        """Pede ao ESP uma captura do ecrã; fica em `path` ou em ~/Pictures/dashdeck-<data>.png."""
+        self.shot_parts = []
+        self.shot_path = path
+        self.link.send({"t": "shot"})
+
+    def shot_save(self, w: int, h: int) -> None:
+        from PIL import Image
+        img = Image.new("RGB", (w, h))
+        px = img.load()
+        for part in self.shot_parts:
+            raw = base64.b64decode(part.get("d", ""))
+            x0, y0, pw = int(part["x"]), int(part["y"]), int(part["w"])
+            for i in range(len(raw) // 2):
+                v = raw[2 * i] | raw[2 * i + 1] << 8
+                x, y = x0 + i % pw, y0 + i // pw
+                if x < w and y < h:
+                    px[x, y] = ((v >> 11) * 255 // 31, (v >> 5 & 63) * 255 // 63, (v & 31) * 255 // 31)
+        path = self.shot_path or str(Path.home() / "Pictures" / time.strftime("dashdeck-%Y%m%d-%H%M%S.png"))
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        img.save(path)
+        self.shot_parts = []
+        log.info("captura do ecrã do ESP em %s", path)
+
     def run(self) -> None:
         import signal   # kill -USR1: pede ao ESP as estatísticas do toque e do desenho (aparecem no log)
         if threading.current_thread() is threading.main_thread():
             signal.signal(signal.SIGUSR1, lambda *_: self.link.send({"t": "stats"}))
+            # kill -USR2: captura do ecrã do ESP em ~/Pictures
+            signal.signal(signal.SIGUSR2, lambda *_: self.events.put(("shot", None)))
         self.run_bg(self.monitor_restore)   # monitor de emergências que ficou ligado
         last_ping = last_refresh = last_tick = 0.0
         while True:

@@ -44,6 +44,18 @@ void link_send(const cJSON *msg)
     cJSON_free(s);
 }
 
+void link_send_line(const char *s, size_t len)
+{
+    if (!s_ready) {
+        return;
+    }
+    xSemaphoreTake(s_tx_lock, portMAX_DELAY);
+    // Timeout maior que o de tx_raw: usado em rajadas (captura do ecrã), que não podem perder bocados.
+    usb_serial_jtag_write_bytes(s, len, pdMS_TO_TICKS(500));
+    usb_serial_jtag_write_bytes("\n", 1, pdMS_TO_TICKS(500));
+    xSemaphoreGive(s_tx_lock);
+}
+
 void link_send_event(const char *type, const char *k1, const char *v1, const char *k2, const char *v2)
 {
     cJSON *o = cJSON_CreateObject();

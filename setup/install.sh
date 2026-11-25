@@ -22,6 +22,8 @@ groups | grep -qw dialout || { sudo usermod -aG dialout "$USER"; echo "   (entre
 echo "== serviço systemd --user"
 mkdir -p ~/.config/systemd/user
 ln -sf "$ROOT/host/dashd.service" ~/.config/systemd/user/dashd.service
+# receptor das Sondas (ligado e desligado pelo dashd, não arranca no boot)
+ln -sf "$ROOT/host/dashd-sonde.service" ~/.config/systemd/user/dashd-sonde.service
 systemctl --user daemon-reload
 systemctl --user enable --now dashd
 systemctl --user --no-pager status dashd | head -5

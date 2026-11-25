@@ -145,6 +145,8 @@ static uint8_t s_bg_bpp = 4;
 static bool s_bg_on_sd;            // o fundo está em BG_FILE (sem RAM para ele)
 static FILE *s_bg_fw;              // a ser escrito
 static bool s_ntf_borrowed;        // o canvas do aviso está a usar a memória do fundo (relógio)
+static int s_ntf_arena;            // o aviso desenha na arena: 1 = estava livre, 2 = tirada ao plot
+static void ntf_drop_canvas(void);
 static uint16_t s_bg_pal[256];
 static char s_bg_key[32];
 static bool s_bg_ready;
@@ -938,10 +940,10 @@ static void build_tile(int i, const cJSON *it)
     lv_obj_set_style_bg_color(card, lv_color_hex(C_CARD), 0);
     lv_obj_set_style_bg_color(card, lv_color_hex(C_CARD_PR), LV_STATE_PRESSED);
     lv_obj_set_style_radius(card, 10, 0);
-    lv_obj_set_style_pad_top(card, 6, 0);
+    lv_obj_set_style_pad_top(card, s_hgrid ? 5 : 6, 0);
     lv_obj_set_style_pad_bottom(card, 5, 0);
     lv_obj_set_style_pad_hor(card, 3, 0);
-    lv_obj_set_style_pad_row(card, 2, 0);
+    lv_obj_set_style_pad_row(card, s_hgrid ? 4 : 2, 0);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
@@ -960,7 +962,14 @@ static void build_tile(int i, const cJSON *it)
     int32_t lh = lv_font_get_line_height(&dash_font_12);
     const char *val = jstr(it, "value", NULL);
     lv_obj_t *t = mk_label(card, nf, C_TEXT, jstr(it, "label", "?"));
-    lv_obj_set_size(t, LV_PCT(100), (val ? 1 : 2) * lv_font_get_line_height(nf));
+    if (s_hgrid && !val) {
+        // fileira da tela inicial: o nome só ocupa as linhas que tem (até 2), para o ícone e os
+        // textos ficarem centrados na box (com 2 linhas fixas, um nome curto deixava um vazio por baixo)
+        lv_obj_set_size(t, LV_PCT(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_max_height(t, 2 * lv_font_get_line_height(nf), 0);
+    } else {
+        lv_obj_set_size(t, LV_PCT(100), (val ? 1 : 2) * lv_font_get_line_height(nf));
+    }
     lv_obj_set_style_text_align(t, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(t, LV_LABEL_LONG_DOT);
     s_lbl_d[i] = NULL;
@@ -1210,6 +1219,7 @@ static bool canvas_size(int32_t w, int32_t h)
     if (s_arena) {
         uint32_t stride = lv_draw_buf_width_to_stride(w, LV_COLOR_FORMAT_RGB565);
         if (stride * h > s_arena_size) return false;
+        if (s_ntf_arena) ntf_drop_canvas();   // o aviso estava na arena: fica só a faixa
         if (s_boot) boot_end();   // a animação de arranque usa o mesmo buffer
         if (w != s_cw || h != s_ch || s_cmem != s_arena || lv_canvas_get_draw_buf(s_canvas) != &s_cbuf) {
             lv_draw_buf_init(&s_cbuf, w, h, LV_COLOR_FORMAT_RGB565, stride, s_arena, stride * h);
@@ -2433,6 +2443,51 @@ static void build_dock(const cJSON *items)
     s_dock_on = n > 0;
 }
 
+// ---------- atualizações em espera durante o toque e o scroll ----------
+// Uma lista que se reordena debaixo do dedo faz tocar no item errado. Enquanto o dedo está no ecrã,
+// ou a tela rola (também na inércia, e até UPD_HOLD_US depois de parar), o "update" do host fica
+// guardado (só o mais recente) e é aplicado depois. Um toque simples aplica-o logo ao soltar.
+#define UPD_HOLD_US 1500000
+static cJSON *s_upd_pending;
+static int64_t s_upd_hold_until;
+
+static bool upd_hold(void)
+{
+    lv_indev_t *in = lv_indev_get_next(NULL);
+    int64_t now = esp_timer_get_time();
+    if (in) {
+        if (lv_indev_get_scroll_obj(in)) s_upd_hold_until = now + UPD_HOLD_US;
+        if (lv_indev_get_state(in) == LV_INDEV_STATE_PRESSED) return true;
+    }
+    return now < s_upd_hold_until;
+}
+
+static void apply_update(const cJSON *msg)
+{
+    if (s_has_screen && !strcmp(jstr(msg, "id", ""), s_screen_id)) {
+        set_pager(msg);
+        apply_body(msg, false);
+        const char *title = jstr(msg, "title", NULL);
+        if (title) set_text(s_title, title);
+    }
+}
+
+static void upd_drop(void)
+{
+    if (s_upd_pending) cJSON_Delete(s_upd_pending);
+    s_upd_pending = NULL;
+}
+
+static void upd_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (upd_hold() || !s_upd_pending) return;
+    cJSON *m = s_upd_pending;
+    s_upd_pending = NULL;
+    apply_update(m);
+    cJSON_Delete(m);
+}
+
 static void render_screen(const cJSON *msg)
 {
     s_icon_gen++;   // os ícones da tela nova passam à frente na RAM
@@ -2656,15 +2711,29 @@ static int64_t s_ntf_t0;
 static bool s_ntf_close;
 static float s_ntf_total = NOTIFY_TOTAL;   // s até fechar sozinho ("dur"; o alarme fica até 60 s)
 
+// A arena vai ser precisa para um canvas (plot, relógio): o aviso larga a animação e fica a faixa.
+static void ntf_drop_canvas(void)
+{
+    if (s_ntf_cv) lv_obj_delete(s_ntf_cv);
+    s_ntf_cv = NULL;
+    s_ntf_mem = NULL;
+    s_ntf_arena = 0;
+}
+
 static void ntf_end(void)
 {
     if (s_ntf_timer) lv_timer_delete(s_ntf_timer);
     s_ntf_timer = NULL;
     if (s_ntf) lv_obj_delete(s_ntf);
     s_ntf = s_ntf_cv = s_ntf_bar = NULL;
-    if (!s_ntf_borrowed) free(s_ntf_mem);
+    if (s_ntf_arena == 2) {   // a arena era do plot desta tela: o host volta a enviá-la
+        if (s_canvas) lv_obj_remove_flag(s_canvas, LV_OBJ_FLAG_HIDDEN);
+        link_send_event("redraw", NULL, NULL, NULL, NULL);
+    }
+    if (!s_ntf_borrowed && !s_ntf_arena) free(s_ntf_mem);
     s_ntf_mem = NULL;
     s_ntf_borrowed = false;
+    s_ntf_arena = 0;
 }
 
 static void ntf_timer_cb(lv_timer_t *t)
@@ -2719,7 +2788,14 @@ static void ntf_show(const cJSON *msg)
     lv_obj_remove_flag(s_ntf, LV_OBJ_FLAG_GESTURE_BUBBLE);
     lv_obj_add_event_cb(s_ntf, ntf_press_cb, LV_EVENT_PRESSED, NULL);
     size_t need = (size_t)NOTIFY_W * NOTIFY_H * 3;
-    s_ntf_mem = heap_caps_malloc(need, MALLOC_CAP_8BIT);
+    size_t largest0 = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    // 1.º a arena do ecrã, se nenhum canvas (plot, relógio, arranque) a estiver a usar: não depende
+    // do heap, que ao fim de horas fica fragmentado (o maior bloco livre anda perto dos 46 KB)
+    if (s_arena && s_arena_size >= need && !s_canvas && !s_clock && !s_boot) {
+        s_ntf_mem = s_arena;
+        s_ntf_arena = 1;
+    }
+    if (!s_ntf_mem) s_ntf_mem = heap_caps_malloc(need, MALLOC_CAP_8BIT);
     if (!s_ntf_mem && s_clock && s_bg && !s_bg_on_sd && s_bg_size >= need) {
         // relógio aberto: o fundo dele empresta a memória (o relógio fica parado por baixo do aviso e
         // o host volta a enviar o fundo depois: {"t":"bgfreed"})
@@ -2732,6 +2808,13 @@ static void ntf_show(const cJSON *msg)
     if (!s_ntf_mem) {
         make_room(need);
         s_ntf_mem = heap_caps_malloc(need, MALLOC_CAP_8BIT);
+    }
+    if (!s_ntf_mem && s_arena && s_arena_size >= need && s_canvas && s_cmem == s_arena && !s_clock) {
+        // último recurso: a arena do plot desta tela (o canvas fica escondido por baixo do aviso e o
+        // host volta a desenhá-lo no fim, {"t":"redraw"})
+        lv_obj_add_flag(s_canvas, LV_OBJ_FLAG_HIDDEN);
+        s_ntf_mem = s_arena;
+        s_ntf_arena = 2;
     }
     if (s_ntf_mem) {   // sem memória fica só a faixa
         lv_draw_buf_init(&s_ntf_buf, NOTIFY_W, NOTIFY_H, LV_COLOR_FORMAT_RGB565A8, NOTIFY_W * 2, s_ntf_mem, need);
@@ -2769,6 +2852,18 @@ static void ntf_show(const cJSON *msg)
     s_ntf_close = false;
     s_ntf_timer = lv_timer_create(ntf_timer_cb, 40, NULL);
     ESP_LOGI(TAG, "aviso de mensagem (%s)", s_ntf_mem ? "com animação" : "só a faixa");
+    // resposta ao host: a animação teve memória? (sem ela fica só a faixa e o escurecimento)
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "t", "ntfack");
+    cJSON_AddBoolToObject(o, "anim", s_ntf_mem != NULL);
+    cJSON_AddBoolToObject(o, "borrowed", s_ntf_borrowed);
+    cJSON_AddNumberToObject(o, "arena", s_ntf_arena);
+    cJSON_AddNumberToObject(o, "largest0", (double)largest0);   // maior bloco antes do aviso
+    cJSON_AddNumberToObject(o, "heap", (double)heap_caps_get_free_size(MALLOC_CAP_8BIT));
+    cJSON_AddNumberToObject(o, "largest", (double)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    cJSON_AddStringToObject(o, "screen", s_screen_id);
+    link_send(o);
+    cJSON_Delete(o);
 }
 
 static void housekeeping_cb(lv_timer_t *t)
@@ -3003,6 +3098,7 @@ void ui_init(lv_display_t *disp)
     if (boot_start()) lv_obj_clean(s_body);
     lv_timer_create(housekeeping_cb, 500, NULL);
     lv_timer_create(button_poll_cb, 40, NULL);
+    lv_timer_create(upd_timer_cb, 100, NULL);
 
     ts_hook();
     // Inércia do scroll: o LVGL tira esta % à velocidade a cada leitura do toque. O padrão (10) conta
@@ -3011,6 +3107,60 @@ void ui_init(lv_display_t *disp)
     if (tin) lv_indev_set_scroll_throw(tin, 4);
     lvgl_port_unlock();
     send_hello();
+}
+
+// ---------- captura do ecrã ({"t":"shot"}) ----------
+// Redesenha o ecrã todo de uma vez e envia ao host cada área que vai para o display, antes da troca de
+// bytes do esp_lvgl_port: {"t":"shotpx","x","y","w","h","d":<RGB565 em base64>} por blocos de linhas,
+// e no fim {"t":"shotend","w","h"}. O host monta o PNG (dashd: SIGUSR2 ou ficheiro de pedido).
+static bool s_shot_on;
+static char s_shot_line[2600];
+
+static void shot_ev(lv_event_t *e)
+{
+    if (!s_shot_on) return;
+    const lv_area_t *a = lv_event_get_param(e);
+    lv_draw_buf_t *b = lv_display_get_buf_active(lv_event_get_target(e));
+    if (!a || !b || !b->data) return;
+    int w = lv_area_get_width(a), h = lv_area_get_height(a);
+    uint32_t stride = b->header.stride ? b->header.stride : (uint32_t)w * 2;
+    int rows = 1800 / (w * 2);
+    if (rows < 1) rows = 1;
+    for (int y = 0; y < h; y += rows) {
+        int n = h - y < rows ? h - y : rows;
+        int k = snprintf(s_shot_line, sizeof(s_shot_line),
+                         "{\"t\":\"shotpx\",\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"d\":\"",
+                         (int)a->x1, (int)a->y1 + y, w, n);
+        // junta as linhas num bloco contínuo (o stride pode ter enchimento) e codifica de uma vez
+        static uint8_t raw[1800];
+        size_t rl = 0;
+        for (int r = 0; r < n; r++) {
+            memcpy(raw + rl, b->data + (size_t)(y + r) * stride, (size_t)w * 2);
+            rl += (size_t)w * 2;
+        }
+        size_t olen = 0;
+        mbedtls_base64_encode((unsigned char *)s_shot_line + k, sizeof(s_shot_line) - k - 4, &olen, raw, rl);
+        k += (int)olen;
+        k += snprintf(s_shot_line + k, sizeof(s_shot_line) - k, "\"}");
+        link_send_line(s_shot_line, (size_t)k);
+    }
+}
+
+static void shot_take(void)
+{
+    static bool hooked;
+    lv_display_t *d = lv_display_get_default();
+    if (!hooked) {
+        lv_display_add_event_cb(d, shot_ev, LV_EVENT_FLUSH_START, NULL);
+        hooked = true;
+    }
+    lv_obj_invalidate(lv_screen_active());
+    s_shot_on = true;
+    lv_refr_now(d);
+    s_shot_on = false;
+    char buf[64];
+    int k = snprintf(buf, sizeof(buf), "{\"t\":\"shotend\",\"w\":%d,\"h\":%d}", (int)s_W, (int)s_H);
+    link_send_line(buf, (size_t)k);
 }
 
 // ---------- medição do desenho ({"t":"bench"}) ----------
@@ -3204,6 +3354,12 @@ void ui_handle(const cJSON *msg)
         lvgl_port_unlock();
         return;
     }
+    if (!strcmp(t, "shot")) {
+        lvgl_port_lock(0);
+        shot_take();
+        lvgl_port_unlock();
+        return;
+    }
     if (!strcmp(t, "bench")) {
         lvgl_port_lock(0);
         bench_start(jint(msg, "px", 330));
@@ -3259,13 +3415,15 @@ void ui_handle(const cJSON *msg)
     }
     int64_t lock_t0 = esp_timer_get_time();
     if (!strcmp(t, "screen")) {
+        upd_drop();   // tela nova: a atualização guardada era da anterior
         render_screen(msg);
     } else if (!strcmp(t, "update")) {
-        if (s_has_screen && !strcmp(jstr(msg, "id", ""), s_screen_id)) {
-            set_pager(msg);
-            apply_body(msg, false);
-            const char *title = jstr(msg, "title", NULL);
-            if (title) set_text(s_title, title);
+        if (upd_hold()) {   // dedo no ecrã ou a rolar: guarda só a mais recente
+            upd_drop();
+            s_upd_pending = cJSON_Duplicate(msg, true);
+        } else {
+            upd_drop();
+            apply_update(msg);
         }
     } else if (!strcmp(t, "notify")) {
         ntf_show(msg);

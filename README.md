@@ -1,5 +1,7 @@
 # DashDeck: tela auxiliar do uConsole
 
+Apresentação curta com capturas: [English](docs/presentation.md) · [Português](docs/apresentacao.md)
+
 O DashDeck transforma uma **Waveshare ESP32-C6-Touch-LCD-1.47** (320×172 na horizontal, com toque) num
 painel de controle e informação do **ClockworkPi uConsole** (CM5, Pi OS com Wayland/labwc e placa
 AIO v2 com RTL-SDR, LoRa e GPS). A placa está ligada só por **USB-C**, sem fios nos GPIO do uConsole.
@@ -42,7 +44,7 @@ systemctl --user status dashd -n 30 --no-pager   # últimas linhas do log
 
 ## Na tela
 
-- **Menu inicial em boxes com scroll lateral**: AIO v2, Meshtastic, GPS, ADS-B, AIS, SDR, Câmara, Stocks, Rede, Aplicações, Serviços e Sistema.
+- **Menu inicial em boxes com scroll lateral**: AIO, Meshtastic, GPS, ADS-B, AIS, Sondas, SDR, Câmara, Stocks, Rede, Partilhas, Aplicações, Serviços e Sistema.
 - **Barra de cima**: botão ←, título, pontos de página, hora, bateria do uConsole e ícone da ligação USB (verde ou vermelho).
 - **Dock** (na tela inicial e em Aplicações): Início, Relógio, Captura, Brilho, Som e Bloquear.
 - **Ecrã apagado** após 3 min sem toques na tela inicial; um toque liga-o.
@@ -62,9 +64,10 @@ Os detalhes de cada tela estão em [docs/uso.md](docs/uso.md).
 | GPS | GPS ao vivo pelo MeshDeckWeb (com o gpsmux, partilhado com o meshtasticd), posição pelo Meshtastic, ou NMEA direto do `/dev/ttyAMA0`. Página com o céu dos satélites | ok |
 | ADS-B | Liga e desliga o readsb. Lista de aeronaves, detalhe e mapa com trajetos, zoom e setas sobre o mapa, e seguir uma aeronave | ok |
 | AIS | Liga e desliga o AIS-catcher. Lista de navios, detalhe e o mesmo mapa com trajetos e seguir um navio | ok |
-| AIO v2 | Interruptores GPS, LoRa, SDR e USB da placa AIO v2 (pelo `aiov2_ctl`), com informação ao vivo de cada um, perfis de uso num toque (Meshtastic, ADS-B, AIS, Poupança), a energia da bateria e a medição do consumo por recurso | ok |
+| AIO | Interruptores GPS, LoRa, SDR e USB da placa AIO v2 (pelo `aiov2_ctl`), com informação ao vivo de cada um, perfis de uso num toque (Meshtastic, ADS-B, AIS, Poupança), a energia da bateria e a medição do consumo por recurso | ok |
 | SDR | Monitor do RTL-SDR: alimentação, dongle, quem o usa, frequência, histórico e "Libertar SDR" | ok |
 | Câmara | Visor ao vivo da câmara do CamDeck (XIAO ESP32-S3 Sense), Foto e Gravar por cima da imagem, galeria (fotos e vídeos, que tocam no ecrã), estado e resolução do vídeo e das fotos | ok |
+| Sondas | Radiossondas RS41 com o descodificador do SondeDeck: frequências europeias (Lisboa no topo), mapa com o trajeto, rebentamento e pouso previsto, dados, altitude e estatísticas | novo (testado com a reprodução de um voo real; falta um voo ao vivo) |
 | Stocks | Cotações (Yahoo Finance) de Siemens, Tesla, SpaceX, Apple e NVIDIA: logotipo, cotação e variação do dia a cores; gráfico do dia e informações em duas páginas | ok |
 | Rede | Wi-Fi (estado, sinal, Internet, IP), redes ao alcance (as guardadas ligam-se com um toque) e VPN (NetworkManager e Tailscale) | ok |
 | Som | Volume e brilho do ecrã do uConsole, pelo dock | ok |

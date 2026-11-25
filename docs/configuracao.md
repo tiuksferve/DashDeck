@@ -107,6 +107,22 @@ O nome e o ícone vêm do `.desktop` com o mesmo `app_id` (nome do ficheiro, `St
 | `url` | `http://127.0.0.1:8119` | Servidor web do AIS-catcher (`/api/ships.json` e `/api/allpath.json`) |
 | `map`, `map_style`, `map_url` | | Iguais aos do `adsb` |
 
+### `sonde`
+Radiossondas RS41 (ver [uso.md](uso.md#sondas)).
+
+| Opção | Padrão | Descrição |
+|---|---|---|
+| `unit` | `dashd-sonde` | Serviço `--user` do receptor (`host/dashd-sonde.service`, que corre `host/sonderx.py`) |
+| `group` | `sdr` | Serviços do sistema parados ao ligar (readsb, ais-catcher) |
+| `gain`, `ppm` | `40`, `0` | Ganho do RTL-SDR em dB (0 = automático) e correção de frequência |
+| `idle_stop` | `1800` | Segundos sem pacotes, depois de um voo, até o receptor sair e libertar o SDR |
+| `decoder` | o `rs41mod` do SondeDeck | Caminho do descodificador |
+| `keep_running` | `false` | `true` mantém o receptor ligado ao sair da tela |
+| `freqs` | Lisboa | Lista `{ mhz, name }` mostrada na primeira página, pela ordem dada |
+| `map`, `map_style`, `map_url` | | Iguais aos do `adsb` |
+
+O dashd escreve a frequência e as opções em `~/.config/dashd/sonde.env` antes de ligar o serviço.
+
 ### `camera`
 Câmara do CamDeck (ver [uso.md](uso.md#câmara)). O dashd fala com o `camd` pela API local e entra com o
 token de `~/.config/camdeck/local-token` (criado pelo camd, só aceite em ligações de 127.0.0.1); não
@@ -157,6 +173,21 @@ depois de dar energia ao SDR ou ao USB, para o dongle aparecer). O que já está
 Rede pelo NetworkManager (`nmcli`; ver [uso.md](uso.md#rede)). Sem opções. O utilizador precisa de
 poder controlar a rede sem palavra-passe (no Raspberry Pi OS, os grupos `netdev` ou `sudo` já podem;
 confirme com `nmcli general permissions`). O Tailscale entra se o comando `tailscale` existir.
+
+### `shares`
+Box Partilhas (ver [uso.md](uso.md#partilhas)). Opções: `units` (serviços ligados e desligados juntos,
+por omissão `["smbd", "wsdd"]`) e `host` (nome mostrado no endereço, o `netbios name` do Samba).
+
+A partilha em si configura-se fora do DashDeck:
+
+1. `sudo apt install samba wsdd` (o `wsdd` mostra o uConsole na "Rede" do Windows).
+2. Em `/etc/samba/smb.conf`: no `[global]`, `server min protocol = SMB2_10`, `map to guest = never`,
+   `hosts allow = 127. 192.168.1. fe80::/10` e `hosts deny = ALL` (só a rede de casa, adaptar à rede);
+   uma secção por pasta com `path`, `valid users = <utilizador>` e `read only = no`.
+3. `sudo smbpasswd -a <utilizador>`: a palavra-passe de rede (separada da do login).
+4. Opcional: `/etc/avahi/services/smb.service` para o Mac e o Linux verem o uConsole na rede.
+
+O dashd usa `sudo -n` para `systemctl enable/disable --now` e para `smbstatus` (aparelhos ligados).
 
 ### `console`
 Volume e brilho do ecrã do uConsole (ver [uso.md](uso.md#som)); no config de origem está no dock.

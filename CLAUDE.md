@@ -9,12 +9,14 @@ toque), ligada só por USB. O ESP é um renderizador fino (LVGL 9.2); quem decid
 `host/dashd.py` (systemd --user), configurado em `host/config.toml`. Protocolo: uma linha JSON por
 mensagem, até 8 KB (descrito no cabeçalho de `firmware/main/ui.c` e em `docs/arquitetura.md`).
 
-- **Menu inicial (boxes):** AIO v2, Meshtastic, GPS, ADS-B, AIS, SDR, Câmara, Stocks, Rede, Aplicações, Serviços, Sistema.
+- **Menu inicial (boxes):** AIO, Meshtastic, GPS, ADS-B, AIS, Sondas, SDR, Câmara, Stocks, Rede, Partilhas, Aplicações, Serviços, Sistema.
 - **Dock** (início e Aplicações): Início, Relógio, Captura, Brilho, Som (volume e brilho do uConsole), Bloquear.
-- **Firmware atual:** 0.25.10 (gravado em 24/11).
+- **Firmware atual:** 0.25.15 (gravado em 25/11).
 
 ## Onde está cada coisa
 - `host/providers.py`: telas com dados (system, gps, adsb, ais, mesh, clock, aio, sdr, net, console, windows, camera, stocks).
+- `host/sonderx.py`: receptor RS41 sem janela (serviço `--user` `dashd-sonde`, ligado pelo dashd); usa o `rs41mod` compilado em `~/PycharmProjects/SondeDeck/decoders`. Teste sem rádio: `sonderx.py --replay voo.jsonl --speed 50` (linhas do `rs41mod --json`; um voo real exporta-se de `api.v2.sondehub.org/sonde/<série>`, mas tem indicativos de quem recebeu: não vai para o repositório).
+- **Partilhas** (`SharesProvider`): liga/desliga o Samba (`smbd` + `wsdd`, `systemctl enable/disable --now`); mostra só estado, endereço e aparelhos ligados (`smbstatus -b --json`), nunca as pastas. A configuração do Samba vive fora do repositório (`/etc/samba/smb.conf`). Um provider pode ter `tile()` com campos extra para a box do menu (`dot`, `sub_color`, ...).
 - `host/stocks.py`: cotações (Yahoo Finance, `/v8/finance/chart`) e logotipos (companiesmarketcap.com, cache em `~/.cache/dashd/logos`, fora do repositório).
 - `host/camclient.py`: cliente do camd do CamDeck (`~/PycharmProjects/CamDeck`, porta 8090, token local em `~/.config/camdeck/local-token`).
 - `host/wltop.py`: janelas abertas no uConsole (cliente Wayland em Python puro; listar, mostrar, minimizar, fechar).
@@ -39,6 +41,7 @@ mensagem, até 8 KB (descrito no cabeçalho de `firmware/main/ui.c` e em `docs/a
 
 ## Medir o desempenho
 - `kill -USR1 $(systemctl --user show -p MainPID --value dashd)`: o ESP responde com `stats` no log do dashd (leituras do toque por segundo, tempo dos quadros com o dedo no ecrã, o maior bloqueio do LVGL por uma mensagem, com o tipo, e a memória: heap, maior bloco, ícones na RAM/cartão). Os contadores zeram a cada pedido.
+- `kill -USR2 <pid do dashd>`: captura do ecrã do ESP em `~/Pictures/dashdeck-<data>.png` (`{"t":"shot"}`, 0.25.14). Os prints de `docs/img/` (apresentação em `docs/presentation.md` e `docs/apresentacao.md`) foram tirados assim; não usar telas com dados pessoais (nós e indicativo do Meshtastic, posição do GPS, redes Wi-Fi, número de série do dongle).
 - `{"t":"bench"}` (com o dashd parado, por um script que use `dashd.App`): rola a tela atual 2 s e devolve quadros, média e pior tempo.
 - Referência na 0.23.0: scroll a 44-46 quadros/s na tela inicial e nas Aplicações (lista toda: `{"t":"bench","px":3000}`), atualizações até 2,4 ms, abrir Aplicações ~100-160 ms. Memória livre nas Aplicações ~43-52 KB (os ícones ocupam o resto; relógio e aviso libertam-nos com o `make_room`).
 - Regra: nas funções `update_*` do `ui.c`, usar `set_text`, `set_text_color`, `set_bg_color`, `set_hidden` e `set_img` (só mudam se o valor for outro).

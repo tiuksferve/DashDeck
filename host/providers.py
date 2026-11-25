@@ -1306,7 +1306,8 @@ class TargetMapProvider(Provider):
     def _foreign_users(self) -> dict[int, str]:
         """Processos com o SDR que não são serviços do grupo (esses o service_action já pára)."""
         own = {unit_pid(u) for u in self.app.service_groups().get(self.group, [])} - {0}
-        return {p: n for p, n in sdr_users().items() if p not in own}
+        # processos de um serviço do utilizador (ex.: o receptor das Sondas) aparecem com o nome dele
+        return {p: (user_unit(p).removesuffix(".service") or n) for p, n in sdr_users().items() if p not in own}
 
     def _start_confirm(self) -> str:
         t, v = getattr(self, "_conf_cache", (0.0, ""))
@@ -1325,7 +1326,11 @@ class TargetMapProvider(Provider):
     def _start(self) -> None:
         for pid, name in self._foreign_users().items():
             self.app.events.put(("toast", (f"Fechando {name}", "warn")))
-            subprocess.run(["sudo", "-n", "kill", str(pid)], capture_output=True, timeout=5)
+            uu = user_unit(pid)
+            if uu:   # serviço do utilizador (receptor das Sondas): pára-o pelo systemd
+                subprocess.run(["systemctl", "--user", "stop", uu], capture_output=True, timeout=15)
+            else:
+                subprocess.run(["sudo", "-n", "kill", str(pid)], capture_output=True, timeout=5)
         if self._foreign_users():
             time.sleep(1.5)
         self.app.service_action("start", self.unit, self.group)
@@ -2484,7 +2489,7 @@ class AioProvider(Provider):
                       "sub_color": "#D29922" if b["w"] and b["w"] > 6 else "#8B98A5"})
         scr = {"tpl": "menu", "layout": "grid", "items": items}
         if self.error and not self.state:
-            scr["tpl"], scr["text"] = "text", f"AIO v2 indisponível: {self.error}"
+            scr["tpl"], scr["text"] = "text", f"AIO indisponível: {self.error}"
             scr.pop("items")
         return scr
 
@@ -3962,10 +3967,685 @@ class StocksProvider(Provider):
         return {"tpl": "kv", "rows": rows}
 
 
+# ------------------------------------------------------------------ Sondas (radiossondas RS41)
+
+SONDE_DIR = Path.home() / ".cache" / "dashd" / "sonde"
+SONDE_ENV = Path.home() / ".config" / "dashd" / "sonde.env"
+
+
+def user_unit(pid: int) -> str:
+    """Serviço systemd --user do processo (ex.: dashd-sonde.service), ou ""."""
+    try:
+        cg = Path(f"/proc/{pid}/cgroup").read_text()
+    except OSError:
+        return ""
+    if "user@" not in cg:
+        return ""
+    parts = [p for p in cg.strip().split("/") if p.endswith(".service") and not p.startswith("user@")]
+    return parts[-1] if parts else ""
+
+
+def bearing_deg(a: tuple, b: tuple) -> float:
+    la1, lo1, la2, lo2 = map(math.radians, (a[0], a[1], b[0], b[1]))
+    y = math.sin(lo2 - lo1) * math.cos(la2)
+    x = math.cos(la1) * math.sin(la2) - math.sin(la1) * math.cos(la2) * math.cos(lo2 - lo1)
+    return (math.degrees(math.atan2(y, x)) + 360) % 360
+
+
+class SondeFlight:
+    """Pacotes de uma sonda, lidos aos poucos do .jsonl que o sonderx escreve, e o rebentamento.
+
+    Rebentamento: como no SondeDeck, só se confirma com BURST_N pacotes seguidos a descer (um pacote
+    com ruído não chega); com velocidade vertical abaixo de BURST_VV e acima de BURST_ALT (no chão a
+    sonda oscila à volta de 0 m/s). O ponto marcado é o mais alto do voo (o momento real do rebentamento)."""
+    BURST_N, BURST_VV, BURST_ALT = 8, -2.0, 1000
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.id = path.stem
+        self.pos = 0
+        self.frames: list[dict] = []
+        self.burst: dict | None = None
+        self.top: dict | None = None
+        self._neg = 0
+
+    def update(self) -> bool:
+        """Lê os pacotes novos; True se o rebentamento foi confirmado agora."""
+        try:
+            size = self.path.stat().st_size
+        except OSError:
+            return False
+        if size < self.pos:   # ficheiro recomeçado
+            self.__init__(self.path)
+        if size == self.pos:
+            return False
+        with open(self.path, "rb") as f:
+            f.seek(self.pos)
+            data = f.read(size - self.pos)
+        end = data.rfind(b"\n") + 1      # só linhas completas
+        self.pos += end
+        new_burst = False
+        for line in data[:end].splitlines():
+            try:
+                fr = json.loads(line)
+            except ValueError:
+                continue
+            self.frames.append(fr)
+            if self.top is None or fr["alt"] > self.top["alt"]:
+                self.top = fr
+            if self.burst is None:
+                vv = fr.get("vel_v")
+                if isinstance(vv, (int, float)) and vv < self.BURST_VV and fr["alt"] > self.BURST_ALT:
+                    self._neg += 1
+                    if self._neg >= self.BURST_N:
+                        self.burst = self.top
+                        new_burst = True
+                else:
+                    self._neg = 0
+        return new_burst
+
+    @property
+    def last(self) -> dict | None:
+        return self.frames[-1] if self.frames else None
+
+    @property
+    def first(self) -> dict | None:
+        return self.frames[0] if self.frames else None
+
+    def age(self) -> float:
+        """Segundos desde o último pacote recebido."""
+        lf = self.last
+        return time.time() - lf.get("rx", lf["t"]) if lf else 1e9
+
+
+class SondeProvider(TargetMapProvider):
+    """Radiossondas RS41 (balões meteorológicos), com o receptor sem janela do SondeDeck (sonderx.py,
+    serviço --user dashd-sonde). Páginas: Controlo (frequências, Lisboa no topo) · Mapa (trajeto,
+    lançamento, rebentamento, aterragem prevista) · Dados · Altitude · Estatísticas."""
+    NOUN, NOUN_PL = "sonda", "sondas"
+    UNIT_DEFAULT = "dashd-sonde"
+    UNIT, UNIT_PER_NM = "km", 1.852
+    NICE = [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+    FOLLOW_ZOOM, IDLE_ZOOM, ZMAX = 10, 8, 15
+    CTRL_PAGE, MAP_PAGE, DATA_PAGE, ALT_PAGE, STATS_PAGE = 0, 1, 2, 3, 4
+    LIST_PAGE = DATA_PAGE
+    STATION_LABEL = "GPS"
+    ASC, DESC, BURST, LAUNCH = "#58A6FF", "#F78166", "#F85149", "#8B98A5"
+    LIVE = 120          # s: sonda "no ar" (a receber) se o último pacote é mais novo do que isto
+    GRID, SUB = "#21262D", "#6E7681"
+
+    def __init__(self, node, app):
+        super().__init__(node, app)
+        self.freqs = [dict(f) for f in node.get("freqs", [{"mhz": 403.4, "name": "Lisboa"}])]
+        self.flights: dict[str, SondeFlight] = {}
+        self.flight: SondeFlight | None = None
+        self._scan = 0.0
+        self._unfollowed = False
+
+    # ---- receptor (serviço do utilizador)
+    def active(self) -> bool:
+        t, v = self._active
+        if time.monotonic() - t > 3:
+            try:
+                v = subprocess.run(["systemctl", "--user", "is-active", "--quiet", self.unit],
+                                   timeout=3).returncode == 0
+            except subprocess.TimeoutExpired:
+                v = False
+            self._active = (time.monotonic(), v)
+        return self._active[1]
+
+    def status(self) -> dict:
+        try:
+            return json.loads((SONDE_DIR / "status.json").read_text())
+        except (OSError, ValueError):
+            return {}
+
+    def freq(self) -> float:
+        """Frequência escolhida (a do sonde.env; a primeira da lista se ainda não houver)."""
+        try:
+            for line in SONDE_ENV.read_text().splitlines():
+                if line.startswith("SONDE_FREQ="):
+                    return float(line.split("=", 1)[1])
+        except (OSError, ValueError):
+            pass
+        return float(self.freqs[0]["mhz"])
+
+    def freq_name(self, mhz: float) -> str:
+        return next((f["name"] for f in self.freqs if abs(f["mhz"] - mhz) < 0.0005), "")
+
+    def _foreign_users(self) -> dict[int, str]:
+        """Quem tem o SDR além do próprio receptor (esse é reiniciado, não morto)."""
+        return {p: n for p, n in super()._foreign_users().items() if user_unit(p) != f"{self.unit}.service"}
+
+    def _start_confirm_now(self) -> str:
+        users = self._foreign_users()
+        busy = [u for u in self.app.service_groups().get(self.group, []) if unit_active(u)]
+        names = sorted(set(users.values()) | set(busy))
+        return f"O SDR está em uso por {', '.join(names)[:40]}. Fechar e ouvir as sondas?" if names else ""
+
+    def _start(self, mhz: float | None = None) -> None:
+        mhz = self.freq() if mhz is None else mhz
+        SONDE_ENV.parent.mkdir(parents=True, exist_ok=True)
+        env = {"SONDE_FREQ": f"{mhz:.3f}", "SONDE_GAIN": self.node.get("gain", 40),
+               "SONDE_PPM": self.node.get("ppm", 0), "SONDE_IDLE_STOP": self.node.get("idle_stop", 1800)}
+        if self.node.get("decoder"):
+            env["SONDE_DECODER"] = os.path.expanduser(self.node["decoder"])
+        SONDE_ENV.write_text("".join(f"{k}={v}\n" for k, v in env.items()))
+        subprocess.run(["systemctl", "--user", "stop", self.unit], capture_output=True, timeout=15)
+        for other in self.app.service_groups().get(self.group, []):
+            if unit_active(other):
+                self.app.events.put(("toast", (f"Parando {other}", "warn")))
+                subprocess.run(["sudo", "-n", "systemctl", "stop", other], capture_output=True, timeout=30)
+        users = self._foreign_users()
+        for pid, name in users.items():
+            self.app.events.put(("toast", (f"Fechando {name}", "warn")))
+            subprocess.run(["sudo", "-n", "kill", str(pid)], capture_output=True, timeout=5)
+        if users:
+            time.sleep(1.5)
+        r = subprocess.run(["systemctl", "--user", "start", self.unit], capture_output=True, text=True, timeout=15)
+        self._active = (0.0, False)
+        self.started_here = r.returncode == 0
+        name = self.freq_name(mhz)
+        self.app.events.put(("toast", (f"A ouvir {mhz:.2f} MHz".replace(".", ",") + (f" · {name}" if name else "")
+                                       if r.returncode == 0 else f"Falhou: {r.stderr.strip()[:60]}",
+                                       "ok" if r.returncode == 0 else "err")))
+        self.app.events.put(("refresh", None))
+
+    def _stop(self) -> None:
+        subprocess.run(["systemctl", "--user", "stop", self.unit], capture_output=True, timeout=15)
+        self._active = (0.0, False)
+        self.started_here = False
+        self.app.events.put(("toast", ("Sondas: receptor desligado, SDR livre", "ok")))
+        self.app.events.put(("refresh", None))
+
+    def on_leave(self) -> None:
+        """Ao sair da tela o receptor desliga-se (SDR livre), a não ser que haja um voo a ser recebido:
+        aí continua até o sonderx sair sozinho depois da aterragem (idle_stop)."""
+        if not self.started_here or self.node.get("keep_running", False):
+            return
+        if self.flight and self.flight.age() < 600:
+            self.app.events.put(("toast", (f"Sondas: continua a receber {self.flight.id}", "info")))
+            return
+        self.started_here = False
+        self.app.run_bg(self._stop)
+
+    # ---- dados
+    def load(self) -> bool:
+        if time.monotonic() - self._scan > 5:     # procura voos novos (a sonda mais recente é a mostrada)
+            self._scan = time.monotonic()
+            try:
+                files = sorted(SONDE_DIR.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
+            except OSError:
+                files = []
+            if files:
+                p = files[-1]
+                if p.stem not in self.flights:
+                    self.flights = {p.stem: SondeFlight(p)}   # só o voo mostrado fica em memória
+                self.flight = self.flights[p.stem]
+        fl = self.flight
+        if not fl:
+            self.targets = []
+            return False
+        if fl.update() and fl.age() < self.LIVE:
+            b = fl.burst
+            self.app.events.put(("toast", (f"💥 {fl.id} rebentou a {b['alt']:,.0f} m".replace(",", " "), "warn")))
+        lf = fl.last
+        if not lf:
+            self.targets = []
+            return False
+        self.targets = [{"id": fl.id, "name": fl.id, "lat": lf["lat"], "lon": lf["lon"],
+                         "heading": lf.get("heading"), "label": True, "raw": lf}]
+        if self.follow is None and not self._unfollowed:
+            self.follow = fl.id
+        return True
+
+    def station(self):
+        return None     # centro do mapa: o GPS (base), senão a sonda
+
+    def gps(self) -> tuple[float, float] | None:
+        for prov in self.app.providers.values():
+            if isinstance(prov, GpsProvider) and prov.position():
+                return prov.position()
+        return None
+
+    def color(self, t: dict) -> str:
+        return self.DESC if self.flight and self.flight.burst else self.ASC
+
+    def track(self, tid: str) -> list:
+        return []       # o trajeto é desenhado em render_map (subida e descida com cores diferentes)
+
+    def phase(self) -> tuple[str, str]:
+        fl = self.flight
+        if not fl or not fl.last:
+            return "", "sub"
+        if fl.age() > self.LIVE:
+            return "sem sinal" if fl.age() < 1800 else "voo terminado", "sub"
+        vv = fl.last.get("vel_v") or 0
+        if fl.burst:
+            return "a descer", "warn"
+        if fl.last["alt"] - fl.first["alt"] < 50 and abs(vv) < 1:
+            return "no chão", "sub"
+        return "a subir", "ok"
+
+    # ---- formatação
+    @staticmethod
+    def _n(v, nd=0, unit=""):
+        if not isinstance(v, (int, float)):
+            return "—"
+        s = f"{v:,.{nd}f}".replace(",", " ").replace(".", ",")
+        return f"{s} {unit}".strip()
+
+    @staticmethod
+    def _hm(t: float, sec: bool = False) -> str:
+        return time.strftime("%H:%M:%S" if sec else "%H:%M", time.localtime(t))
+
+    @staticmethod
+    def _dur(s: float) -> str:
+        s = int(max(0, s))
+        return f"{s // 3600} h {s % 3600 // 60:02d} min" if s >= 3600 else f"{s // 60} min {s % 60:02d} s"
+
+    def summary(self) -> str:
+        has = self.load()
+        on = self.active()
+        f = f"{self.freq():.2f}".replace(".", ",")
+        if has and self.flight.age() < self.LIVE:
+            lf = self.flight.last
+            return f"{lf['id']} · {lf['alt'] / 1000:.1f} km · {self.phase()[0]}".replace(".", ",")
+        return f"a ouvir {f} MHz" if on else "parado"
+
+    def pages(self) -> int:
+        return 5
+
+    def render(self, page: int = 0) -> dict:
+        label = self.node.get("label", "Sondas")
+        if page == self.MAP_PAGE:
+            return {"title": f"{label} · Mapa", **self.render_map()}
+        if page == self.DATA_PAGE:
+            return {"title": f"{label} · Dados", **self.render_data()}
+        if page == self.ALT_PAGE:
+            return {"title": f"{label} · Altitude", **self.render_alt()}
+        if page == self.STATS_PAGE:
+            return {"title": f"{label} · Estatísticas", **self.render_stats()}
+        return {"title": label, **self.render_ctrl()}
+
+    # ---- página Controlo
+    def render_ctrl(self) -> dict:
+        has = self.load()
+        on = self.active()
+        cur = self.freq()
+        st = self.status()
+        items = []
+        if on:
+            name = self.freq_name(cur)
+            items.append({"id": "svc", "label": f"A ouvir {cur:.2f} MHz".replace(".", ","),
+                          "sub": (f"{name} · " if name else "") + "toque para desligar e libertar o SDR",
+                          "right": "Desligar", "color": "#3FB950", "bg": "#16271F",
+                          "confirm": "Desligar o receptor? O SDR fica livre."})
+        else:
+            sub = "Escolha uma frequência para ligar (usa o SDR)"
+            if st.get("state") == "erro" and st.get("error"):
+                sub = st["error"]
+            items.append({"id": "wait", "label": "Receptor desligado", "sub": sub, "color": "#8B98A5",
+                          "bg": "#2A1F16" if st.get("state") != "erro" else "#3D0808"})
+        if has:
+            fl = self.flight
+            lf = fl.last
+            ph, _ = self.phase()
+            items.append({"id": "go_map", "label": f"{fl.id} · {self._n(lf['alt'], 0, 'm')}",
+                          "sub": f"{ph} · último pacote às {self._hm(lf.get('rx', lf['t']))}"
+                                 + (f" · rebentou a {fl.burst['alt'] / 1000:.1f} km".replace(".", ",") if fl.burst else ""),
+                          "right": "Mapa", "color": self.color({})})
+        conf = self._start_confirm() if not on else ""
+        for f in self.freqs:
+            mhz = float(f["mhz"])
+            sel = on and abs(mhz - cur) < 0.0005
+            it = {"id": f"f:{mhz:.3f}", "label": f"{mhz:.2f} MHz".replace(".", ","), "sub": f["name"],
+                  "right": "A ouvir" if sel else "Ouvir", "color": "#3FB950" if sel else "#E6EDF3"}
+            if sel:
+                it["bg"] = "#16271F"
+                it["confirm"] = "Desligar o receptor? O SDR fica livre."
+            elif conf:
+                it["confirm"] = conf
+            items.append(it)
+        return {"tpl": "list", "items": items}
+
+    # ---- página Mapa
+    def render_map(self) -> dict:
+        out = super().render_map()
+        fl = self.flight
+        if not fl or not fl.frames or not self._last_center or out.get("tpl") != "plot":
+            return out
+        plot = out["plot"]
+        lat0, lon0, z, W, H = self._last_center
+        cx, cy = maptiles.world_px(lat0, lon0, z)
+
+        def to_px(la, lo):
+            x, y = maptiles.world_px(la, lo, z)
+            return x - cx + W / 2, y - cy + H / 2
+
+        # trajeto: subida a azul, descida a laranja; um ponto a cada 3 px
+        bi = fl.frames.index(fl.burst) if fl.burst else len(fl.frames) - 1
+        tracks = []
+        for seg, col in ((fl.frames[:bi + 1], self.ASC), (fl.frames[bi:] if fl.burst else [], self.DESC)):
+            keep, lx, ly = [], None, None
+            for fr in seg:
+                x, y = to_px(fr["lat"], fr["lon"])
+                if lx is None or abs(x - lx) + abs(y - ly) >= 3:
+                    keep.append(enc_px(x, y))
+                    lx, ly = x, y
+            if len(keep) > 340:
+                keep = keep[::math.ceil(len(keep) / 340)] + [keep[-1]]
+            if len(keep) >= 2:
+                tracks.append([col, 2, "".join(keep)])
+        plot["tracks"] = tracks
+        extra = []
+        x, y = to_px(fl.first["lat"], fl.first["lon"])
+        extra.append([round(x), round(y), self.LAUNCH, "início", None, 0])
+        if fl.burst:
+            x, y = to_px(fl.burst["lat"], fl.burst["lon"])
+            extra.append([round(x), round(y), self.BURST, f"burst {fl.burst['alt'] / 1000:.1f}km".replace(".", ","),
+                          None, 1])
+        land = self.landing()
+        if land:
+            x, y = to_px(land[0], land[1])
+            extra.append([round(x), round(y), "#D29922", "pouso?", None, 0])
+        plot["pts"] = extra + plot["pts"]
+        rows = out.get("rows", [])
+        if fl.burst:
+            rows.insert(1, ["Rebentamento", f"{self._n(fl.burst['alt'], 0, 'm')} às {self._hm(fl.burst['t'])}",
+                            "err"])
+        if land:
+            rows.insert(2, ["Pouso previsto", f"{self._hm(land[2])} · {land[0]:.4f}, {land[1]:.4f}", "warn"])
+        rows.append(["Cores", "azul subida · laranja descida · início, burst, pouso?", "sub"])
+        out["rows"] = rows
+        return out
+
+    def follow_rows(self, t: dict) -> list:
+        lf = t["raw"]
+        ph, lvl = self.phase()
+        rows = [["Altitude", self._n(lf["alt"], 0, "m")],
+                ["Vertical", self._n(lf.get("vel_v"), 1, "m/s") + f" · {ph}", lvl]]
+        g = self.gps()
+        if g:
+            rows.append(["Distância", f"{haversine_km(g, (lf['lat'], lf['lon'])):.1f} km".replace(".", ",")])
+        return rows
+
+    def landing(self) -> tuple[float, float, float] | None:
+        """Pouso previsto (só a descer): tempo = altura acima do lançamento / velocidade de descida;
+        posição = a última deslocada com o vento atual (velocidade e rumo). Estimativa simples."""
+        fl = self.flight
+        if not fl or not fl.burst or fl.age() > self.LIVE:
+            return None
+        lf = fl.last
+        vv, vh, hd = lf.get("vel_v"), lf.get("vel_h"), lf.get("heading")
+        if not isinstance(vv, (int, float)) or vv > -1:
+            return None
+        secs = max(0.0, (lf["alt"] - fl.first["alt"]) / -vv)
+        lat, lon = lf["lat"], lf["lon"]
+        if isinstance(vh, (int, float)) and isinstance(hd, (int, float)):
+            d = vh * secs * 0.6 / 1000      # o vento enfraquece a descer: 60% do atual (aproximação)
+            lat += d / 111.32 * math.cos(math.radians(hd))
+            lon += d / (111.32 * math.cos(math.radians(lat))) * math.sin(math.radians(hd))
+        return lat, lon, lf["t"] + secs
+
+    # ---- página Dados
+    def render_data(self) -> dict:
+        if not self.load():
+            return {"tpl": "text", "text": "Ainda sem sondas recebidas.\nLigue o receptor numa frequência "
+                                           "(primeira página)."}
+        fl = self.flight
+        lf = fl.last
+        ph, lvl = self.phase()
+        rx = lf.get("rx", lf["t"])
+        rows = [["Sonda", f"{fl.id} · {lf.get('subtype', 'RS41')}"],
+                ["Estado", ph, lvl],
+                ["Hora", f"{self._hm(lf['t'], True)} · há {self._dur(time.time() - rx)}", "sub"],
+                ["Posição", f"{lf['lat']:.5f}, {lf['lon']:.5f}"],
+                ["Altitude", self._n(lf["alt"], 0, "m")],
+                ["Vertical", self._n(lf.get("vel_v"), 1, "m/s"), "ok" if (lf.get("vel_v") or 0) > 0 else "warn"],
+                ["Horizontal", self._n((lf.get("vel_h") or 0) * 3.6, 0, "km/h")
+                 + (f" · rumo {lf['heading']:.0f}°" if isinstance(lf.get("heading"), (int, float)) else "")]]
+        if lf.get("temp") is not None:
+            rows.append(["Temperatura", self._n(lf["temp"], 1, "°C")])
+        if lf.get("humidity") is not None:
+            rows.append(["Humidade", self._n(lf["humidity"], 0, "%")])
+        if lf.get("pressure") is not None:
+            rows.append(["Pressão", self._n(lf["pressure"], 1, "hPa")])
+        rows.append(["Satélites", str(lf.get("sats", "—"))])
+        if lf.get("batt") is not None:
+            rows.append(["Bateria", self._n(lf["batt"], 1, "V")])
+        bt = lf.get("bt")
+        if isinstance(bt, (int, float)) and 0 < bt < 65535:
+            rows.append(["Corte (burst timer)", f"daqui a {self._dur(bt)}", "warn"])
+        f = lf.get("tx_frequency") or lf.get("freq")
+        if isinstance(f, (int, float)) and f > 0:
+            rows.append(["Frequência", f"{f / 1000:.3f} MHz".replace(".", ",")])
+        g = self.gps()
+        if g:
+            p = (lf["lat"], lf["lon"])
+            d = haversine_km(g, p)
+            el = math.degrees(math.atan2(lf["alt"] / 1000 - d * d / (2 * 6371), max(d, 0.001)))
+            rows.append(["Do receptor", f"{self._n(d, 1, 'km')} · azimute {bearing_deg(g, p):.0f}° · "
+                                        f"elevação {el:.0f}°".replace(".", ",")])
+        rows.append(["Pacotes", str(len(fl.frames)), "sub"])
+        return {"tpl": "kv", "rows": rows}
+
+    # ---- página Altitude
+    def render_alt(self) -> dict:
+        pw, ph = self.app.canvas_area()
+        plot = {"w": pw, "h": ph, "center": False, "cross": False, "pts": []}
+        if not self.load() or len(self.flight.frames) < 2:
+            plot["msg"] = "Sem dados de altitude"
+            return {"tpl": "plot", "plot": plot}
+        fl = self.flight
+        fr = fl.frames
+        lf = fl.last
+        col = self.color({})
+        plot["ctrl"] = [["alt", "tl", f"{self._n(lf['alt'], 0, 'm')}  {self._n(lf.get('vel_v'), 1, 'm/s')}", col]]
+        t0, t1 = fr[0]["t"], max(fr[-1]["t"], fr[0]["t"] + 600)
+        amax = max(f["alt"] for f in fr)
+        top_km = max(1, math.ceil(amax / 1000 / 5) * 5) if amax > 5000 else max(1, math.ceil(amax / 1000))
+        top, bot, x0, x1 = 34, ph - 16, 4, pw - 52
+
+        def px(t, a):
+            return x0 + (t - t0) / (t1 - t0) * (x1 - x0), bot - a / (top_km * 1000) * (bot - top)
+
+        tracks, texts = [], []
+        for k in (0, top_km / 2, top_km):
+            y = px(t0, k * 1000)[1]
+            tracks.append([self.GRID, 1, enc_px(x0, y) + enc_px(x1, y)])
+            texts.append([pw - 2, round(y), self.SUB, f"{k:g} km".replace(".", ","), "r"])
+        span = t1 - t0
+        step = next(s for s in (600, 900, 1800, 3600, 7200, 14400) if (x1 - x0) / (span / s) >= 34)
+        h = math.ceil(t0 / step) * step
+        while h <= t1:
+            x = px(h, 0)[0]
+            tracks.append([self.GRID, 1, enc_px(x, top) + enc_px(x, bot)])
+            texts.append([max(round(x), 14), ph - 7, self.SUB, self._hm(h), "c"])
+            h += step
+        bi = fr.index(fl.burst) if fl.burst else len(fr) - 1
+        n = max(1, len(fr) // 300)
+        for seg, c in ((fr[:bi + 1], self.ASC), (fr[bi:] if fl.burst else [], self.DESC)):
+            pts = seg[::n] + [seg[-1]] if seg else []
+            if len(pts) >= 2:
+                tracks.append([c, 2, "".join(enc_px(*px(f["t"], f["alt"])) for f in pts)])
+        if fl.burst:
+            bx, by = px(fl.burst["t"], fl.burst["alt"])
+            plot["pts"].append([round(bx), round(by), self.BURST, f"{fl.burst['alt'] / 1000:.1f} km".replace(".", ","),
+                                None, 1])
+        lx, ly = px(lf["t"], lf["alt"])
+        plot["pts"].append([round(lx), round(ly), col, "", None, 1])
+        plot.update(tracks=tracks, texts=texts)
+        return {"tpl": "plot", "plot": plot}
+
+    # ---- página Estatísticas
+    def render_stats(self) -> dict:
+        if not self.load():
+            return {"tpl": "text", "text": "Ainda sem sondas recebidas."}
+        fl = self.flight
+        fr, f0, lf, b = fl.frames, fl.first, fl.last, fl.burst
+        rows = [["Lançamento", f"{self._hm(f0['t'])} · {f0['lat']:.3f}, {f0['lon']:.3f}"],
+                ["Duração", self._dur(lf["t"] - f0["t"])]]
+        top = fl.top
+        rows.append(["Altitude máxima", f"{self._n(top['alt'], 0, 'm')} às {self._hm(top['t'])}"])
+        if b:
+            rows.append(["Rebentamento", f"{self._n(b['alt'], 0, 'm')} · {self._dur(b['t'] - f0['t'])} após o "
+                                         "lançamento", "err"])
+        tb = (b or lf)
+        if tb["t"] > f0["t"]:
+            rows.append(["Subida média", self._n((tb["alt"] - f0["alt"]) / (tb["t"] - f0["t"]), 1, "m/s")])
+        if b and lf["t"] > b["t"]:
+            rows.append(["Descida média", self._n((b["alt"] - lf["alt"]) / (lf["t"] - b["t"]), 1, "m/s")])
+        path = sum(haversine_km((a["lat"], a["lon"]), (c["lat"], c["lon"])) for a, c in zip(fr, fr[1:]))
+        dur = max(1, lf["t"] - f0["t"])
+        rows.append(["Percurso", f"{self._n(path, 1, 'km')} · em linha reta "
+                                 f"{self._n(haversine_km((f0['lat'], f0['lon']), (lf['lat'], lf['lon'])), 1, 'km')}"])
+        vhs = [f["vel_h"] for f in fr if isinstance(f.get("vel_h"), (int, float))]
+        if vhs:
+            mx = max(fr, key=lambda f: f.get("vel_h") or 0)
+            rows.append(["Vel. horizontal", f"média {self._n(path / dur * 3600, 0, 'km/h')} · máx. "
+                                            f"{self._n(mx['vel_h'] * 3.6, 0, 'km/h')} a {self._n(mx['alt'] / 1000, 1, 'km')}"])
+        temps = [f for f in fr if isinstance(f.get("temp"), (int, float))]
+        if temps:
+            tm = min(temps, key=lambda f: f["temp"])
+            rows.append(["Temp. mínima", f"{self._n(tm['temp'], 1, '°C')} a {self._n(tm['alt'] / 1000, 1, 'km')}"])
+        g = self.gps()
+        if g:
+            dmax = max(haversine_km(g, (f["lat"], f["lon"])) for f in fr[::5] + [lf])
+            rows.append(["Distância máx.", self._n(dmax, 1, "km") + " do receptor"])
+        if isinstance(f0.get("frame"), int) and isinstance(lf.get("frame"), int) and lf["frame"] > f0["frame"]:
+            exp = lf["frame"] - f0["frame"] + 1
+            rows.append(["Receção", f"{len(fr)} de {exp} pacotes ({len(fr) / exp * 100:.0f}%)", "sub"])
+        land = self.landing()
+        if land:
+            rows.append(["Pouso previsto", f"{self._hm(land[2])} · {land[0]:.4f}, {land[1]:.4f}", "warn"])
+        return {"tpl": "kv", "rows": rows}
+
+    # ---- toques
+    def on_tap(self, item_id: str):
+        if item_id.startswith("f:"):
+            mhz = float(item_id[2:])
+            if self.active() and abs(mhz - self.freq()) < 0.0005:
+                self.app.run_bg(self._stop)
+                return ("A desligar o receptor...", "info")
+            self.app.run_bg(lambda: self._start(mhz))
+            return (f"A ligar em {mhz:.2f}".replace(".", ",") + " MHz...", "info")
+        if item_id == "svc":
+            self.app.run_bg(self._stop)
+            return ("A desligar o receptor...", "info")
+        return super().on_tap(item_id)
+
+    def on_button(self, btn_id: str):
+        if btn_id == "start":
+            self.app.run_bg(self._start)
+            return ("A ligar o receptor...", "info")
+        if btn_id == "alt":
+            return None
+        if btn_id == "unfollow":
+            self._unfollowed = True
+        elif btn_id.startswith("follow:"):
+            self._unfollowed = False
+        return super().on_button(btn_id)
+
+
+# ------------------------------------------------------------------ partilhas de rede (Samba)
+
+class SharesProvider(Provider):
+    """Liga e desliga as pastas partilhadas pela rede (Samba + wsdd), sem mostrar que pastas são.
+    Ligar = arranca e fica a arrancar no boot; Desligar = pára e deixa de arrancar no boot."""
+
+    def __init__(self, node, app):
+        super().__init__(node, app)
+        self.units = list(node.get("units", ["smbd", "wsdd"]))
+        self.on = False
+        self.clients = 0
+        self.busy = False
+        threading.Thread(target=self._poll, daemon=True, name="shares").start()
+
+    def _state(self) -> tuple[bool, int]:
+        r = subprocess.run(["systemctl", "is-active", self.units[0]], capture_output=True, text=True)
+        on = r.stdout.strip() == "active"
+        n = 0
+        if on:
+            try:
+                r = subprocess.run(["sudo", "-n", "smbstatus", "-b", "--json"], capture_output=True, text=True,
+                                   timeout=10)
+                sess = json.loads(r.stdout or "{}").get("sessions", {})
+                n = len({v.get("remote_machine") or v.get("hostname") for v in sess.values()})
+            except (OSError, ValueError, subprocess.SubprocessError):
+                pass
+        return on, n
+
+    def _poll(self) -> None:
+        while True:
+            try:
+                st = self._state()
+                if st != (self.on, self.clients):
+                    self.on, self.clients = st
+                    self.app.events.put(("refresh", None))
+            except Exception as e:
+                log.debug("partilhas: %s", e)
+            time.sleep(5)
+
+    def summary(self) -> str:
+        if not self.on:
+            return "desligadas"
+        return "ligadas" + (f" · {self.clients} aparelho{'s' if self.clients != 1 else ''}" if self.clients else "")
+
+    def tile(self) -> dict:
+        return {"dot": "#3FB950" if self.on else "#F85149", "sub_color": "#3FB950" if self.on else "#8B98A5"}
+
+    @staticmethod
+    def _ip() -> str:
+        try:
+            r = subprocess.run(["hostname", "-I"], capture_output=True, text=True, timeout=3)
+            return next((a for a in r.stdout.split() if "." in a), "")
+        except (OSError, subprocess.SubprocessError):
+            return ""
+
+    def render(self, page: int = 0) -> dict:
+        rows = [["Estado", "ligadas" if self.on else "desligadas", "ok" if self.on else "err"]]
+        if self.on:
+            ip = self._ip()
+            rows.append(["Endereço", f"\\\\{self.node.get('host', 'UCONSOLE')}" + (f" · {ip}" if ip else "")])
+            rows.append(["Aparelhos ligados", str(self.clients), "ok" if self.clients else "sub"])
+            rows.append(["Acesso", "rede de casa · palavra-passe", "sub"])
+        else:
+            rows.append(["Acesso", "ninguém entra", "sub"])
+        if self.busy:
+            btns = []
+        elif self.on:
+            btns = [{"id": "off", "label": "Desligar", "color": "err",
+                     "confirm": (f"{self.clients} aparelho(s) ligado(s) perdem o acesso. Desligar?" if self.clients
+                                 else "Desligar as pastas partilhadas?")}]
+        else:
+            btns = [{"id": "on", "label": "Ligar", "color": "ok"}]
+        return {"tpl": "kv", "rows": rows, "buttons": btns}
+
+    def _switch(self, on: bool) -> None:
+        cmd = ["sudo", "-n", "systemctl", "enable" if on else "disable", "--now"] + self.units
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        self.busy = False
+        self.on, self.clients = self._state()
+        ok = r.returncode == 0 and self.on == on
+        msg = ("Pastas partilhadas ligadas" if on else "Pastas partilhadas desligadas") if ok else \
+            f"Falhou: {(r.stderr.strip().splitlines() or ['?'])[-1][:60]}"
+        self.app.events.put(("toast", (msg, "ok" if ok else "err")))
+        self.app.events.put(("refresh", None))
+
+    def on_button(self, btn_id: str):
+        if btn_id in ("on", "off") and not self.busy:
+            self.busy = True
+            threading.Thread(target=self._switch, args=(btn_id == "on",), daemon=True).start()
+            return ("A ligar..." if btn_id == "on" else "A desligar...", "info")
+        return None
+
+
 REGISTRY = {"system": SystemProvider, "gps": GpsProvider, "adsb": AdsbProvider, "ais": AisProvider,
             "mesh": MeshtasticProvider, "clock": ClockProvider, "aio": AioProvider, "sdr": SdrProvider,
             "net": NetworkProvider, "console": ConsoleProvider, "windows": WindowsProvider,
-            "camera": CameraProvider, "stocks": StocksProvider}
+            "camera": CameraProvider, "stocks": StocksProvider, "sonde": SondeProvider,
+            "shares": SharesProvider}
 
 
 def create(name: str, node: dict, app) -> Provider:

@@ -1,0 +1,8 @@
+[Unit]
+Description=DashDeck — receptor de radiossondas RS41 (box Sondas)
+# Ligado e desligado pelo dashd (não arranca no boot): usa o RTL-SDR, partilhado com o ADS-B e o AIS.
+
+[Service]
+EnvironmentFile=-%h/.config/dashd/sonde.env
+ExecStart=/usr/bin/python3 -u %h/PycharmProjects/DashDeck/host/sonderx.py
+Restart=no

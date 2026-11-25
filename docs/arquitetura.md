@@ -20,6 +20,8 @@ está na placa) seria o próximo passo se um dia a tela ficar solta.
            ├─ providers.py       system · gps (NmeaReader) · adsb, ais (+maptiles) · mesh (+meshbridge) · clock (+clockscene) · aio (aiov2_ctl) · sdr · net · console · windows (+wltop)
            ├─ icons.py           ícones (tema GTK, ficheiros, emoji) → RGB565A8 32×32
            ├─ stocks.py          cotações (Yahoo Finance) e logotipos em cache (box Stocks)
+           ├─ sonderx.py         receptor RS41 sem janela (serviço --user dashd-sonde): rtl_fm → sox → rs41mod
+           │                     do SondeDeck → ~/.cache/dashd/sonde/<série>.jsonl e status.json
            ├─ routes.py          rotas dos voos pelo indicativo (adsbdb.com/hexdb.io, thread, cache em disco)
            ├─ wltop.py           janelas abertas (cliente Wayland em Python puro, wlr-foreign-toplevel)
            └─ xdgapps.py         aplicações a partir dos .desktop (cache de 30 s) e o .desktop de cada app_id
@@ -34,7 +36,7 @@ está na placa) seria o próximo passo se um dia a tela ficar solta.
 | `main/link.c` | Driver USB-Serial-JTAG (RX de 16 KB), uma mensagem JSON por linha (até 8 KB), logs do ESP-IDF reenviados como linhas `# ...`, deteção do host vivo (dados nos últimos 6 s) |
 | `main/ui.c` | Templates, toasts, confirmações, páginas e swipe, canvas do plot, fundo 4 ou 8 bpp, ícones na RAM, dock, selos, modo relógio (ecrã inteiro, gestos, hora local) |
 | `main/bootanim.c` | Tela de carregamento (Pixels ou Nascer do sol, ao acaso com `esp_random`) com barra de progresso, num canvas próprio na camada de cima. Fica até chegar a primeira tela do host (mínimo 5 s); o buffer de 110 KB é libertado no fim. Sem memória, fica o spinner "Aguardando uConsole" |
-| `main/notify.c` | Aviso de mensagem direta ("Ondas LoRa") num canvas 200×110 RGB565A8 (66 KB, transparente) ao centro; o fundo escurecido e a faixa do texto são objetos do LVGL na camada de cima |
+| `main/notify.c` | Aviso de mensagem direta ("Ondas LoRa") num canvas 160×96 RGB565A8 (46 KB, transparente) ao centro; o fundo escurecido e a faixa do texto são objetos do LVGL na camada de cima |
 | `main/clockface.c` | Mostradores do relógio em pixel art, desenhados direto no buffer RGB565: fontes 5×7 e 3×5, dígitos em blocos, ícone 16×16, chuva, neve e relâmpagos |
 | `main/fonts/` | Montserrat Medium 12/14/16/20 com ASCII, Latin-1 e `– — … ← → − ≤ ≥`. O fallback para a Montserrat do LVGL dá os símbolos |
 | `components/` | Drivers JD9853 e AXS5106 do demo Waveshare. O `i2c_write` do toque não fazia nada e foi corrigido |
@@ -58,7 +60,14 @@ está na placa) seria o próximo passo se um dia a tela ficar solta.
 - **Ícones no cartão SD:** com cartão, cada ícone é gravado em `/sd/dash/xxxxxxxx.bin` (cabeçalho de imagem do LVGL + RGB565A8) e o LVGL lê-o de `S:dash/...` (sistema de ficheiros stdio). Ficam no cartão entre arranques: o dashd pergunta primeiro (`icon` com `probe`) e só envia os que faltam. Os ícones da tela aberta e do dock ficam também com uma cópia na RAM, desenhada sem ler o cartão (que partilha o barramento SPI com o display): ao construir uma tela, cada ícone dela que só esteja no cartão é carregado, libertando primeiro a cache de imagens e as cópias de ícones que já não se veem, enquanto sobrarem pelo menos 36 KB de heap. Os que não couberem desenham-se do cartão através da cache de imagens do LVGL (32 KB). Sem isto, um swipe nas Aplicações (22 ícones) caía para 24 quadros/s com paragens de 390 ms; com isto fica nos 44. O `make_room` esvazia a cache e depois as cópias na RAM quando o relógio precisa de espaço; o dashd volta a perguntar (`iconsfreed`) e as cópias regressam. Há 96 lugares; quando enchem, o ESP substitui por rotação um que não seja do dock e avisa com `{"t":"iconlost","id":..}`. Sem cartão, ficam só na RAM.
 - **Fundos:** o do relógio (8 bpp, 55 KB) e o dos mapas (4 bpp, ~20 KB) ficam na RAM. Se não houver RAM, vão para `/sd/dash/bg.bin` e são lidos do cartão a cada quadro (lento: 120+ ms; só como reserva).
 - **Emojis:** na RAM (até 48 de 630 B), porque o LVGL procura-os a cada letra desenhada.
-- **Aviso de mensagem:** canvas de 160×96 RGB565A8 (46 KB). Com o relógio aberto, usa emprestada a memória do fundo do relógio (o relógio fica parado por baixo) e o ESP avisa o host com `bgfreed` para o reenviar depois.
+- **Aviso de mensagem:** canvas de 160×96 RGB565A8 (46 KB), por esta ordem:
+  1. a arena do ecrã, quando nenhum canvas a usa (menus, listas, mensagens): não depende do heap, que ao fim de horas fica fragmentado;
+  2. o heap;
+  3. com o relógio aberto, a memória do fundo do relógio (o relógio fica parado por baixo; o ESP avisa o host com `bgfreed` para o reenviar depois);
+  4. o heap depois de libertar a cache de imagens e os ícones;
+  5. a arena do plot desta tela (o canvas fica escondido; no fim o ESP envia `redraw` e o host volta a enviar a tela).
+
+  Se um plot ou o relógio precisar da arena a meio do aviso, a animação sai e fica a faixa. O ESP responde a cada aviso com `ntfack` e o dashd regista no journal se houve animação e de onde veio a memória.
 - O `hello` traz `heap`, `largest` (maior bloco contínuo) e `sd` (MB livres no cartão, -1 sem cartão); o dashd regista-os.
 
 **Cartão SD:** no mesmo barramento SPI do display (CS no GPIO4), montado em `/sd` (FAT, nunca formatado pelo DashDeck). Tenta 40 MHz e volta a 20 MHz se o cartão não aguentar.
@@ -92,6 +101,12 @@ está na placa) seria o próximo passo se um dia a tela ficar solta.
 | `hello?` | — | Pede um `hello` |
 | `rot` | `v` (0 a 3) | Grava a rotação na NVS e reinicia, se mudou |
 | `icon` | `id`, `w`, `h` (até 48), `d` (base64 RGB565A8) | Guarda um ícone. O ESP responde `iconack` |
+| `ntfack` (ESP → host) | `anim`, `arena` (0, 1 livre, 2 do plot), `borrowed`, `screen`, `largest0`, `heap`, `largest` | Resposta a cada `notify`: se a animação teve memória e de onde |
+| `redraw` (ESP → host) | — | O aviso usou a arena do plot da tela atual; o host volta a enviar a tela |
+| `update` (host → ESP) | como `screen` | Atualização da tela aberta. Com o dedo no ecrã ou a tela a rolar (e 1,5 s depois de parar) o ESP guarda só a mais recente e aplica-a depois (0.25.15) |
+| `shot` (host → ESP) | — | Captura do ecrã: o ESP redesenha tudo e envia cada área que vai para o display |
+| `shotpx` (ESP → host) | `x`, `y`, `w`, `h`, `d` (RGB565 little-endian em base64) | Um bloco de linhas da captura |
+| `shotend` (ESP → host) | `w`, `h` | Fim da captura; o dashd grava o PNG (`kill -USR2` no dashd: `~/Pictures/dashdeck-<data>.png`) |
 | `bgfreed` (ESP → host) | — | O aviso de mensagem usou a memória do fundo do relógio; o host volta a enviá-lo |
 | `emoji` | `cp` (U+100000 + 0..47), `w`, `h` (até 24), `d` (base64 RGB565A8) | Guarda a imagem do emoji que o texto traz como o código privado `cp`. O ESP responde `emojiack` |
 | `bg` | `key`, `off`, `d` (base64), na 1.ª parte `w`, `h`, `pal` (16 cores) ou `bpp:8` com `pal` de 256, na última `last` | Fundo do plot (4 bpp) ou do relógio (8 bpp), em pedaços de 2 KB, cada um confirmado com `bgack` |
@@ -192,7 +207,7 @@ enquanto o ESP desenhava, e o mapa aparecia pela metade. O fundo só é usado se
 
 ## ADS-B, AIS e o SDR
 
-- `TargetMapProvider` (em `providers.py`) é a base comum: card do serviço, lista, detalhe, mapa, trajetos e alvo seguido. `AdsbProvider` e `AisProvider` só dizem de onde vêm os dados, as cores e as linhas do detalhe.
+- `TargetMapProvider` (em `providers.py`) é a base comum: card do serviço, lista, detalhe, mapa, trajetos e alvo seguido. `AdsbProvider` e `AisProvider` só dizem de onde vêm os dados, as cores e as linhas do detalhe. `SondeProvider` usa o mesmo mapa com cinco páginas e um serviço `--user` (os outros são do sistema); o rebentamento é calculado no dashd (`SondeFlight`), que lê o `.jsonl` aos poucos. Um processo de um serviço do utilizador com o SDR aberto aparece com o nome do serviço e é parado pelo `systemctl --user`, não morto.
 - **Quem usa o SDR:** o dashd procura os RTL-SDR em `/sys/bus/usb/devices` (0bda:2832/2838) e corre `sudo -n fuser /dev/bus/usb/BBB/DDD`. Os processos que não são serviços do grupo (por exemplo `rtl_tcp` ou `intercept.py`) são fechados com `sudo -n kill` depois da confirmação; os serviços do grupo são parados pelo `systemctl`.
 - **ADS-B:** o readsb só dá a posição atual (`/run/readsb/aircraft.json`). Uma thread lê-o a cada 2 s e guarda o trajeto de cada aeronave (`Tracker`, `track_minutes`), ignorando movimentos de menos de cerca de 20 m.
 - **AIS:** o serviço `ais-catcher` corre com `/etc/AIS-catcher/aiscatcher.json` e serve o visualizador web na porta 8119 (o controlo fica na 8118). O dashd lê `/api/ships.json` e os trajetos em `/api/allpath.json` (cache de 5 s).

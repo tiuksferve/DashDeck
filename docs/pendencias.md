@@ -64,9 +64,15 @@
 | 0.15.2 | Frase "TELA PEQUENA, GRANDES POSSIBILIDADES!" na animação Pixels (fonte com `!` e `,`) |
 | 0.15.3 | Tela de carregamento com 5 s no mínimo (a animação estica-se) |
 | 0.15.4 | A frase também no Nascer do sol |
+| — | (só host) Box Sondas: radiossondas RS41 com o descodificador do SondeDeck (receptor sem janela `sonderx.py`, serviço `dashd-sonde`); frequências europeias com Lisboa no topo, mapa com rebentamento e pouso previsto, dados, altitude e estatísticas |
 | — | (só host) Box Stocks: cotações do Yahoo Finance, logotipos em cache local, gráfico do dia |
 | — | (só host) Serviços: 16 serviços (DashDeck, CamDeck, SSH, VNC, tar1090, GPS mux...), serviços do utilizador, arranque no boot, estado lido numa só chamada |
 | — | (só host) ADS-B e AIS com três páginas: Controlo (ligar/desligar, monitor, resumo), Lista e Mapa |
+| 0.25.13 | Boxes da tela inicial com o ícone e os textos centrados: o nome só ocupa as linhas que tem (até 2) e margens iguais em cima e em baixo |
+| 0.25.15 | Listas paradas durante o toque e o scroll: com o dedo no ecrã ou a tela a rolar (também na inércia e até 1,5 s depois de parar), o `update` do host fica guardado (só o mais recente) e é aplicado depois; um toque simples aplica-o ao soltar. Antes, a lista do AIS reordenava-se debaixo do dedo |
+| 0.25.14 | Captura do ecrã (`{"t":"shot"}`): o ESP redesenha o ecrã todo e envia os pixels ao host (`shotpx`, `shotend`); o dashd grava um PNG com `kill -USR2` |
+| 0.25.12 | Avisos (mensagem direta, alarme, emergência ADS-B) desenham primeiro na arena do ecrã quando está livre; antes dependiam de 46 KB seguidos no heap, que ao fim de horas podiam faltar (ficava só a faixa e o escurecimento). Último recurso: a arena do plot da tela, redesenhado no fim (`redraw`). Resposta `ntfack` registada pelo dashd |
+| 0.25.11 | (diagnóstico, substituído pela 0.25.12) `ntfack` com o resultado da memória do aviso |
 | 0.25.10 | Plot com textos soltos (`"texts":[[x,y,"#cor","texto","l\|c\|r"]]`, ex.: eixos); setas das boxes maiores e grossas (fonte própria `dash_arrows`, DejaVu Sans Bold 22 px, só ↑ ↓). No host: gráfico das ações com horas, valores e dia da sessão; antes da abertura mostra a sessão anterior no sítio certo (os pontos ficavam espremidos no início) |
 | 0.25.9 | Cantos das boxes da grade: `"dot":"#cor"` (ponto no canto superior direito) e `"mark":"up|down"` + `"mark_color"` (seta ↑/↓ no canto superior esquerdo); fontes com ↑ ↓. No host: Stocks com o ponto verde/vermelho da bolsa aberta/fechada e a seta da variação; o subtítulo fica só com a percentagem |
 | 0.25.8 | Boxes da grade com valor em destaque (`"value"`, `"value_color"`): letra maior entre o nome e o subtítulo. No host: cotação em destaque nas boxes do Stocks; detalhe de uma ação em duas páginas (gráfico na tela toda e informações), com páginas também nos detalhes dinâmicos (`detail_pages`) |

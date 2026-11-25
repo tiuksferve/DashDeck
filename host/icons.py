@@ -71,6 +71,9 @@ def _load(src: str, size: int) -> Image.Image | None:
     gi.require_version("GdkPixbuf", "2.0")
     from gi.repository import GdkPixbuf
     try:
+        own = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons", src)
+        if not os.path.isabs(src) and src.endswith((".png", ".svg")) and os.path.exists(own):
+            src = own   # ícone próprio do DashDeck (host/icons), ex.: board.svg
         if os.path.isabs(src):
             if not os.path.exists(src):
                 return None
