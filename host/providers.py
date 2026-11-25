@@ -585,6 +585,19 @@ class GpsProvider(Provider):
 
 # ------------------------------------------------------------------ Meshtastic (pela ponte do MeshDeckWeb)
 
+KT_KMH, FT_M = 1.852, 0.3048
+
+
+def kmh(kt) -> str:
+    """Velocidade em nós (ADS-B, AIS) -> texto em km/h."""
+    return f"{kt * KT_KMH:.0f} km/h"
+
+
+def metres(ft) -> str:
+    """Altitude em pés (ADS-B) -> texto em metros (ex.: "10 670 m")."""
+    return f"{round(ft * FT_M):,} m".replace(",", " ")
+
+
 def fmt_ago(sec: float | None) -> str:
     if sec is None:
         return "?"
@@ -873,7 +886,7 @@ class MeshtasticProvider(Provider):
         return ("Enviada", "ok") if ok else (f"Falhou: {err}", "err")
 
     def on_button(self, btn_id: str):
-        if btn_id in ("zin", "zout", "recenter", "unfollow") or btn_id.startswith(("pan_", "follow:")):
+        if btn_id in ("zin", "zout", "recenter", "unfollow", "mapinfo") or btn_id.startswith(("pan_", "pan:", "tap:", "follow:")):
             return self.map.on_button(btn_id)       # botões do mapa (e "Seguir no mapa" no detalhe do nó)
         if btn_id == "reply" and self._detail_msg:
             m = self._detail_msg
@@ -1295,6 +1308,8 @@ class TargetMapProvider(Provider):
         self._eff_zoom = self.IDLE_ZOOM
         self._active = (0.0, False)
         self.started_here = False   # o DashDeck ligou o serviço (e desliga-o ao sair da tela)
+        self.info = False           # mapa: dois toques mostram os dados em vez do mapa
+        self._hit: list = []        # (x, y, id) dos alvos desenhados no último mapa
 
     # ---- serviço
     def active(self) -> bool:
@@ -1387,6 +1402,14 @@ class TargetMapProvider(Provider):
     def detail_rows(self, t: dict) -> list:
         return []
 
+    def shape(self, t: dict) -> str | None:
+        """Ícone do ponto no mapa ("plane", "ship", "balloon"); None = ponto redondo."""
+        return None
+
+    def tag_lines(self, t: dict) -> list[str]:
+        """Linhas da etiqueta do alvo seguido no mapa (a 1.ª na cor do alvo); [] = só o nome."""
+        return []
+
     def follow_rows(self, t: dict) -> list:
         return []
 
@@ -1472,6 +1495,50 @@ class TargetMapProvider(Provider):
         return None
 
     def render_map(self) -> dict:
+        return self.map_view(self.build_map())
+
+    def map_view(self, out: dict) -> dict:
+        """Mapa arrastável a toda a área: os dados (rows) só aparecem com dois toques (vista "mapinfo"),
+        e Centrar/Soltar passam a botões por cima do mapa."""
+        if out.get("tpl") != "plot":
+            return out
+        plot = out["plot"]
+        btns = out.get("buttons", [])
+        overlay = [b for b in btns if b["id"] in ("recenter", "unfollow")]
+        if self.info and plot.get("ctrl"):
+            rows = out.get("rows", [])
+            return {"tpl": "kv", "rows": rows,
+                    "buttons": [{"id": "mapinfo", "label": "Ver mapa", "color": "#1F6FEB"}] + overlay}
+        if plot.get("ctrl"):
+            plot["drag"] = True
+            pos = iter(("bl", "br"))
+            plot["ctrl"] += [[b["id"], next(pos), b["label"]] for b in overlay[:2]]
+            out["buttons"] = [b for b in btns if b not in overlay]
+            out.pop("rows", None)
+        return out
+
+    def map_tap(self, xy: str):
+        """Um toque no mapa: no ícone de um alvo passa a segui-lo; no alvo já seguido abre o detalhe."""
+        try:
+            x, y = (int(v) for v in xy.split(","))
+        except ValueError:
+            return None
+        near = [(math.hypot(px - x, py - y), tid) for px, py, tid in self._hit]
+        near = [n for n in near if n[0] <= 18]
+        if not near:
+            return None
+        tid = min(near)[1]
+        t = self.find(tid)
+        name = t["name"] if t else tid
+        if tid == self.follow:
+            try:
+                return self.on_tap(tid)
+            except (AttributeError, KeyError):
+                return (f"Seguindo {name}", "info")
+        self.follow, self._view, self._pan = tid, None, None
+        return (f"Seguindo {name}", "info")
+
+    def build_map(self) -> dict:
         W, H = self.app.canvas_area()
         if W < H:
             H = min(H, 220)
@@ -1545,8 +1612,7 @@ class TargetMapProvider(Provider):
         self._eff_zoom = z
         self._last_center = (lat0, lon0, z, W, H)
         # zoom nos cantos de cima, setas no meio de cada borda
-        plot["ctrl"] = [["zout", "tl", "\u2212"], ["zin", "tr", "+"], ["pan_l", "l", ""], ["pan_r", "r", ""],
-                        ["pan_u", "t", ""], ["pan_d", "b", ""]]
+        plot["ctrl"] = [["zout", "tl", "\u2212"], ["zin", "tr", "+"]]   # deslocar: arrastar o mapa com o dedo
         cx, cy = maptiles.world_px(lat0, lon0, z)
         ppn = maptiles.px_per_nm(lat0, z) / self.UNIT_PER_NM   # píxeis por unidade (nm ou km)
 
@@ -1583,15 +1649,24 @@ class TargetMapProvider(Provider):
         dist.sort(key=lambda d: (d[1]["id"] == self.follow, -d[0]))
         hidden = 0
         shown = []
+        self._hit = []          # posições no canvas, para um toque no ícone escolher o alvo
         for d, t, px, py in dist:
             if not (-4 <= px < W + 4 and -4 <= py < H + 4):
                 hidden += 1
                 continue
             shown.append(t)
+            self._hit.append((px, py, t["id"]))
             hd = t.get("heading")
-            label = t["name"][:8].strip() if (t["id"] == self.follow or t.get("label", True)) else ""
-            plot["pts"].append([round(px), round(py), self.color(t), label,
-                                round(hd) if isinstance(hd, (int, float)) else None, 1])
+            followed = t["id"] == self.follow
+            tag = self.tag_lines(t) if followed else []
+            label = t["name"][:8].strip() if not tag and (followed or t.get("label", True)) else ""
+            pt = [round(px), round(py), self.color(t), label, round(hd) if isinstance(hd, (int, float)) else None, 1]
+            shape = self.shape(t)
+            if shape:
+                pt.append(shape)
+            plot["pts"].append(pt)
+            if tag:
+                plot["tag"] = [round(px), round(py), self.color(t), "\n".join(x for x in tag if x)[:150]]
         plot["pts"] = plot["pts"][-80:]
 
         # trajetos: o seguido primeiro (mais longo e grosso), depois os outros visíveis
@@ -1696,6 +1771,23 @@ class TargetMapProvider(Provider):
         if btn_id == "recenter":
             self._pan, self.zoom = None, None
             return ("Mapa centrado", "info")
+        if btn_id == "mapinfo":
+            self.info = not self.info
+            return None
+        if btn_id.startswith("tap:"):
+            return self.map_tap(btn_id[4:])
+        if btn_id.startswith("pan:") and self._last_center:
+            try:
+                dx, dy = (int(v) for v in btn_id[4:].split(","))
+            except ValueError:
+                return None
+            lat0, lon0, z, W, H = self._last_center
+            x, y = maptiles.world_px(lat0, lon0, z)
+            lat, lon = maptiles.latlon(x - dx, y - dy, z)    # o conteúdo segue o dedo
+            self._pan = (round(lat, 5), round(lon, 5))
+            if self.zoom is None:
+                self.zoom = z
+            return None
         if btn_id.startswith("pan_") and self._last_center:
             lat0, lon0, z, W, H = self._last_center
             x, y = maptiles.world_px(lat0, lon0, z)
@@ -1738,7 +1830,7 @@ class AdsbProvider(TargetMapProvider):
     NOUN, NOUN_PL = "aeronave", "aeronaves"
     UNIT_DEFAULT = "readsb"
     FOLLOW_ZOOM = 10
-    LEGEND = "<10k · <25k · acima ft"
+    LEGEND = "verde <3 km · azul <7,6 km · roxo acima"
     PATHS = ["/run/readsb/aircraft.json", "/run/dump1090-mutability/aircraft.json",
              "/run/dump1090-fa/aircraft.json", "/run/dump1090/aircraft.json"]
 
@@ -1887,18 +1979,32 @@ class AdsbProvider(TargetMapProvider):
     @staticmethod
     def _alt(a: dict) -> str:
         alt = a.get("alt_baro", a.get("altitude"))
-        return "solo" if alt == "ground" else (f"{alt} ft" if alt is not None else "")
+        return "solo" if alt == "ground" else (metres(alt) if isinstance(alt, (int, float)) else "")
 
     def list_item(self, t):
         a = t["raw"]
         gs = a.get("gs", a.get("speed"))
-        sub = " · ".join(x for x in [self._alt(a), f"{gs:.0f} kt" if isinstance(gs, (int, float)) else ""] if x)
+        sub = " · ".join(x for x in [self._alt(a), kmh(gs) if isinstance(gs, (int, float)) else ""] if x)
         emerg = a.get("squawk") in ("7500", "7600", "7700")
         rt = self.routes.short(t["name"]) if t["label"] else ""
         return {"id": t["id"], "label": f"{t['name']}  {rt}" if rt else t["name"], "sub": sub,
                 "right": a.get("squawk", ""),
                 "color": "#F85149" if emerg else ("#58A6FF" if t["id"] == self.follow else
                                                  "#E6EDF3" if t["lat"] is not None else "#8B98A5")}
+
+    def shape(self, t):
+        return "plane"
+
+    def tag_lines(self, t):
+        a = t["raw"]
+        gs = a.get("gs", a.get("speed"))
+        rt = self.routes.short(t["name"]) if t["label"] else ""
+        vs = a.get("baro_rate")
+        alt = self._alt(a)
+        if alt and alt != "solo" and isinstance(vs, (int, float)) and abs(vs) >= 300:
+            alt += " ↑" if vs > 0 else " ↓"
+        return [t["name"], rt or ("rota ?" if t["label"] else ""),
+                " · ".join(x for x in [alt, kmh(gs) if isinstance(gs, (int, float)) else ""] if x)]
 
     def follow_rows(self, t):
         a = t["raw"]
@@ -1909,7 +2015,23 @@ class AdsbProvider(TargetMapProvider):
             rows.append(["Rota", rt])
         rows.append(["Altitude", self._alt(a) or "?"])
         if isinstance(gs, (int, float)):
-            rows.append(["Veloc.", f"{gs:.0f} kt" + (f" · {a['track']:.0f}°" if a.get("track") is not None else "")])
+            rows.append(["Veloc.", kmh(gs) + (f" · {a['track']:.0f}°" if a.get("track") is not None else "")])
+        return rows
+
+    @staticmethod
+    def _metric_rows(a: dict) -> list:
+        """Altitudes em metros, velocidade em km/h e razão de subida em m/s (o readsb dá pés e nós)."""
+        rows = []
+        for k, label in (("alt_baro", "Alt baro"), ("alt_geom", "Alt GNSS")):
+            v = a.get(k)
+            if v == "ground":
+                rows.append([label, "solo"])
+            elif isinstance(v, (int, float)):
+                rows.append([label, metres(v)])
+        if isinstance(a.get("gs"), (int, float)):
+            rows.append(["Veloc.", kmh(a["gs"])])
+        if isinstance(a.get("baro_rate"), (int, float)):
+            rows.append(["V/S", f"{a['baro_rate'] * FT_M / 60:+.1f} m/s".replace(".", ",")])
         return rows
 
     def detail_rows(self, t):
@@ -1930,8 +2052,8 @@ class AdsbProvider(TargetMapProvider):
                       else "a procurar...", "sub"]]
         return [["Hex", t["id"].upper()]] + _fmt_rows(a, [("flight", "Voo", "{}")]) + route + _fmt_rows(a, [
             ("r", "Matrícula", "{}"), ("t", "Tipo", "{}"),
-            ("squawk", "Squawk", "{}"), ("alt_baro", "Alt baro", "{} ft"), ("alt_geom", "Alt GNSS", "{} ft"),
-            ("gs", "Veloc.", "{:.0f} kt"), ("track", "Rumo", "{:.0f}°"), ("baro_rate", "V/S", "{} ft/min"),
+            ("squawk", "Squawk", "{}")]) + self._metric_rows(a) + _fmt_rows(a, [
+            ("track", "Rumo", "{:.0f}°"),
             ("lat", "Lat", "{:.4f}"), ("lon", "Lon", "{:.4f}"), ("r_dst", "Dist.", "{:.1f} nm"),
             ("rssi", "RSSI", "{:.1f} dBFS"), ("seen", "Visto", "{:.0f} s")]) + \
             [["Trajeto", f"{len(self.track(t['id']))} pontos", "sub"]]
@@ -2058,7 +2180,7 @@ class AisProvider(TargetMapProvider):
         spd = s.get("speed")
         parts = [kind]
         if isinstance(spd, (int, float)):
-            parts.append(f"{spd:.1f} kt")
+            parts.append(kmh(spd))
         if s.get("distance") is not None:
             parts.append(f"{s['distance']:.1f} nm")
         parts.append(fmt_ago(s.get("last_signal")))
@@ -2068,13 +2190,25 @@ class AisProvider(TargetMapProvider):
                 "color": "#58A6FF" if t["id"] == self.follow else
                 ("#E6EDF3" if t["lat"] is not None else "#8B98A5")}
 
+    def shape(self, t):
+        return None if self.type_info(t["raw"])[0] in ("Baliza (AtoN)", "Estação costeira") else "ship"
+
+    def tag_lines(self, t):
+        s = t["raw"]
+        spd = s.get("speed")
+        moving = isinstance(spd, (int, float)) and spd >= 0.5 and s.get("status") not in (1, 5, 6)
+        st = AIS_STATUS.get(s.get("status")) if s.get("status") in (1, 5, 6) else ""
+        state = f"em movimento · {kmh(spd)}" if moving else (st or "parado")
+        dest = self.dest(s)
+        return [t["name"], state, f"» {dest}" if dest else "sem destino"]
+
     def follow_rows(self, t):
         s = t["raw"]
         rows = [["Tipo", self.type_info(s)[0]]]
         if self.dest(s):
             rows.append(["Destino", self.dest(s)])
         if isinstance(s.get("speed"), (int, float)):
-            rows.append(["Veloc.", f"{s['speed']:.1f} kt" + (f" · {s['cog']:.0f}°" if s.get("cog") is not None else "")])
+            rows.append(["Veloc.", kmh(s["speed"]) + (f" · {s['cog']:.0f}°" if s.get("cog") is not None else "")])
         st = AIS_STATUS.get(s.get("status"))
         if st:
             rows.append(["Estado", st])
@@ -2093,7 +2227,9 @@ class AisProvider(TargetMapProvider):
         st = AIS_STATUS.get(s.get("status"))
         if st:
             rows.append(["Estado", st])
-        rows += _fmt_rows(s, [("speed", "Veloc.", "{:.1f} kt"), ("cog", "Rumo", "{:.0f}°"),
+        if isinstance(s.get("speed"), (int, float)):
+            rows.append(["Veloc.", kmh(s["speed"])])
+        rows += _fmt_rows(s, [("cog", "Rumo", "{:.0f}°"),
                               ("heading", "Proa", "{}°"), ("lat", "Lat", "{:.4f}"), ("lon", "Lon", "{:.4f}"),
                               ("distance", "Dist.", "{:.1f} nm")])
         if s.get("to_bow") is not None and s.get("to_stern") is not None:
@@ -2112,7 +2248,7 @@ class MeshMap(TargetMapProvider):
     NOUN, NOUN_PL = "nó", "nós"
     UNIT_DEFAULT = ""
     FOLLOW_ZOOM, IDLE_ZOOM, ZMAX = 13, 10, 16
-    LEGEND = "verde RF · lilás MQTT · cinza inativo"
+    LEGEND = "verde RF direto · laranja RF com saltos · lilás MQTT · cinza inativo"
     MAP_PAGE = 3
     UNIT, UNIT_PER_NM = "km", 1.852
     STATION_LABEL = "nó local"
@@ -2157,11 +2293,22 @@ class MeshMap(TargetMapProvider):
         ago = time.time() - n["last_heard"] if n.get("last_heard") else None
         if ago is None or ago > 7200:
             return "#8B98A5"
-        return "#B392F0" if n.get("via_mqtt") else "#3FB950"
+        if n.get("via_mqtt"):
+            return "#B392F0"
+        return "#F0883E" if (n.get("hops_away") or 0) > 0 else "#3FB950"
+
+    def tag_lines(self, t):
+        n = t["raw"]
+        h = n.get("hops_away")
+        via = "MQTT" if n.get("via_mqtt") else ("RF direto" if not h else f"RF · {h} salto{'s' if h > 1 else ''}")
+        ago = fmt_ago(time.time() - n["last_heard"]) if n.get("last_heard") else ""
+        return [t["name"], via, ("ouvido agora" if ago == "agora" else f"ouvido há {ago}") if ago else ""]
 
     def follow_rows(self, t):
         n = t["raw"]
         rows = [["Via", "MQTT" if n.get("via_mqtt") else "RF"]]
+        if not n.get("via_mqtt") and n.get("hops_away") is not None:
+            rows.append(["Saltos", str(n["hops_away"])])
         if n.get("last_heard"):
             rows.append(["Ouvido", fmt_ago(time.time() - n["last_heard"])])
         pos = self.station()
@@ -4211,6 +4358,16 @@ class SondeProvider(TargetMapProvider):
     def color(self, t: dict) -> str:
         return self.DESC if self.flight and self.flight.burst else self.ASC
 
+    def shape(self, t: dict) -> str:
+        return "balloon"
+
+    def tag_lines(self, t: dict) -> list[str]:
+        f = t["raw"]
+        vv = f.get("vel_v")
+        alt = self._n(f["alt"], 0, "m") if isinstance(f.get("alt"), (int, float)) else ""
+        v = f"{vv:+.1f} m/s".replace(".", ",") if isinstance(vv, (int, float)) else ""
+        return [t["name"], " · ".join(x for x in (alt, v) if x), self.phase()[0]]
+
     def track(self, tid: str) -> list:
         return []       # o trajeto é desenhado em render_map (subida e descida com cores diferentes)
 
@@ -4310,8 +4467,8 @@ class SondeProvider(TargetMapProvider):
         return {"tpl": "list", "items": items}
 
     # ---- página Mapa
-    def render_map(self) -> dict:
-        out = super().render_map()
+    def build_map(self) -> dict:
+        out = super().build_map()
         fl = self.flight
         if not fl or not fl.frames or not self._last_center or out.get("tpl") != "plot":
             return out

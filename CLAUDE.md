@@ -11,7 +11,7 @@ mensagem, até 8 KB (descrito no cabeçalho de `firmware/main/ui.c` e em `docs/a
 
 - **Menu inicial (boxes):** AIO, Meshtastic, GPS, ADS-B, AIS, Sondas, SDR, Câmara, Stocks, Rede, Partilhas, Aplicações, Serviços, Sistema.
 - **Dock** (início e Aplicações): Início, Relógio, Captura, Brilho, Som (volume e brilho do uConsole), Bloquear.
-- **Firmware atual:** 0.25.15 (gravado em 25/11).
+- **Firmware atual:** 0.25.20 (gravado em 25/11).
 
 ## Onde está cada coisa
 - `host/providers.py`: telas com dados (system, gps, adsb, ais, mesh, clock, aio, sdr, net, console, windows, camera, stocks).
@@ -26,6 +26,7 @@ mensagem, até 8 KB (descrito no cabeçalho de `firmware/main/ui.c` e em `docs/a
 - `host/emojis.py`: emojis a cores no texto (códigos privados U+100000+, imgfont no ESP).
 - `host/meshbridge.py`: cliente da API local do MeshDeckWeb (`~/PycharmProjects/MeshDeckWeb`, `--local-api on`).
 - `firmware/main/ui.c`: templates, relógio, ecrã apagado, animação de arranque e aviso de mensagem.
+- `firmware/main/aboutanim.c`: cenas do "Sobre o DashDeck" (toque no nome na tela inicial). Os créditos dizem "por CT7BRA": o indicativo aparece aí por decisão do dono (é a única exceção à regra dos dados pessoais).
 - `firmware/main/clockface.c`, `bootanim.c`, `notify.c`: desenho pixel art direto em RGB565 (só contas inteiras por pixel, o C6 não tem FPU).
 
 ## Como trabalhar

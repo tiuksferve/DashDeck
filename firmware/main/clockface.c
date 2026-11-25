@@ -239,6 +239,20 @@ static void icon(const clock_state_t *st, int x, int y, int sc, int out, const u
         }
 }
 
+// ícone 16x16 ampliado para size x size px (tamanhos não inteiros, ex.: 24), com contorno de 1 px
+static void icon_sz(const clock_state_t *st, int x, int y, int size, int out)
+{
+    if (!st->has_icon) return;
+    for (int pass = out >= 0 ? 0 : 1; pass < 2; pass++)
+        for (int dy = 0; dy < size; dy++)
+            for (int dx = 0; dx < size; dx++) {
+                uint8_t v = st->icon[(dy * 16 / size) * 16 + dx * 16 / size];
+                if (!v || v > 7) continue;
+                if (pass == 0) rect(x + dx - 1, y + dy - 1, 3, 3, (uint16_t)out);
+                else put(x + dx, y + dy, st->icon_pal[v]);
+            }
+}
+
 static const char *DOW[] = {"DOM", "SEG", "TER", "QUA", "QUI", "SEX", "S" A_ACUTE "B"};
 static const char *MON[] = {"JAN", "FEV", "MAR", "ABR", "MAI", "JUN", "JUL", "AGO", "SET", "OUT", "NOV", "DEZ"};
 
@@ -329,31 +343,30 @@ static void face_landscape(const clock_state_t *st, const struct tm *tm, float t
     const bool land = BW > BH;
     char buf[24];
     int x = 10;
-    scrim(10, 10, st->has_time ? 160 : 126, st->has_time ? 58 : 34, SCRIM_A);   // hora e data
-    if (st->has_wx) {
-        const int sx = land ? 198 : 10, sy = land ? 8 : 82;
-        scrim(sx + 2, sy + 2, 108, 46, SCRIM_A);                                       // tempo
-    }
+    scrim(10, 10, st->has_time ? 110 : 80, st->has_time ? 36 : 22, SCRIM_A);   // hora e data
+    const int wxx = land ? BW - 108 : 10, wxy = land ? 8 : 62;   // bloco do tempo (canto direito)
+    if (st->has_wx) scrim(wxx + 2, wxy + 2, 96, 38, SCRIM_A);
     if (st->has_time) {
+        // hora pequena (escala 3, como na previsão, com os segundos maiores): a paisagem fica à vista
         snprintf(buf, sizeof(buf), "%02d", tm->tm_hour);
-        x += text5(buf, x, 10, 5, ink, out) + 5;
-        if (tm->tm_sec % 2 == 0) text5(":", x, 10, 5, ink, out);
-        x += 15;
+        x += text5(buf, x, 10, 3, ink, out) + 3;
+        if (tm->tm_sec % 2 == 0) text5(":", x, 10, 3, ink, out);
+        x += 9;
         snprintf(buf, sizeof(buf), "%02d", tm->tm_min);
-        x += text5(buf, x, 10, 5, ink, out) + 6;
+        x += text5(buf, x, 10, 3, ink, out) + 4;
         snprintf(buf, sizeof(buf), "%02d", tm->tm_sec);
-        text5(buf, x, 31, 2, c565(0xFFE9A8), out);
+        text5(buf, x, 17, 2, c565(0xFFE9A8), out);
         snprintf(buf, sizeof(buf), "%s %d %s", DOW[tm->tm_wday % 7], tm->tm_mday, MON[tm->tm_mon % 12]);
-        text5(buf, 11, 54, 2, ink, out);
+        text5(buf, 11, 37, 1, ink, out);
     } else {
-        text5("--:--", 10, 10, 5, ink, out);
+        text5("--:--", 10, 10, 3, ink, out);
     }
     if (!st->has_wx) return;
-    const int ix = land ? 198 : 10, iy = land ? 8 : 82;
-    icon(st, ix, iy, 2, out, NULL);
+    const int ix = wxx, iy = wxy;
+    icon_sz(st, ix + 2, iy + 2, 24, out);   // 24 px (era 32) e temperatura na escala 2 (era 3)
     snprintf(buf, sizeof(buf), "%d" DEG, st->temp);
-    text5(buf, ix + 38, iy + 4, 3, ink, out);
-    int xx = ix, yy = iy + 38;
+    text5(buf, ix + 32, iy + 7, 2, ink, out);
+    int xx = ix + 2, yy = iy + 30;
     snprintf(buf, sizeof(buf), "%d", st->tmax);
     xx += text3("^", xx, yy, 2, c565(0xFF9A7A), out) + 2;
     xx += text3(buf, xx, yy, 2, ink, out) + 8;

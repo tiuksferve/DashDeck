@@ -421,7 +421,7 @@ def render_scene(w: int, h: int, minute: int, kind: str, sr: int, ss: int, epoch
         p = _clamp((minute - sr) / (ss - sr))
         sun_x = 16 + (w - 32) * p
         sy = HZ - 22 - amp * max(e, 0)
-        col = _mix(_hex("#ff8a3c"), _hex("#fff1a0"), _clamp(e * 3))
+        col = _mix(_hex("#ff6a1c"), _hex("#ffb040"), _clamp(e * 3))   # laranja (mais forte junto ao horizonte)
         vis = 1 - cf * .85
         cv.disc(sun_x, sy, 11, col, .18 * vis)
         cv.disc(sun_x, sy, 7, col, vis)
@@ -440,7 +440,7 @@ def render_scene(w: int, h: int, minute: int, kind: str, sr: int, ss: int, epoch
                     nx, ny = xx / r, yy / r
                     ww = math.sqrt(max(0, 1 - ny * ny))
                     lit = nx > k * ww if ph < .5 else nx < -k * ww
-                    cv.bl(mx + xx, my + yy, _hex("#f1ecd2") if lit else _hex("#5a6080"), (1 if lit else .35) * vis)
+                    cv.bl(mx + xx, my + yy, _hex("#f6dc84") if lit else _hex("#5a6080"), (1 if lit else .35) * vis)
 
     n_cl = {"limpo": 0, "parcial": 3, "nublado": 7, "chuva": 9, "trovoada": 9, "neve": 6, "nevoeiro": 2}.get(kind, 0)
     cl = _mix(_hex("#3c4260"), _hex("#f5f7fc"), L)
@@ -559,8 +559,8 @@ def scene_bg(key: str, img: Image.Image):
 
 IC = {k: _hex(v) for k, v in {
     "sun": "#ffd23f", "sunO": "#f49a00", "cw": "#eef1f8", "cs": "#a9b3c8", "cd": "#6f7790", "cds": "#4d5368",
-    "drop": "#5aaaff", "bolt": "#ffe14d", "snow": "#ffffff", "fog": "#c3c8d4", "moon": "#ece6c4",
-    "moonS": "#b0aa86"}.items()}
+    "drop": "#5aaaff", "bolt": "#ffe14d", "snow": "#ffffff", "fog": "#c3c8d4", "moon": "#f2dc8a",
+    "moonS": "#b8a060", "hl": "#ffffff", "ol": "#1c2236", "cb": "#8a93ad", "cbs": "#5f6782"}.items()}
 
 
 def weather_icon(kind: str, night: bool) -> dict:
@@ -602,37 +602,56 @@ def weather_icon(kind: str, night: bool) -> dict:
         p(13, 3, "moon")
         p(14, 9, "moonS", 2)
 
+    def mask(circles, box):
+        """Píxeis de uma nuvem: círculos (cx, cy, r) mais um retângulo (x0, x1, y0, y1)."""
+        m = set()
+        for cx, cy, r in circles:
+            for y in range(16):
+                for x in range(16):
+                    if (x - cx) ** 2 + (y - cy) ** 2 <= r * r + r * .6:
+                        m.add((x, y))
+        x0, x1, y0, y1 = box
+        m |= {(x, y) for x in range(x0, x1 + 1) for y in range(y0, y1 + 1)}
+        return {(x, y) for x, y in m if 0 <= x < 16 and 0 <= y < 16}
+
+    def puff(m, body, shade, hl=True):
+        """Nuvem com volume: brilho no topo à esquerda, sombra nas 2 linhas de baixo e, por cima do que já
+        está desenhado (lua, sol, outra nuvem), um contorno escuro que separa os dois."""
+        for x, y in m:
+            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1)):
+                q = (x + dx, y + dy)
+                if q not in m and 0 <= q[0] < 16 and 0 <= q[1] < 16 and g[q[1] * 16 + q[0]] is not None \
+                        and g[q[1] * 16 + q[0]][0] != "ol":
+                    p(q[0], q[1], "ol", 2)
+        bottom = {}
+        for x, y in m:
+            bottom[x] = max(bottom.get(x, -1), y)
+        cx = sum(x for x, _ in m) / max(1, len(m))
+        for x, y in m:
+            c = body
+            if y >= bottom[x] - 1:
+                c = shade
+            elif hl and (x, y - 1) not in m and x <= cx + 1:
+                c = "hl"
+            p(x, y, c, 2 if c == shade else 1)
+
     def cloud(oy, c, s):
-        circ(5, 10 + oy, 3, c)
-        circ(9, 7 + oy, 4, c)
-        circ(12, 10 + oy, 3, c)
-        for x in range(3, 15):
-            for y in range(10 + oy, 14 + oy):
-                p(x, y, c)
-        for x in range(3, 15):
-            p(x, 13 + oy, s, 2)
-        p(2, 12 + oy, s, 2)
-        p(15, 12 + oy, s, 2)
+        puff(mask([(5, 10 + oy, 3), (9, 7 + oy, 4), (12, 10 + oy, 3)], (3, 14, 10 + oy, 13 + oy)), c, s,
+             hl=c == "cw")
 
     if kind == "limpo":
         moon(7, 8, 5) if night else sun(8, 8, 4)
     elif kind == "parcial":
         if night:
-            circ(10, 5, 4, "moon")
-            circ(12, 3, 3, erase=True)
+            circ(10, 4, 4, "moon")       # quarto crescente mais à vista por cima da nuvem
+            circ(13, 3, 3, erase=True)
+            p(8, 5, "moonS", 2)
         else:
             sun(10, 5, 3)
-        circ(4, 11, 2.4, "cw")
-        circ(7, 9, 3, "cw")
-        circ(11, 11, 2.4, "cw")
-        for x in range(2, 14):
-            for y in range(11, 14):
-                p(x, y, "cw")
-        for x in range(2, 14):
-            p(x, 13, "cs", 2)
-    elif kind == "nublado":
-        circ(12, 5, 3, "cs", 2)
-        cloud(0, "cw", "cs")
+        puff(mask([(4, 11, 2.4), (7, 9, 3), (11, 11, 2.4)], (2, 13, 11, 14)), "cw", "cs")
+    elif kind == "nublado":   # nuvem de trás mais escura, a da frente branca com contorno
+        puff(mask([(9, 4, 3), (12, 3, 3.2), (14, 6, 2)], (7, 15, 5, 7)), "cb", "cbs", hl=False)
+        puff(mask([(4, 11, 2.6), (7, 9, 3.2), (11, 11, 2.6)], (2, 13, 11, 14)), "cw", "cs")
     elif kind == "chuva":
         cloud(-3, "cs", "cd")
         for x, y in ((4, 12), (8, 13), (12, 12), (6, 14), (10, 15)):

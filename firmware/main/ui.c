@@ -13,7 +13,11 @@
 //   tpl "plot": canvas w x h (px) + linhas kv ("rows") ao lado (se couber) ou por baixo:
 //    "plot":{"w":308,"h":136,"cx":..,"cy":..,"R":..,"rings":[px,..],"rlabels":["","50nm"],
 //            "cardinal":true,"cross":true,"center":true,"msg":"..","bg":"chave",
-//            "pts":[[x,y,"#cor","rótulo",rumo|null,cheio(0/1)],..],   coordenadas em px do canvas
+//            "pts":[[x,y,"#cor","rótulo",rumo|null,cheio(0/1),"plane|ship|balloon"?],..],   px do canvas
+//            "tag":[x,y,"#cor","linha1\nlinha2.."]   etiqueta do alvo seguido (até 4 linhas)
+//            "drag":true  mapa arrastável: ao soltar -> btn "pan:dx,dy"; dois toques -> btn "mapinfo";
+//                         um toque (sem 2.º em 0,4 s) -> btn "tap:x,y" (px do canvas);
+//                         arrasto a começar na borda esquerda/direita = swipe de página
 //            "tracks":[["#cor",largura(1|2),"xxyyxxyy.."],..],
 //            "texts":[[x,y,"#cor","texto","l|c|r"],..]  textos em fonte 12 (y = meio), ex.: eixos
 //            "ctrl":[["id","tl|tr|bl|br|l|r|t|b","rótulo"],..]}  botões por cima do canvas (ex.: setas
@@ -76,6 +80,7 @@
 #include "board.h"
 #include "bootanim.h"
 #include "notify.h"
+#include "aboutanim.h"
 #include "esp_random.h"
 #include "bootloader_random.h"
 #include "clockface.h"
@@ -236,6 +241,9 @@ static uint32_t s_icon_gen = 1;   // sobe a cada tela nova
 static void make_badge(lv_obj_t *card, int i, const cJSON *it);
 static void ask_confirm(const char *text, uint32_t yes_color);
 static void draw_tracks(const cJSON *tracks);
+static void draw_icons(const cJSON *pts);
+static void about_end(void);
+static void draw_tag(lv_layer_t *layer, const cJSON *tag, int32_t w, int32_t h);
 static void build_ctrl(const cJSON *ctrl);
 
 static lv_obj_t *s_dock;
@@ -1591,6 +1599,7 @@ static void draw_plot(const cJSON *p)
     const lv_color_t grid = lv_color_hex(C_CARD_PR), sub = lv_color_hex(C_SUB);
     paint_bg(jstr(p, "bg", NULL));
     draw_tracks(cJSON_GetObjectItemCaseSensitive(p, "tracks"));
+    draw_icons(cJSON_GetObjectItemCaseSensitive(p, "pts"));
     lv_layer_t layer;
     lv_canvas_init_layer(s_canvas, &layer);
 
@@ -1648,6 +1657,15 @@ static void draw_plot(const cJSON *p)
         const cJSON *jh = cJSON_GetArrayItem(pt, 4), *jf = cJSON_GetArrayItem(pt, 5);
         int32_t px = (int32_t)jx->valuedouble, py = (int32_t)jy->valuedouble;
         lv_color_t col = parse_color(cJSON_IsString(jc) ? jc->valuestring : NULL, C_TEXT);
+        bool icon = cJSON_IsString(cJSON_GetArrayItem(pt, 6));   // já desenhado por draw_icons
+        if (icon) {
+            if (cJSON_IsString(jl) && jl->valuestring[0]) {
+                bool left = px > w - 45;
+                plot_text(&layer, jl->valuestring, left ? px - 9 : px + 9, py - 7, 50, col,
+                          left ? LV_TEXT_ALIGN_RIGHT : LV_TEXT_ALIGN_LEFT);
+            }
+            continue;
+        }
         if (cJSON_IsNumber(jh)) {
             float rad = (float)jh->valuedouble * (float)M_PI / 180.0f;
             plot_line(&layer, px, py, px + (int32_t)lroundf(10 * sinf(rad)), py - (int32_t)lroundf(10 * cosf(rad)),
@@ -1683,6 +1701,9 @@ static void draw_plot(const cJSON *p)
                   parse_color(cJSON_IsString(jc) ? jc->valuestring : NULL, C_SUB),
                   al[0] == 'c' ? LV_TEXT_ALIGN_CENTER : al[0] == 'r' ? LV_TEXT_ALIGN_RIGHT : LV_TEXT_ALIGN_LEFT);
     }
+
+    const cJSON *tag = cJSON_GetObjectItemCaseSensitive(p, "tag");
+    if (cJSON_IsArray(tag)) draw_tag(&layer, tag, w, h);
 
     const char *msg = jstr(p, "msg", NULL);
     if (msg && msg[0]) {
@@ -1766,6 +1787,192 @@ static void draw_tracks(const cJSON *tracks)
     }
 }
 
+// ---------- ícones dos pontos do mapa (7.º campo de "pts": "plane", "ship" ou "balloon") ----------
+// Escritos direto no buffer RGB565, como os trajetos (por cima deles e por baixo dos rótulos).
+// Triângulos em 1/2 px com o nariz para cima, rodados pelo rumo; contorno escuro de 1 px para se verem
+// em cima do mapa. O balão não roda.
+typedef struct { int8_t x0, y0, x1, y1, x2, y2; } tri8_t;
+static const tri8_t ICON_PLANE[] = {
+    {0, -16, -3, -9, 3, -9},                          // nariz
+    {-3, -9, 3, -9, 3, 10}, {-3, -9, 3, 10, -3, 10},  // fuselagem
+    {0, -7, -17, 5, 17, 5},                           // asas
+    {0, 5, -8, 14, 8, 14},                            // cauda
+};
+static const tri8_t ICON_SHIP[] = {
+    {0, -18, -7, -6, 7, -6},                          // proa
+    {-7, -6, 7, -6, 6, 15}, {-7, -6, 6, 15, -6, 15},  // casco (popa um pouco mais estreita)
+};
+static const tri8_t ICON_BALLOON_NECK[] = {{-4, -12, 4, -12, 0, -6}};
+
+static void fill_tri16(int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t x2, int32_t y2, uint16_t c)
+{
+    // coordenadas em 1/16 px; amostra no centro de cada píxel (só contas inteiras: o C6 não tem FPU)
+    int32_t area = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0);
+    if (!area) return;
+    int32_t mnx = x0 < x1 ? (x0 < x2 ? x0 : x2) : (x1 < x2 ? x1 : x2);
+    int32_t mxx = x0 > x1 ? (x0 > x2 ? x0 : x2) : (x1 > x2 ? x1 : x2);
+    int32_t mny = y0 < y1 ? (y0 < y2 ? y0 : y2) : (y1 < y2 ? y1 : y2);
+    int32_t mxy = y0 > y1 ? (y0 > y2 ? y0 : y2) : (y1 > y2 ? y1 : y2);
+    int32_t ax = mnx >> 4, bx = (mxx >> 4) + 1, ay = mny >> 4, by = (mxy >> 4) + 1;
+    if (ax < 0) ax = 0;
+    if (ay < 0) ay = 0;
+    if (bx >= s_cw) bx = s_cw - 1;
+    if (by >= s_ch) by = s_ch - 1;
+    for (int32_t py = ay; py <= by; py++) {
+        int32_t sy = py * 16 + 8;
+        uint16_t *row = (uint16_t *)(s_cbuf.data + py * s_cbuf.header.stride);
+        for (int32_t px = ax; px <= bx; px++) {
+            int32_t sx = px * 16 + 8;
+            int32_t w0 = (x1 - x0) * (sy - y0) - (y1 - y0) * (sx - x0);
+            int32_t w1 = (x2 - x1) * (sy - y1) - (y2 - y1) * (sx - x1);
+            int32_t w2 = (x0 - x2) * (sy - y2) - (y0 - y2) * (sx - x2);
+            if (area > 0 ? (w0 >= 0 && w1 >= 0 && w2 >= 0) : (w0 <= 0 && w1 <= 0 && w2 <= 0)) row[px] = c;
+        }
+    }
+}
+
+static void fill_circle(int32_t cx, int32_t cy, int32_t r, uint16_t c)
+{
+    for (int32_t y = -r; y <= r; y++) {
+        for (int32_t x = -r; x <= r; x++) {
+            if (x * x + y * y <= r * r + r) px_put(cx + x, cy + y, c);
+        }
+    }
+}
+
+static void draw_tris(const tri8_t *t, int n, int32_t px, int32_t py, int32_t sn, int32_t cs, uint16_t c)
+{
+    // sn, cs: seno e cosseno do rumo x 1024; vértices em 1/2 px -> 1/16 px
+    for (int i = 0; i < n; i++) {
+        int32_t v[6] = {t[i].x0, t[i].y0, t[i].x1, t[i].y1, t[i].x2, t[i].y2}, o[6];
+        for (int k = 0; k < 6; k += 2) {
+            o[k] = px * 16 + 8 + ((v[k] * cs - v[k + 1] * sn) * 8) / 1024;
+            o[k + 1] = py * 16 + 8 + ((v[k] * sn + v[k + 1] * cs) * 8) / 1024;
+        }
+        fill_tri16(o[0], o[1], o[2], o[3], o[4], o[5], c);
+    }
+}
+
+static void draw_icon(const char *shape, int32_t px, int32_t py, const cJSON *jh, uint16_t c)
+{
+    static const int8_t OFF[8][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}, {-1, -1}, {1, -1}, {-1, 1}, {1, 1}};
+    const uint16_t dark = rgb565(0x05070A);
+    if (!strcmp(shape, "balloon")) {
+        for (int pass = 0; pass < 2; pass++) {
+            uint16_t col = pass ? c : dark;
+            int e = pass ? 0 : 1;
+            fill_circle(px, py - 11, 5 + e, col);
+            draw_tris(ICON_BALLOON_NECK, 1, px, py, 0, 1024, col);
+            for (int32_t y = py - 5 - e; y <= py - 2 + e; y++) {   // fio
+                for (int32_t x = px - e; x <= px + e; x++) px_put(x, y, col);
+            }
+            for (int32_t y = py - 1 - e; y <= py + 1 + e; y++) {   // carga
+                for (int32_t x = px - 1 - e; x <= px + 1 + e; x++) px_put(x, y, col);
+            }
+        }
+        return;
+    }
+    const tri8_t *t = !strcmp(shape, "ship") ? ICON_SHIP : ICON_PLANE;
+    int n = t == ICON_SHIP ? (int)(sizeof(ICON_SHIP) / sizeof(*t)) : (int)(sizeof(ICON_PLANE) / sizeof(*t));
+    int32_t sn = 0, cs = 1024;
+    if (cJSON_IsNumber(jh)) {
+        float rad = (float)jh->valuedouble * (float)M_PI / 180.0f;
+        sn = (int32_t)lroundf(1024 * sinf(rad));
+        cs = (int32_t)lroundf(1024 * cosf(rad));
+    }
+    for (int k = 0; k < 8; k++) draw_tris(t, n, px + OFF[k][0], py + OFF[k][1], sn, cs, dark);
+    draw_tris(t, n, px, py, sn, cs, c);
+}
+
+static void draw_icons(const cJSON *pts)
+{
+    const cJSON *pt;
+    int n = 0;
+    cJSON_ArrayForEach(pt, pts) {
+        if (n++ >= PLOT_PTS) break;
+        const cJSON *js = cJSON_GetArrayItem(pt, 6), *jx = cJSON_GetArrayItem(pt, 0), *jy = cJSON_GetArrayItem(pt, 1);
+        if (!cJSON_IsString(js) || !cJSON_IsNumber(jx) || !cJSON_IsNumber(jy)) continue;
+        const cJSON *jc = cJSON_GetArrayItem(pt, 2);
+        lv_color_t col = parse_color(cJSON_IsString(jc) ? jc->valuestring : NULL, C_TEXT);
+        draw_icon(js->valuestring, (int32_t)jx->valuedouble, (int32_t)jy->valuedouble, cJSON_GetArrayItem(pt, 4),
+                  lv_color_to_u16(col));
+    }
+}
+
+// Etiqueta do alvo seguido: "tag":[x,y,"#cor","linha 1\nlinha 2.."] (até 4 linhas, a 1.ª na cor do alvo).
+// Uma caixa ao lado do ponto (do lado com espaço), ligada a ele por um traço.
+static void draw_tag(lv_layer_t *layer, const cJSON *tag, int32_t w, int32_t h)
+{
+    const cJSON *jx = cJSON_GetArrayItem(tag, 0), *jy = cJSON_GetArrayItem(tag, 1);
+    const cJSON *jc = cJSON_GetArrayItem(tag, 2), *jt = cJSON_GetArrayItem(tag, 3);
+    if (!cJSON_IsNumber(jx) || !cJSON_IsNumber(jy) || !cJSON_IsString(jt)) return;
+    int32_t x = (int32_t)jx->valuedouble, y = (int32_t)jy->valuedouble;
+    lv_color_t col = parse_color(cJSON_IsString(jc) ? jc->valuestring : NULL, C_TEXT);
+    char buf[160];
+    strlcpy(buf, jt->valuestring, sizeof(buf));
+    char *ln[4];
+    int n = 0;
+    for (char *p = buf; n < 4 && p; n++) {
+        ln[n] = p;
+        p = strchr(p, '\n');
+        if (p) *p++ = 0;
+    }
+    int32_t tw = 0;
+    for (int i = 0; i < n; i++) {
+        int32_t lw = lv_text_get_width(ln[i], strlen(ln[i]), &dash_font_12, 0);
+        if (lw > tw) tw = lw;
+    }
+    int32_t bw = tw + 10, bh = n * 14 + 6;
+    if (bw > w - 4) bw = w - 4;
+    // 6 posições à volta do ponto (direita/esquerda; acima, ao lado, abaixo): a 1.ª que cabe no canvas sem
+    // tapar os botões do mapa (zoom, Centrar, Soltar); se nenhuma servir, a 1.ª ajustada às bordas
+    lv_area_t btn[CTRL_MAX];
+    int nb = 0;
+    if (s_plot_wrap && s_canvas) {
+        lv_area_t ca;
+        lv_obj_get_coords(s_canvas, &ca);
+        for (uint32_t i = 1; i < lv_obj_get_child_count(s_plot_wrap) && nb < CTRL_MAX; i++) {
+            lv_area_t a;
+            lv_obj_get_coords(lv_obj_get_child(s_plot_wrap, i), &a);
+            btn[nb++] = (lv_area_t){a.x1 - ca.x1 - 3, a.y1 - ca.y1 - 3, a.x2 - ca.x1 + 3, a.y2 - ca.y1 + 3};
+        }
+    }
+    const int32_t cand[6][2] = {{x + 12, y - 12 - bh}, {x - 12 - bw, y - 12 - bh}, {x + 12, y - bh / 2},
+                                {x - 12 - bw, y - bh / 2}, {x + 12, y + 12}, {x - 12 - bw, y + 12}};
+    int32_t bx = cand[0][0], by = cand[0][1];
+    for (int k = 0; k < 6; k++) {
+        int32_t cx0 = cand[k][0], cy0 = cand[k][1], cx1 = cx0 + bw, cy1 = cy0 + bh;
+        if (cx0 < 2 || cy0 < 2 || cx1 > w - 2 || cy1 > h - 2) continue;
+        bool hit = false;
+        for (int b = 0; b < nb && !hit; b++)
+            hit = cx0 < btn[b].x2 && cx1 > btn[b].x1 && cy0 < btn[b].y2 && cy1 > btn[b].y1;
+        if (hit) continue;
+        bx = cx0;
+        by = cy0;
+        goto placed;
+    }
+    if (bx + bw > w - 2) bx = x - 12 - bw;
+    if (bx < 2) bx = 2;
+    if (by < 2) by = y + 12;
+    if (by + bh > h - 2) by = h - 2 - bh;
+placed:;
+    int32_t lx = bx > x ? bx : bx + bw, ly = by > y ? by : by + bh;
+    plot_line(layer, x, y, lx, ly, col, 1);
+    lv_draw_rect_dsc_t rd;
+    lv_draw_rect_dsc_init(&rd);
+    rd.bg_color = lv_color_hex(C_BAR);
+    rd.bg_opa = LV_OPA_80;
+    rd.radius = 4;
+    rd.border_color = col;
+    rd.border_width = 1;
+    lv_area_t ar = {bx, by, bx + bw - 1, by + bh - 1};
+    lv_draw_rect(layer, &rd, &ar);
+    for (int i = 0; i < n; i++) {
+        plot_text(layer, ln[i], bx + 5, by + 3 + 7 + i * 14, bw - 8, i ? lv_color_hex(C_TEXT) : col,
+                  LV_TEXT_ALIGN_LEFT);
+    }
+}
+
 static void ctrl_click_cb(lv_event_t *e)
 {
     intptr_t i = (intptr_t)lv_event_get_user_data(e);
@@ -1812,8 +2019,10 @@ static void build_ctrl(const cJSON *ctrl)
         strlcpy(s_ctrl_ids[i], jid->valuestring, ID_LEN);
         lv_obj_t *b = lv_obj_create(s_plot_wrap);
         lv_obj_remove_style_all(b);
-        lv_obj_set_size(b, LV_SIZE_CONTENT, 26);   // largura do rótulo, no mínimo 30
-        lv_obj_set_style_min_width(b, 30, 0);
+        // rótulos de 1 carácter (zoom + e −) num botão grande, fácil de acertar com o dedo
+        bool big = lbl && strlen(lbl) <= 3 && lv_text_get_width(lbl, strlen(lbl), &dash_font_16, 0) < 20;
+        lv_obj_set_size(b, LV_SIZE_CONTENT, big ? 38 : 30);   // largura do rótulo, no mínimo 30 (46 nos grandes)
+        lv_obj_set_style_min_width(b, big ? 46 : 30, 0);
         lv_obj_set_style_pad_hor(b, 8, 0);
         lv_obj_align(b, al, 0, 0);
         lv_obj_set_style_radius(b, 7, 0);
@@ -1823,12 +2032,12 @@ static void build_ctrl(const cJSON *ctrl)
         lv_obj_set_style_bg_opa(b, LV_OPA_COVER, LV_STATE_PRESSED);
         lv_obj_set_style_border_width(b, 1, 0);
         lv_obj_set_style_border_color(b, lv_color_hex(C_CARD_PR), 0);
-        lv_obj_set_ext_click_area(b, 4);
+        lv_obj_set_ext_click_area(b, big ? 8 : 4);
         lv_obj_remove_flag(b, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_remove_flag(b, LV_OBJ_FLAG_GESTURE_BUBBLE);   // tocar numa seta não é swipe
         lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(b, ctrl_click_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
-        lv_obj_t *l = mk_label(b, &dash_font_16, C_TEXT, lbl ? lbl : sym);
+        lv_obj_t *l = mk_label(b, big ? &dash_font_20 : &dash_font_16, C_TEXT, lbl ? lbl : sym);
         lv_obj_center(l);
         i++;
     }
@@ -2244,6 +2453,121 @@ static void set_pager(const cJSON *msg)
     lv_obj_remove_flag(s_pager, LV_OBJ_FLAG_HIDDEN);
 }
 
+// ---------- mapa arrastado com o dedo (plot "drag":true) ----------
+// Arrastar desloca a imagem já desenhada (translate) e, ao soltar, envia {"t":"btn","btn":"pan:dx,dy"}
+// para o host refazer o mapa. Um arrasto que começa junto à borda esquerda/direita muda de página
+// (swipe); dois toques seguidos enviam "mapinfo" (o host mostra os dados do mapa).
+#define MAP_EDGE 22
+static bool s_map_drag, s_md_moving, s_md_edge;
+static lv_point_t s_md_start;
+static int64_t s_md_last_tap;
+static lv_point_t s_md_last_pt;
+static lv_timer_t *s_md_tap_timer;
+static char s_md_tap_btn[24], s_md_tap_scr[ID_LEN];
+
+static void map_tap_fire(lv_timer_t *t)
+{
+    (void)t;
+    s_md_tap_timer = NULL;   // repeat_count 1: o LVGL apaga o timer
+    if (s_canvas && s_map_drag && !strcmp(s_md_tap_scr, s_screen_id))
+        link_send_event("btn", "id", s_screen_id, "btn", s_md_tap_btn);
+}
+
+static bool map_near_ctrl(lv_point_t p)
+{
+    // um toque perto de um botão do mapa (zoom, Centrar) que falhou o botão não conta como toque no mapa
+    if (!s_plot_wrap) return false;
+    for (uint32_t i = 1; i < lv_obj_get_child_count(s_plot_wrap); i++) {
+        lv_area_t a;
+        lv_obj_get_coords(lv_obj_get_child(s_plot_wrap, i), &a);
+        if (p.x >= a.x1 - 14 && p.x <= a.x2 + 14 && p.y >= a.y1 - 14 && p.y <= a.y2 + 14) return true;
+    }
+    return false;
+}
+
+static void map_ev(lv_event_t *e)
+{
+    if (!s_map_drag || !s_canvas) return;
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_indev_t *in = lv_indev_active();
+    if (!in) return;
+    lv_point_t p;
+    lv_indev_get_point(in, &p);
+    if (code == LV_EVENT_PRESSED) {
+        lv_area_t a;
+        lv_obj_get_coords(s_canvas, &a);
+        s_md_start = p;
+        s_md_moving = false;
+        s_md_edge = p.x - a.x1 < MAP_EDGE || a.x2 - p.x < MAP_EDGE;
+        return;
+    }
+    int32_t dx = p.x - s_md_start.x, dy = p.y - s_md_start.y;
+    if (code == LV_EVENT_PRESSING) {
+        if (!s_md_moving && (LV_ABS(dx) > 6 || LV_ABS(dy) > 6)) s_md_moving = true;
+        if (s_md_moving && !s_md_edge) {
+            lv_obj_set_style_translate_x(s_canvas, dx, 0);
+            lv_obj_set_style_translate_y(s_canvas, dy, 0);
+        }
+        return;
+    }
+    if (code != LV_EVENT_RELEASED) {   // toque perdido: volta ao sítio
+        lv_obj_set_style_translate_x(s_canvas, 0, 0);
+        lv_obj_set_style_translate_y(s_canvas, 0, 0);
+        return;
+    }
+    if (s_md_moving) {
+        s_md_last_tap = 0;
+        if (s_md_edge) {
+            if (LV_ABS(dx) > 40 && LV_ABS(dx) > LV_ABS(dy))
+                link_send_event("swipe", "id", s_screen_id, "dir", dx < 0 ? "left" : "right");
+        } else {
+            char b[32];
+            snprintf(b, sizeof(b), "pan:%d,%d", (int)dx, (int)dy);
+            link_send_event("btn", "id", s_screen_id, "btn", b);   // o translate fica até o mapa novo chegar
+        }
+        return;
+    }
+    if (map_near_ctrl(p)) {
+        s_md_last_tap = 0;
+        return;
+    }
+    int64_t now = esp_timer_get_time();
+    if (s_md_last_tap && now - s_md_last_tap < 400000 && LV_ABS(p.x - s_md_last_pt.x) < 30 &&
+        LV_ABS(p.y - s_md_last_pt.y) < 30) {
+        s_md_last_tap = 0;
+        if (s_md_tap_timer) {   // era um duplo toque: o toque simples não segue
+            lv_timer_delete(s_md_tap_timer);
+            s_md_tap_timer = NULL;
+        }
+        link_send_event("btn", "id", s_screen_id, "btn", "mapinfo");
+    } else {
+        // toque simples: espera para ver se vem o 2.º; depois envia "tap:x,y" (px do canvas)
+        s_md_last_tap = now;
+        s_md_last_pt = p;
+        lv_area_t a;
+        lv_obj_get_coords(s_canvas, &a);
+        snprintf(s_md_tap_btn, sizeof(s_md_tap_btn), "tap:%d,%d", (int)(p.x - a.x1), (int)(p.y - a.y1));
+        strlcpy(s_md_tap_scr, s_screen_id, sizeof(s_md_tap_scr));
+        if (s_md_tap_timer) lv_timer_delete(s_md_tap_timer);
+        s_md_tap_timer = lv_timer_create(map_tap_fire, 400, NULL);
+        lv_timer_set_repeat_count(s_md_tap_timer, 1);
+    }
+}
+
+static void map_drag_set(bool on)
+{
+    s_map_drag = on;
+    if (!s_canvas) return;
+    if (on) {
+        lv_obj_add_flag(s_canvas, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_remove_flag(s_canvas, LV_OBJ_FLAG_GESTURE_BUBBLE);   // o arrasto não é um swipe de página
+        lv_obj_remove_flag(s_canvas, LV_OBJ_FLAG_SCROLL_CHAIN);
+    } else {
+        lv_obj_remove_flag(s_canvas, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_flag(s_canvas, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    }
+}
+
 static void gesture_cb(lv_event_t *e)
 {
     lv_indev_t *indev = lv_indev_active();
@@ -2300,6 +2624,10 @@ static void apply_body(const cJSON *msg, bool rebuild)
             s_plot_wrap = plain_box(s_body);
             lv_obj_remove_flag(s_plot_wrap, LV_OBJ_FLAG_SCROLLABLE);
             s_canvas = lv_canvas_create(s_plot_wrap);
+            lv_obj_add_event_cb(s_canvas, map_ev, LV_EVENT_PRESSED, NULL);
+            lv_obj_add_event_cb(s_canvas, map_ev, LV_EVENT_PRESSING, NULL);
+            lv_obj_add_event_cb(s_canvas, map_ev, LV_EVENT_RELEASED, NULL);
+            lv_obj_add_event_cb(s_canvas, map_ev, LV_EVENT_PRESS_LOST, NULL);
             s_ctrl_sig[0] = '\0';
             s_list = plain_box(s_body);
             int32_t rest = (s_W - 12) - pw - 6;
@@ -2309,9 +2637,14 @@ static void apply_body(const cJSON *msg, bool rebuild)
         }
         const cJSON *pl = cJSON_GetObjectItemCaseSensitive(msg, "plot");
         // "live": o canvas mostra imagens "jpg"; num update só mudam os botões (não apaga a imagem)
+        map_drag_set(jbool(pl, "drag", false));
         if (rebuild || !jbool(pl, "live", false)) {
             if (s_plot_wrap && pl) lv_obj_set_size(s_plot_wrap, jint(pl, "w", 160), jint(pl, "h", 160));
             draw_plot(pl);
+            if (s_canvas) {   // mapa novo: o deslocamento do arrasto acabou
+                lv_obj_set_style_translate_x(s_canvas, 0, 0);
+                lv_obj_set_style_translate_y(s_canvas, 0, 0);
+            }
         }
         if (pl) build_ctrl(cJSON_GetObjectItemCaseSensitive(pl, "ctrl"));
     }
@@ -2491,7 +2824,10 @@ static void upd_timer_cb(lv_timer_t *t)
 static void render_screen(const cJSON *msg)
 {
     s_icon_gen++;   // os ícones da tela nova passam à frente na RAM
-    if (strcmp(s_screen_id, jstr(msg, "id", ""))) jpg_free();
+    if (strcmp(s_screen_id, jstr(msg, "id", ""))) {
+        jpg_free();
+        about_end();   // saiu da tela inicial
+    }
     strlcpy(s_screen_id, jstr(msg, "id", ""), ID_LEN);
     s_tpl = parse_tpl(jstr(msg, "tpl", "menu"));
     if (s_tpl != TPL_CLOCK) clock_exit();
@@ -2720,6 +3056,146 @@ static void ntf_drop_canvas(void)
     s_ntf_arena = 0;
 }
 
+// ---------- "Sobre o DashDeck" (toque no nome no topo da tela inicial) ----------
+// Uma cena animada (aboutanim.c) a toda a largura, no buffer de ecrã reservado, com os créditos por cima:
+// versões, autor e endereço do projeto, que somem ao fim de 7 s. Um toque fecha; fecha sozinha ao fim de
+// ABOUT_SECS. Cada toque no
+// nome mostra a outra cena (Aurora e Hiperespaço alternam).
+#define ABOUT_SECS 45
+#define ABOUT_CREDITS_S 7.0f   // os créditos ficam 7 s; depois só a animação
+static lv_obj_t *s_about, *s_about_cv, *s_about_band;
+static float s_about_until;   // s até fechar sozinha
+static float s_about_cred;    // s em que os créditos aparecem (no Hiperespaço, depois do salto)
+static lv_draw_buf_t s_about_buf;
+static uint16_t *s_about_mem;
+static lv_timer_t *s_about_timer;
+static int64_t s_about_t0;
+static int s_about_var;
+static char s_host_ver[40];
+
+static void about_end(void)
+{
+    if (s_about_timer) lv_timer_delete(s_about_timer);
+    s_about_timer = NULL;
+    if (s_about) lv_obj_delete(s_about);
+    s_about = s_about_cv = s_about_band = NULL;
+    if (s_about_mem && (void *)s_about_mem != (void *)s_arena) free(s_about_mem);
+    s_about_mem = NULL;
+}
+
+static void about_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    float el = (float)(esp_timer_get_time() - s_about_t0) / 1e6f;
+    if (el > s_about_until) {
+        about_end();
+        return;
+    }
+    aboutanim_draw(s_about_mem, (int)(s_about_buf.header.stride / 2), el);
+    lv_obj_invalidate(s_about_cv);
+    // os créditos aparecem em s_about_cred (0,4 s) e desaparecem (0,6 s) ABOUT_CREDITS_S depois
+    if (s_about_band && s_about_cred >= 0) {
+        float c = el - s_about_cred;
+        if (c < 0) {
+        } else if (c < 0.4f) {
+            lv_obj_remove_flag(s_about_band, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_style_opa(s_about_band, (lv_opa_t)(255 * c / 0.4f), 0);
+        } else if (c < ABOUT_CREDITS_S) {
+            lv_obj_remove_flag(s_about_band, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_style_opa(s_about_band, 255, 0);
+        } else if (c < ABOUT_CREDITS_S + 0.6f) {
+            lv_obj_set_style_opa(s_about_band, (lv_opa_t)(255 * (1 - (c - ABOUT_CREDITS_S) / 0.6f)), 0);
+        } else {
+            lv_obj_add_flag(s_about_band, LV_OBJ_FLAG_HIDDEN);
+            s_about_cred = -1;   // acabou
+        }
+    }
+    lv_display_trigger_activity(NULL);
+}
+
+// toque em (x, y): a cena pode usá-lo; senão fecha
+static void about_tap(int32_t x, int32_t y)
+{
+    if (!s_about) return;
+    float el = (float)(esp_timer_get_time() - s_about_t0) / 1e6f;
+    if (aboutanim_touch(x, y, el)) {
+        if (s_about_band) lv_obj_add_flag(s_about_band, LV_OBJ_FLAG_HIDDEN);
+        s_about_cred = -1;
+        s_about_until = el + 30;
+        return;
+    }
+    about_end();
+}
+
+static void about_press_cb(lv_event_t *e)
+{
+    (void)e;
+    lv_indev_t *indev = lv_indev_active();
+    if (!indev) return;
+    lv_indev_wait_release(indev);   // o toque não passa para a tela por baixo
+    lv_point_t p;
+    lv_indev_get_point(indev, &p);
+    about_tap(p.x, p.y);
+}
+
+static void about_show(void)
+{
+    about_end();
+    if (s_clock || s_canvas || s_boot || s_ntf) return;   // o buffer de ecrã está ocupado
+    uint32_t stride = lv_draw_buf_width_to_stride(s_W, LV_COLOR_FORMAT_RGB565);
+    s_about_mem = s_arena ? (uint16_t *)s_arena : heap_caps_malloc(stride * s_H, MALLOC_CAP_8BIT);
+    if (!s_about_mem) {
+        show_toast("DashDeck " DASHDECK_FW_VERSION " por CT7BRA", "info");
+        return;
+    }
+    lv_draw_buf_init(&s_about_buf, s_W, s_H, LV_COLOR_FORMAT_RGB565, stride, s_about_mem, stride * s_H);
+    s_about = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(s_about);
+    lv_obj_set_size(s_about, s_W, s_H);
+    lv_obj_add_flag(s_about, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(s_about, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(s_about, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_event_cb(s_about, about_press_cb, LV_EVENT_PRESSED, NULL);
+    s_about_cv = lv_canvas_create(s_about);
+    lv_obj_remove_flag(s_about_cv, LV_OBJ_FLAG_CLICKABLE);
+    lv_canvas_set_draw_buf(s_about_cv, &s_about_buf);
+    int var = s_about_var;
+    s_about_var = (s_about_var + 1) % ABOUTANIM_VARIANTS;
+    aboutanim_start(var, s_W, s_H);
+    aboutanim_draw(s_about_mem, (int)(stride / 2), 0);
+
+    // créditos numa faixa escura em baixo
+    lv_obj_t *band = s_about_band = lv_obj_create(s_about);
+    lv_obj_remove_style_all(band);
+    lv_obj_set_size(band, s_W, LV_SIZE_CONTENT);
+    lv_obj_align(band, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_color(band, lv_color_hex(0x05070C), 0);
+    lv_obj_set_style_bg_opa(band, LV_OPA_60, 0);
+    lv_obj_set_style_pad_ver(band, 4, 0);
+    lv_obj_set_flex_flow(band, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(band, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(band, 1, 0);
+    lv_obj_remove_flag(band, LV_OBJ_FLAG_CLICKABLE);
+    char ver[72];
+    snprintf(ver, sizeof(ver), "firmware %s%s%s", DASHDECK_FW_VERSION, s_host_ver[0] ? " · host " : "", s_host_ver);
+    mk_label(band, &dash_font_14, 0xFFFFFF, "por CT7BRA");
+    mk_label(band, &dash_font_12, 0x7CC4FF, "github.com/tiuksferve/DashDeck");
+    mk_label(band, &dash_font_12, 0xB8C2D0, ver);
+
+    s_about_t0 = esp_timer_get_time();
+    s_about_until = ABOUT_SECS;
+    s_about_cred = aboutanim_credits_at(var);
+    if (s_about_cred > 0) lv_obj_add_flag(band, LV_OBJ_FLAG_HIDDEN);   // só depois do salto
+    s_about_timer = lv_timer_create(about_timer_cb, 50, NULL);
+    lv_display_trigger_activity(NULL);
+}
+
+static void title_click_cb(lv_event_t *e)
+{
+    (void)e;
+    if (!strcmp(s_screen_id, "home")) about_show();
+}
+
 static void ntf_end(void)
 {
     if (s_ntf_timer) lv_timer_delete(s_ntf_timer);
@@ -2767,6 +3243,7 @@ static void ntf_press_cb(lv_event_t *e)
 
 static void ntf_show(const cJSON *msg)
 {
+    about_end();   // o aviso precisa do buffer de ecrã
     ntf_end();
     if (s_asleep) wake_up();
     if (s_dimmed) {   // relógio escurecido
@@ -3002,6 +3479,9 @@ void ui_init(lv_display_t *disp)
     lv_obj_add_flag(s_back_btn, LV_OBJ_FLAG_HIDDEN);
 
     s_title = mk_label(bar, &dash_font_14, C_TEXT, "DashDeck");
+    lv_obj_add_flag(s_title, LV_OBJ_FLAG_CLICKABLE);      // toque no nome: "Sobre o DashDeck"
+    lv_obj_set_ext_click_area(s_title, 10);
+    lv_obj_add_event_cb(s_title, title_click_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_set_flex_grow(s_title, 1);
     lv_label_set_long_mode(s_title, LV_LABEL_LONG_DOT);
     // com o avião ao centro, o título encolhe e este espaçador ocupa o resto (a hora fica à direita)
@@ -3425,6 +3905,17 @@ void ui_handle(const cJSON *msg)
             upd_drop();
             apply_update(msg);
         }
+    } else if (!strcmp(t, "about")) {   // {"host":"versão"}; "show":n abre a cena n (testes, capturas)
+        const char *hv = jstr(msg, "host", NULL);
+        if (hv) strlcpy(s_host_ver, hv, sizeof(s_host_ver));
+        const cJSON *sh = cJSON_GetObjectItemCaseSensitive(msg, "show");
+        if (cJSON_IsNumber(sh)) {
+            s_about_var = sh->valueint % ABOUTANIM_VARIANTS;
+            about_show();
+        }
+        const cJSON *tp = cJSON_GetObjectItemCaseSensitive(msg, "tap");   // [x, y]: simula um toque
+        if (cJSON_GetArraySize(tp) == 2)
+            about_tap(cJSON_GetArrayItem(tp, 0)->valueint, cJSON_GetArrayItem(tp, 1)->valueint);
     } else if (!strcmp(t, "notify")) {
         ntf_show(msg);
     } else if (!strcmp(t, "idle")) {

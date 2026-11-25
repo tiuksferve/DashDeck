@@ -5,8 +5,9 @@
 | Ação | Como |
 |---|---|
 | Abrir um item | Toque no box ou no cartão |
-| Voltar | Botão **←** no topo, **botão BOOT** da placa ou **Início** no dock (volta ao menu principal) |
+| Voltar | Botão **←** no topo (só na primeira página de uma tela com páginas laterais), **botão BOOT** da placa ou **Início** no dock (volta ao menu principal) |
 | Mudar de página | **Swipe** para a esquerda (seguinte) ou para a direita (anterior). Os pontos na barra de cima mostram a página atual. |
+| Sobre o DashDeck | Toque no nome **DashDeck** no topo da tela inicial: uma cena animada com os créditos (autor CT7BRA, endereço do projeto no GitHub, versões do firmware e do host), que somem ao fim de 7 s, deixando só a animação. Um toque fecha. As duas cenas, **Aurora** (serra à noite com aurora boreal) e **Hiperespaço** (salto entre estrelas até um planeta com anéis; o nome e os créditos só aparecem com o planeta, depois do salto), alternam a cada toque. |
 | Voltar com swipe | Swipe para a direita na primeira página de uma tela (não funciona nos menus com scroll lateral, onde o gesto rola os boxes) |
 | Rolar | Arraste. Os menus em boxes rolam para os lados; listas e detalhes rolam na vertical. |
 | Ações perigosas | Os botões vermelhos (ex.: Parar serviço) e os envios Meshtastic pedem confirmação (**Não** / **Sim**) |
@@ -47,7 +48,7 @@ Precisa do MeshDeckWeb a correr, ligado ao nó e com `--local-api on` (ver [inst
 | **Painel** | Nó local, nós ativos nas últimas 2 h e total, não lidas, último nó ouvido, bateria, uso do canal e posição |
 | **Nós** | Os 30 ouvidos mais recentemente: nome curto e longo, há quanto tempo, SNR e saltos (RF) ou MQTT, e distância. O card tem fundo **verde** se o nó chega por RF e **lilás** se chega por MQTT. Os inativos (mais de 2 h) têm o nome em cinza. Tocar abre o detalhe (via, hardware, bateria, tensão, posição). |
 | **Conversas** | Um card por canal e por nó com quem há mensagens diretas (estas com fundo azul e "· direta"), com a última mensagem. As que têm mensagens por ler vêm primeiro, em laranja, com "N novas". Tocar abre a **conversa**: um card "Escrever para …" no topo e as mensagens dela, da mais recente (recebidas por RF com fundo verde, por MQTT lilás, as minhas em azul). Abrir uma conversa marca só essa como lida, também no MeshDeckWeb. Tocar numa mensagem abre-a inteira, com a via, os saltos (ou o estado de entrega) e o botão **Responder**. |
-| **Mapa** | O mesmo mapa do ADS-B e do AIS com os nós que têm posição: **verde** se o nó é ouvido por RF, **lilás** por MQTT, **cinza** se está inativo há mais de 2 h, com o nome curto. O centro é a posição do nó local; os anéis e as distâncias estão em km. Funcionam os controlos do mapa (zoom, setas, Centrar). No detalhe de um nó com posição, **Seguir no mapa** abre o mapa centrado nele, com a via, há quanto tempo foi ouvido e a distância; os nós que se movem deixam rasto enquanto o dashd corre. |
+| **Mapa** | O mesmo mapa do ADS-B e do AIS com os nós que têm posição: **verde** se o nó é ouvido diretamente por RF, **laranja** por RF com saltos, **lilás** por MQTT, **cinza** se está inativo há mais de 2 h, com o nome curto. O centro é a posição do nó local; os anéis e as distâncias estão em km. Funcionam os controlos do mapa (arrastar com o dedo, zoom, Centrar, dois toques para os dados). No detalhe de um nó com posição, **Seguir no mapa** abre o mapa centrado nele, com uma etiqueta (via: RF direto, RF com N saltos ou MQTT, e há quanto tempo foi ouvido) e, ao lado, a via, os saltos e a distância; os nós que se movem deixam rasto enquanto o dashd corre. |
 
 - Os emojis dos nomes e das mensagens (incluindo bandeiras e tons de pele) aparecem a cores, do tamanho de uma letra.
 - **Responder:** no detalhe de uma mensagem, o botão **Responder** abre as respostas rápidas do `config.toml` já com essa conversa como destino (o canal da mensagem ou, numa direta, o outro nó). O card azul do topo (**Para: …**) deixa mudar o destino. Tocar numa frase pede confirmação, envia e volta à mensagem. O `{pos}` é trocado pela posição.
@@ -103,18 +104,22 @@ seguido e o resumo: quantos há e quantos têm posição; tocar no resumo abre a
   - ADS-B: o avião só transmite o indicativo do voo, por isso o dashd procura a rota no [adsbdb.com](https://www.adsbdb.com) e, se faltar, no [hexdb.io](https://hexdb.io) (só o indicativo sai do uConsole, nunca a posição). O detalhe mostra a **Companhia**, a **Origem**, as **Escalas** e o **Destino** com o código IATA, o nome do aeroporto e o país; o painel do mapa mostra a rota curta. Enquanto procura aparece "a procurar..."; sem resultado, "desconhecida". As bases são feitas por voluntários: uma rota do hexdb registada há mais de 2 anos fica a cinza, porque pode ter mudado. Voos privados e militares (sem indicativo de companhia) não têm rota. As respostas ficam em `~/.cache/dashd/routes.json` (24 h); `routes = false` desliga as consultas.
   - AIS: o navio transmite o **Destino** (texto livre escrito pela tripulação, muitas vezes o código do porto, ex.: `PT LIS`) e a **Chegada** prevista, que aparece na hora local; "(passou)" quando a hora já passou. O porto de saída não faz parte do AIS.
 - **Mapa:**
-  - O mesmo mapa escuro, com cada alvo, um traço na direção do rumo e o nome.
-  - Cor no ADS-B: altitude (verde abaixo de 10 mil pés, azul abaixo de 25 mil, roxo acima, cinza no solo).
+  - O mesmo mapa escuro, com cada alvo desenhado como um **pequeno avião** (ADS-B) ou **navio** (AIS) apontado para o rumo, e o nome. Balizas e estações costeiras do AIS ficam como pontos.
+  - **Etiqueta do alvo seguido:** uma caixa ao lado do alvo, ligada a ele por um traço. ADS-B: indicativo, origem » destino e altitude (com ↑/↓ a subir ou a descer) · velocidade. AIS: nome, "em movimento · velocidade" ou parado (atracado, fundeado, encalhado) e » destino.
+  - Unidades: velocidades em **km/h** e altitudes em **metros** (o readsb e o AIS dão nós e pés; o dashd converte). As distâncias continuam em milhas náuticas.
+  - Cor no ADS-B: altitude (verde abaixo de 3 km, azul abaixo de 7,6 km, roxo acima, cinza no solo).
   - Cor no AIS: tipo (verde carga, vermelho tanque, azul passageiros, laranja pesca, lilás veleiro e recreio, ciano reboque e serviço, cinza balizas e estações).
   - **Trajeto:** uma linha discreta mostra o caminho percorrido por cada alvo. No ADS-B, o dashd guarda os últimos 30 min de cada aeronave enquanto o readsb estiver ligado. No AIS, o trajeto vem do próprio AIS-catcher.
   - O centro é a posição do receptor; sem ela, a do GPS; sem GPS, a média dos alvos (com aviso). O zoom é automático para caber tudo.
-  - **Controlos sobre o mapa:** **−** (canto superior esquerdo) e **+** (canto superior direito) fixam o zoom; passar do limite volta ao automático. As **setas** no meio de cada borda deslocam o mapa um terço da largura ou da altura. Com o mapa deslocado, o zoom deixa de ser automático e aparece o botão **Centrar**, que volta ao centro normal.
+  - **Com o dedo:** arrastar o mapa desloca-o (o zoom deixa de ser automático e aparece **Centrar** no canto inferior esquerdo). **−** e **+** nos cantos de cima fixam o zoom; passar do limite volta ao automático. Com um alvo seguido, **Soltar** fica num canto de baixo. Para mudar de página no mapa, o swipe começa junto à borda esquerda ou direita.
+  - **Um toque** no ícone de um avião, navio, nó ou sonda passa a segui-lo (etiqueta e **Soltar**); um toque no alvo já seguido abre o detalhe dele. Os botões **−** e **+** são grandes, e um toque que falha um botão por pouco não conta como toque no mapa.
+  - **Dois toques** no mapa mostram os dados que antes ficavam por baixo (seguido, zoom, centro, alvos no mapa, mais próximo, cores); **Ver mapa** volta ao mapa. O mapa ocupa assim a tela toda.
   - Os tiles vêm da internet na primeira vez e ficam em `~/.cache/dashd/tiles`. Depois funcionam offline.
 - **Seguir um alvo:**
   - No detalhe, **Seguir no mapa** abre o mapa centrado nesse alvo, com o trajeto mais grosso e na cor dele.
   - O mapa só anda quando o alvo se afasta do centro, para não refazer o fundo a cada atualização.
   - O painel ao lado mostra o alvo (rota, altitude e velocidade, ou tipo, destino, velocidade e estado do navio).
-  - As setas também funcionam enquanto segue: o mapa fica parado onde o deixou até tocar em **Centrar**.
+  - Arrastar também funciona enquanto segue: o mapa fica parado onde o deixou até tocar em **Centrar**.
   - **Soltar** (no mapa, na página Controlo ou no detalhe) volta ao mapa normal.
 
 ### Sondas
@@ -131,7 +136,8 @@ Páginas (swipe):
    muda para ela); tocar na que está a ser ouvida desliga-o.
 2. **Mapa:** o trajeto, a **azul** a subir e a **laranja** a descer, com o ponto de **início**, o ponto
    do **rebentamento** (vermelho, com a altitude) e, a descer, o **pouso previsto** (amarelo, vazio).
-   Zoom e setas como no ADS-B; o mapa segue a sonda.
+   Arrastar e zoom como no ADS-B; o mapa segue a sonda, desenhada como um **pequeno balão**, com uma
+   etiqueta (série, altitude · velocidade vertical e fase do voo).
 3. **Dados:** a última telemetria: sonda e modelo, hora, posição, altitude, velocidades vertical e
    horizontal, rumo, temperatura, humidade, pressão, satélites, bateria, temporizador de corte e
    frequência; com o GPS, a distância, o azimute e a elevação a partir do uConsole.

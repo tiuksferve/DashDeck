@@ -106,6 +106,18 @@ def lcd_safe(v):
     return v
 
 
+def host_version() -> str:
+    """Versão do host para o "Sobre": o commit do repositório (ex.: "0c07d10"), com "+" se há alterações."""
+    try:
+        h = subprocess.run(["git", "-C", str(HERE), "rev-parse", "--short", "HEAD"], capture_output=True,
+                           text=True, timeout=3).stdout.strip()
+        dirty = subprocess.run(["git", "-C", str(HERE), "status", "--porcelain", "--untracked-files=no"],
+                               capture_output=True, text=True, timeout=3).stdout.strip()
+        return h + ("+" if dirty else "")
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
 class Link:
     """Ligação serial com reconexão automática. Entrega eventos numa fila."""
 
@@ -591,6 +603,8 @@ class App:
             scr.update(tpl="text", text=node.get("text", ""))
         else:
             scr.update(tpl="text", text=f"Tipo desconhecido: {t}")
+        if scr.get("page", 0) > 0:   # telas laterais: só a primeira tem o botão de voltar
+            scr["back"] = False
         return scr
 
     def show(self, full: bool = True) -> None:
@@ -609,6 +623,8 @@ class App:
             if self.dock_lost:
                 self.dock_lost = False
                 self.send_dock()
+        if scr.get("tpl", "") != self.last_tpl:   # o ESP só refaz a estrutura num "screen"
+            full = True
         self.last_tpl = scr.get("tpl", "")
         self.send_icons(scr)
         self.send_emojis(scr)
@@ -717,7 +733,7 @@ class App:
             a = t["raw"]
             alt = a.get("alt_baro", a.get("altitude"))
             parts = [prov.routes.short(t["name"]) if t["label"] else "",
-                     "no solo" if alt == "ground" else (f"{alt} ft" if isinstance(alt, (int, float)) else ""),
+                     "no solo" if alt == "ground" else (providers.metres(alt) if isinstance(alt, (int, float)) else ""),
                      f"{a['r_dst']:.0f} nm" if isinstance(a.get("r_dst"), (int, float)) else ""]
             text = " · ".join(p for p in parts if p) or "toque para ver no ADS-B"
             log.warning("squawk %s (%s): %s %s", sq, self.SQUAWK[sq], t["name"], text)
@@ -947,6 +963,7 @@ class App:
                 EMOJI.clear()
                 self.esp_ready = True
                 self.link.send({"t": "bl", "v": self.backlight})
+                self.link.send({"t": "about", "host": host_version()})   # para o "Sobre o DashDeck"
                 self.send_time()
                 self.link.send({"t": "idle", "home": self.screen_off})
                 self.send_status(force=True)

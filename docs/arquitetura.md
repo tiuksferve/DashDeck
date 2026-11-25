@@ -104,6 +104,7 @@ está na placa) seria o próximo passo se um dia a tela ficar solta.
 | `ntfack` (ESP → host) | `anim`, `arena` (0, 1 livre, 2 do plot), `borrowed`, `screen`, `largest0`, `heap`, `largest` | Resposta a cada `notify`: se a animação teve memória e de onde |
 | `redraw` (ESP → host) | — | O aviso usou a arena do plot da tela atual; o host volta a enviar a tela |
 | `update` (host → ESP) | como `screen` | Atualização da tela aberta. Com o dedo no ecrã ou a tela a rolar (e 1,5 s depois de parar) o ESP guarda só a mais recente e aplica-a depois (0.25.15) |
+| `about` (host → ESP) | `host` (versão do host: commit curto, "+" com alterações), `show` (opcional: abre a cena n), `tap` (opcional: `[x, y]`, simula um toque na animação) | Enviado no `hello`; o toque no nome DashDeck da tela inicial abre a animação "Sobre" (`aboutanim.c`) no buffer de ecrã reservado, com os créditos em etiquetas por cima |
 | `shot` (host → ESP) | — | Captura do ecrã: o ESP redesenha tudo e envia cada área que vai para o display |
 | `shotpx` (ESP → host) | `x`, `y`, `w`, `h`, `d` (RGB565 little-endian em base64) | Um bloco de linhas da captura |
 | `shotend` (ESP → host) | `w`, `h` | Fim da captura; o dashd grava o PNG (`kill -USR2` no dashd: `~/Pictures/dashdeck-<data>.png`) |
@@ -134,7 +135,9 @@ está na placa) seria o próximo passo se um dia a tela ficar solta.
 - `rings` (raios em px) e `rlabels`;
 - `cardinal` (N, S, E, W), `cross` (cruz central), `center` (marca do centro);
 - `msg` (aviso no centro) e `bg` (chave do fundo);
-- `pts`: `[x, y, cor, rótulo, rumo|null, cheio]`, com x e y em px do canvas (até 80).
+- `pts`: `[x, y, cor, rótulo, rumo|null, cheio, ícone?]`, com x e y em px do canvas (até 80). O ícone opcional (`"plane"`, `"ship"`, `"balloon"`, 0.25.16) substitui o ponto: avião e navio rodados pelo rumo, com contorno escuro, escritos direto no buffer depois dos trajetos.
+- `drag`: `true` (0.25.17) torna o canvas arrastável: durante o arrasto o ESP desloca a imagem (translate) e, ao soltar, envia `{"t":"btn","btn":"pan:dx,dy"}`; dois toques enviam `btn` `mapinfo`; um toque (sem segundo em 0,4 s, e não junto a um botão) envia `btn` `tap:x,y` em px do canvas, que o host usa para seguir o alvo mais próximo (até 18 px, `map_tap`); um arrasto que começa a menos de 22 px da borda esquerda/direita é um swipe de página. Os providers de mapa (`map_view`) põem o mapa a toda a área sem `rows`, com Centrar/Soltar em `ctrl`.
+- `tag`: `[x, y, cor, "linha1\nlinha2.."]` (0.25.16): etiqueta do alvo seguido (até 4 linhas, a 1.ª na cor do alvo), numa caixa ao lado do ponto com um traço até ele. Os providers de mapa dão as linhas em `tag_lines(t)` e o ícone em `shape(t)`.
 - `tracks`: `[cor, largura (1 ou 2), pontos]`, desenhados por baixo dos pontos. Cada ponto são 4
   caracteres base64url (`A-Z a-z 0-9 - _`), 2 por coordenada, com o valor `px + 1024` (aceita
   pontos fora do canvas). O firmware escreve as linhas direto no buffer (Bresenham), sem alocar
