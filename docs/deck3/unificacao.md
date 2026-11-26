@@ -207,7 +207,7 @@ A partir da fase 1 este documento vive no ramo `unificado`, em `docs/deck3/unifi
 | 0 | Feita a 26/11: tag `v1.0` e ramo `1.x` em `e34eaf3`; ramo `unificado` no worktree `~/PycharmProjects/DashDeck-unificado` |
 | 1 | Feita a 26/11: o commit `5e81354` do Deck³ entrou com o histórico (merge) e as pastas mudaram de sítio: `firmware/` → `firmware/deck3-s3/`, `docs/` → `docs/deck3/` (com o `README.md`), `setup/` → `setup/deck3/`. O `host/` do Deck³ fica para a fase 3. O S3 compila com `firmware/deck3-s3/flash.sh build` |
 
-| 2 | Código feito a 26/11: `Link` → `SerialLink` em `host/transports/serial_link.py` (o texto adaptado às fontes entra por `prepare`); `App.make_link()`; estado do ecrã numa `Session` (`host/session.py`), exposto pelo `App` com os nomes antigos. Verificado com um transporte falso: a mesma navegação no `v1.0` e no ramo envia as mesmas mensagens (só mudam valores ao vivo e a versão do host). **Falta o teste no C6 real** (estava desligado da USB) |
+| 2 | Feita a 26/11: `Link` → `SerialLink` em `host/transports/serial_link.py` (o texto adaptado às fontes entra por `prepare`); `App.make_link()`; estado do ecrã numa `Session` (`host/session.py`), exposto pelo `App` com os nomes antigos. Verificado com um transporte falso: a mesma navegação no `v1.0` e no ramo envia as mesmas mensagens (só mudam valores ao vivo e a versão do host). No C6 real, o motor do ramo ligou-se, fez o `hello` e mostrou o início, o Sistema e o relógio (com o fundo transferido pelo `SerialLink`, com as confirmações) |
 
 ### Uma só pasta (decisão de 26/11)
 
