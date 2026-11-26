@@ -14,8 +14,8 @@ Deck³ a 26/11/2026. Lê-se de uma vez antes de mexer em código.
    através do serviço unido.
 4. **O DashDeck não pode ser afetado.** O `dashd` atual continua a correr até ser substituído
    sem perdas. O firmware do C6 não precisa de mudar.
-5. **Quem conduz é a sessão do DashDeck.** A sessão do Deck³ passa a trabalhar só no firmware
-   do cubo (`Deck3/firmware/`).
+5. **Quem conduz é a sessão do DashDeck.** (Atualizado a 26/11: o firmware do cubo também passa a
+   ser trabalhado aqui, em `firmware/deck3-s3/`; o `~/PycharmProjects/Deck3` deixa de receber código.)
 
 Ainda por fazer (pedir confirmação ao dono antes de cada passo):
 - criar a tag e os ramos, só localmente (o push é sempre do dono);
@@ -195,9 +195,8 @@ em pixel art com o `clockscene.py`), já no motor único.
     créditos do "Sobre", por decisão do dono;
   - commits em inglês, e o push é do dono;
   - documentação em português europeu.
-- **Sessões:** enquanto a união decorre, a sessão do Deck³ só mexe em `Deck3/firmware/`. As mudanças
-  de firmware feitas lá entram no ramo `unificado` copiando a pasta de novo antes da fase 6
-  (ou, melhor, com o commit do Deck³ da fase 0 e um `git subtree`/`merge` do histórico dele).
+- **Sessões:** desde 26/11 já não há sessão do Deck³ nem código novo em `~/PycharmProjects/Deck3`;
+  tudo, incluindo o firmware do cubo, faz-se neste repositório (ver "Uma só pasta" no fim).
 
 ## Progresso
 
@@ -208,21 +207,13 @@ A partir da fase 1 este documento vive no ramo `unificado`, em `docs/deck3/unifi
 | 0 | Feita a 26/11: tag `v1.0` e ramo `1.x` em `e34eaf3`; ramo `unificado` no worktree `~/PycharmProjects/DashDeck-unificado` |
 | 1 | Feita a 26/11: o commit `5e81354` do Deck³ entrou com o histórico (merge) e as pastas mudaram de sítio: `firmware/` → `firmware/deck3-s3/`, `docs/` → `docs/deck3/` (com o `README.md`), `setup/` → `setup/deck3/`. O `host/` do Deck³ fica para a fase 3. O S3 compila com `firmware/deck3-s3/flash.sh build` |
 
-### Trazer mudanças do firmware do Deck³
+### Uma só pasta (decisão de 26/11)
 
-O `flash.sh` do S3 funciona nas duas arrumações (procura `../setup/` e senão `../../setup/deck3/`).
-Convém que a sessão do Deck³ adote a mesma versão do `flash.sh`, para as sincronizações não darem
-conflitos. Para trazer um commit novo do repositório do Deck³ (só a pasta `firmware/`):
+O dono decidiu, a 26/11, que tudo passa a ser gerido neste repositório: o `~/PycharmProjects/Deck3`
+deixa de ser usado para desenvolver e não há sessão própria do Deck³. O firmware do cubo trabalha-se
+diretamente em `firmware/deck3-s3/` (notas em `firmware/deck3-s3/CLAUDE.md`), com
+`firmware/deck3-s3/flash.sh` e o build em `/dev/shm/deck3-s3-build`.
 
-```
-git fetch ~/PycharmProjects/Deck3 main:refs/remotes/deck3/main
-git merge -s ours --no-commit deck3/main
-git rm -rq firmware/deck3-s3 && git read-tree --prefix=firmware/deck3-s3/ -u deck3/main:firmware
-git commit
-```
-
-A pasta passa a ser igual à do Deck³; as mudanças feitas aqui dentro do `firmware/deck3-s3/` perdem-se,
-por isso não se mexe nela neste ramo.
-
-Para compilar aqui sem estragar o build da sessão do Deck³ (`/dev/shm/deck3-build`, que aponta para
-a pasta antiga): `DECK3_BUILD=/dev/shm/deck3-unif-build firmware/deck3-s3/flash.sh build`.
+A pasta antiga só se mantém enquanto o `deckd` que está a correr vier de lá (`Deck3/host/deckd.py`),
+ou seja, até a fase 3 o substituir. O código do host do Deck³ que falta trazer está no histórico
+(commit `5e81354`), por isso a pasta pode apagar-se depois disso.

@@ -14,6 +14,7 @@ mensagem, até 8 KB (descrito no cabeçalho de `firmware/main/ui.c` e em `docs/a
 - **Firmware atual:** 0.25.21 (gravado em 26/11).
 
 ## Onde está cada coisa
+- **Ramo `unificado` (união com o Deck³, em curso):** plano e progresso em `docs/deck3/unificacao.md`; firmware do cubo (ESP32-S3) em `firmware/deck3-s3/` com notas próprias em `firmware/deck3-s3/CLAUDE.md`; instalação e provisionamento do cubo em `setup/deck3/`.
 - `host/providers.py`: telas com dados (system, gps, adsb, ais, mesh, clock, aio, sdr, net, console, windows, camera, stocks).
 - `host/sonderx.py`: receptor RS41 sem janela (serviço `--user` `dashd-sonde`, ligado pelo dashd); usa o `rs41mod` compilado em `~/PycharmProjects/SondeDeck/decoders`. Teste sem rádio: `sonderx.py --replay voo.jsonl --speed 50` (linhas do `rs41mod --json`; um voo real exporta-se de `api.v2.sondehub.org/sonde/<série>`, mas tem indicativos de quem recebeu: não vai para o repositório).
 - **Partilhas** (`SharesProvider`): liga/desliga o Samba (`smbd` + `wsdd`, `systemctl enable/disable --now`); mostra só estado, endereço e aparelhos ligados (`smbstatus -b --json`), nunca as pastas. A configuração do Samba vive fora do repositório (`/etc/samba/smb.conf`). Um provider pode ter `tile()` com campos extra para a box do menu (`dot`, `sub_color`, ...).
