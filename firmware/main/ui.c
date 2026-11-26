@@ -58,6 +58,7 @@
 //                          "wx":{"t":..,"max":..,"min":..,"rain":%,"wind":km/h},
 //                          "icon":{"pal":["#rrggbb"x<=8],"role":[1|2,..],"d":"256 dígitos 0-7"}}
 //   O fundo da paisagem chega por "bg" com "bpp":8 (paleta de 256 cores, 1 byte por px).
+//   "pet":[x da casa, base, luz 0..100, 1 brinca|0 dorme]: o cão junto à casa (só na paisagem).
 //   Swipe lateral troca o mostrador -> {"t":"clock","face":"1"}; vertical muda o brilho ->
 //   {"t":"clock","bl":"60"}; um toque pede confirmação e o 2.º (em 2,5 s) volta -> {"t":"back"}.
 //   "dim":s,"dim_bl":% no clock: escurece após s segundos sem toques; o toque seguinte repõe o brilho.
@@ -159,7 +160,14 @@ static size_t s_bg_next;     // próximo offset esperado
 // Relógio
 static lv_obj_t *s_clock;          // ecrã inteiro por cima de tudo
 static lv_timer_t *s_clock_timer;
-static clock_state_t s_cs;
+static clock_state_t s_cs = {.pet = -1};
+static uint32_t s_clock_full_ms;   // último desenho do ecrã inteiro
+// O fundo da faixa onde o cão corre, guardado na RAM a cada desenho completo: os quadros do cão só
+// repõem esta faixa e desenham o cão (o fundo inteiro pode estar no cartão, lento demais para ~14 qps).
+static uint16_t *s_pet_bg;
+static int s_pet_r[4];
+static bool s_pet_ok;
+static int s_pet_frames;   // stats
 static char s_clock_bg[32];
 static bool s_clock_drawn_bg;      // já houve um fundo válido (durante um envio novo, congela)
 static int s_clock_last_sec = -1;
@@ -2060,6 +2068,44 @@ static bool clock_tm(struct tm *tm)
     return true;
 }
 
+static void pet_bg_save(void)
+{
+    int r[4];
+    s_pet_ok = false;
+    if (!clockface_pet_rect(&s_cs, &r[0], &r[1], &r[2], &r[3])) return;
+    if (r[1] < 0) { r[3] += r[1]; r[1] = 0; }
+    if (r[0] + r[2] > s_cw) r[2] = s_cw - r[0];
+    if (r[1] + r[3] > s_ch) r[3] = s_ch - r[1];
+    if (r[2] <= 0 || r[3] <= 0) return;
+    if (!s_pet_bg || r[2] * r[3] != s_pet_r[2] * s_pet_r[3]) {
+        free(s_pet_bg);
+        s_pet_bg = malloc((size_t)r[2] * r[3] * 2);
+        if (!s_pet_bg) return;
+    }
+    memcpy(s_pet_r, r, sizeof(r));
+    for (int j = 0; j < r[3]; j++)
+        memcpy(s_pet_bg + j * r[2], s_cbuf.data + (r[1] + j) * s_cbuf.header.stride + r[0] * 2, (size_t)r[2] * 2);
+    s_pet_ok = true;
+}
+
+// Um quadro do cão: repõe o fundo da faixa, desenha o cão e manda só essa zona para o ecrã.
+static void clock_pet_frame(void)
+{
+    if (!s_pet_ok || !s_canvas || !s_cmem) return;
+    const int *r = s_pet_r;
+    for (int j = 0; j < r[3]; j++)
+        memcpy(s_cbuf.data + (r[1] + j) * s_cbuf.header.stride + r[0] * 2, s_pet_bg + j * r[2], (size_t)r[2] * 2);
+    clockface_draw_pet((uint16_t *)s_cbuf.data, (int)(s_cbuf.header.stride / 2), s_cw, s_ch, &s_cs, now_ms());
+    lv_area_t a, co;
+    lv_obj_get_coords(s_canvas, &co);
+    a.x1 = co.x1 + r[0];
+    a.y1 = co.y1 + r[1];
+    a.x2 = a.x1 + r[2] - 1;
+    a.y2 = a.y1 + r[3] - 1;
+    lv_obj_invalidate_area(s_canvas, &a);
+    s_pet_frames++;
+}
+
 static void clock_draw(void)
 {
     if (!s_clock || !s_canvas || !s_cmem) return;
@@ -2076,10 +2122,12 @@ static void clock_draw(void)
         if (ok) {
             paint_bg(s_bg_key);
             s_clock_drawn_bg = true;
+            pet_bg_save();
         } else if (s_clock_drawn_bg && !s_bg_ready) {
             return;   // fundo novo a chegar (~1 s): mantém a última imagem
         } else {
             lv_canvas_fill_bg(s_canvas, lv_color_hex(0x101830), LV_OPA_COVER);
+            s_pet_ok = false;
         }
     }
     int64_t t0 = esp_timer_get_time();
@@ -2090,7 +2138,9 @@ static void clock_draw(void)
     if (dt > s_clk_dmax) s_clk_dmax = dt;
     lv_obj_invalidate(s_canvas);
     s_clock_last_sec = s_cs.has_time ? tm.tm_sec : -1;
+    s_clock_full_ms = ms;
 }
+
 
 static void clock_timer_cb(lv_timer_t *t)
 {
@@ -2101,8 +2151,13 @@ static void clock_timer_cb(lv_timer_t *t)
     bool ovl = (int32_t)(s_bright_until - ms) > 0 || (int32_t)(s_dots_until - ms) > 0 ||
                (int32_t)(s_exit_until - ms) > 0;
     bool bg_new = CLK_HAS_SCENE(s_cs.face) && s_bg_ready && !s_clock_drawn_bg;
-    if (clockface_animated(&s_cs) || (ht && tm.tm_sec != s_clock_last_sec) || ovl || ovl != s_ovl_was || bg_new) {
+    // chuva/neve a ~8 qps no ecrã inteiro; o cão a ~14 qps só na faixa onde corre (o fundo tem de estar
+    // na RAM: do cartão seria lento demais)
+    bool anim = clockface_animated(&s_cs) && ms - s_clock_full_ms >= 120;
+    if (anim || (ht && tm.tm_sec != s_clock_last_sec) || ovl || ovl != s_ovl_was || bg_new) {
         clock_draw();
+    } else if (s_cs.face == 0 && s_cs.pet == 1) {
+        clock_pet_frame();
     }
     s_ovl_was = ovl;
     if (!s_dimmed && s_dim_ms && lv_display_get_inactive_time(NULL) > s_dim_ms && s_dim_bl < s_bl) {
@@ -2260,6 +2315,15 @@ static void clock_apply(const cJSON *c)
     s_cs.anim = !strcmp(an, "rain") ? CLK_ANIM_RAIN : !strcmp(an, "storm") ? CLK_ANIM_STORM
               : !strcmp(an, "snow") ? CLK_ANIM_SNOW : CLK_ANIM_NONE;
     strlcpy(s_clock_bg, jstr(c, "bg", ""), sizeof(s_clock_bg));
+    const cJSON *pj = cJSON_GetObjectItemCaseSensitive(c, "pet");   // [x casa, base, luz 0..100, 1 brinca|0 dorme]
+    if (cJSON_IsArray(pj) && cJSON_GetArraySize(pj) >= 4) {
+        s_cs.pet_x = jint_at(pj, 0, 0);
+        s_cs.pet_y = jint_at(pj, 1, 0);
+        s_cs.pet_l = jint_at(pj, 2, 100);
+        s_cs.pet = jint_at(pj, 3, 0) ? 1 : 0;
+    } else {
+        s_cs.pet = -1;
+    }
     // temporizador e alarme: o estado a contar vem sempre do host; os valores ajustados no ESP há menos
     // de 2 s ficam (um update pode ter saído antes de o host receber o ajuste)
     const cJSON *tj = cJSON_GetObjectItemCaseSensitive(c, "timer"), *aj = cJSON_GetObjectItemCaseSensitive(c, "alarm");
@@ -2372,7 +2436,7 @@ static void clock_enter(const cJSON *msg)
             board_set_backlight(s_bl);
         }
         s_clock_drawn_bg = false;
-        s_clock_timer = lv_timer_create(clock_timer_cb, 125, NULL);
+        s_clock_timer = lv_timer_create(clock_timer_cb, 70, NULL);
         ESP_LOGI(TAG, "relógio: heap livre %u", (unsigned)esp_get_free_heap_size());
     }
     s_canvas = lv_obj_get_child(s_clock, 0);   // render_screen limpou o ponteiro
@@ -2398,6 +2462,9 @@ static void clock_exit(void)
     s_bg = NULL;
     s_bg_size = 0;
     s_bg_on_sd = false;
+    free(s_pet_bg);
+    s_pet_bg = NULL;
+    s_pet_ok = false;
     s_bg_ready = false;
     s_bg_key[0] = '\0';
     s_bl = s_bl_saved;
@@ -3723,12 +3790,13 @@ static void ts_report(void)
              "\"gap_max_ms\":%.1f,\"frames\":%d,\"frame_avg_ms\":%.1f,\"frame_max_ms\":%.1f,"
              "\"lock_max_ms\":%.1f,\"lock_type\":\"%s\",\"clk_draws\":%d,\"clk_avg_ms\":%.1f,"
              "\"clk_max_ms\":%.1f,\"heap\":%u,\"largest\":%u,\"icons_ram\":%d,\"icons_sd\":%d,"
-             "\"emojis\":%d,\"emoji_kb\":%u}",
+             "\"emojis\":%d,\"emoji_kb\":%u,\"bg_sd\":%d,\"pet_frames\":%d}",
              s_ts_presses, secs, secs > 0 ? s_ts_reads / secs : 0.0, s_ts_gap_max / 1000.0, s_ts_frames,
              s_ts_frames ? s_ts_fsum / 1000.0 / s_ts_frames : 0.0, s_ts_fmax / 1000.0, s_lock_max / 1000.0,
              s_lock_type, s_clk_dn, s_clk_dn ? s_clk_dsum / 1000.0 / s_clk_dn : 0.0, s_clk_dmax / 1000.0,
              (unsigned)esp_get_free_heap_size(), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
-             ic_ram, ic_sd, em, (unsigned)(em_b / 1024));
+             ic_ram, ic_sd, em, (unsigned)(em_b / 1024), s_bg_on_sd, s_pet_frames);
+    s_pet_frames = 0;
     s_lock_max = 0;
     s_clk_dsum = s_clk_dmax = 0;
     s_clk_dn = 0;

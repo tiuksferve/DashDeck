@@ -408,6 +408,48 @@ static void lander(int x, int y, bool legs, bool flame, float t)
     }
 }
 
+// Os passageiros (um cão branco pequeno, ao tamanho real, e o dono, em píxeis 2 x 2 como o astronauta)
+static void runner_dog(int x, int y, int fr)
+{
+    static const char *const R[2][5] = {
+        {".....#.", "t...##n", "t####g.", ".####..", ".#..#.."},
+        {".....#.", "t...##n", "t####g.", ".####..", "#..#..#"},
+    };
+    const char *const *rows = R[fr];
+    int top = y - 4 - (fr ? 1 : 0);
+    for (int j = 0; j < 5; j++)   // contorno escuro
+        for (int i = 0; i < 7; i++) {
+            if (rows[j][i] == '.') continue;
+            for (int k = 0; k < 4; k++) {
+                int ii = i + (k == 0) - (k == 1), jj = j + (k == 2) - (k == 3);
+                if (ii < 0 || jj < 0 || ii >= 7 || jj >= 5 || rows[jj][ii] == '.') blend(x + ii, top + jj, 0x20242E, 150);
+            }
+        }
+    for (int j = 0; j < 5; j++)
+        for (int i = 0; i < 7; i++) {
+            char ch = rows[j][i];
+            if (ch == '.') continue;
+            put(x + i, top + j, c565(ch == 'g' ? 0xC2C6CE : ch == 'n' ? 0x1E1E28 : 0xF4F4EE));
+        }
+}
+
+static void runner_owner(int x, int y, int fr)
+{
+    static const char *const R[2][7] = {
+        {"s...s", "c.h.c", "c.s.c", "ccccc", ".ccc.", ".ppp.", ".p.p."},
+        {".s.s.", "s.h.s", "c.s.c", "ccccc", ".ccc.", ".ppp.", "p...p"},
+    };
+    s_ox = x - 4;
+    s_oy = y - (fr ? 2 : 0);
+    for (int j = 0; j < 7; j++)
+        for (int i = 0; i < 5; i++) {
+            char ch = R[fr][j][i];
+            if (ch == '.') continue;
+            uint32_t c = ch == 's' ? 0xE6BEA0 : ch == 'h' ? 0x3C281E : ch == 'c' ? 0x3A6EA8 : 0x2A2F45;
+            p2(i, j - 7, c565(c));
+        }
+}
+
 static void x_draw(float e, float t)
 {
     const float TW = 1.6f;
@@ -467,22 +509,96 @@ static void x_draw(float e, float t)
         s_ox = lx;
         s_oy = ly;
         if (((int)(t * 2)) % 2) p2(0, -12, c565(0xFF3030));   // luz no topo a piscar
-        if (d > 1.6f) {   // o astronauta sai e espeta a bandeira
-            s_ox = lx + 14 + (int)(clampf((d - 1.6f) / 1.5f) * 26);
+        // tempos: o astronauta sai (1,6), espeta a bandeira (3,3), a mensagem (4,0); depois dois
+        // passageiros saem a correr para a direita e, quando somem, o astronauta parte a bandeira
+        // no joelho e senta-se, de mãos na cabeça
+        const int ax = lx + 40;
+        const float run_t = 4.0f, own_t = 4.45f;
+        const float gone = own_t + (BW + 8 - lx) / 62.0f + 0.5f;
+        const float b = d - gone;
+        if (d > 1.6f) {
+            s_ox = b >= 0 ? ax : lx + 14 + (int)(clampf((d - 1.6f) / 1.5f) * 26);
             s_oy = ly;
-            int step = (d < 3.1f) && ((int)(t * 6) % 2);
-            uint16_t w = c565(0xF4F4F8);
-            p2(-1, -7, w); p2(0, -7, w); p2(-1, -6, w); p2(0, -6, c565(0xE3B341));   // capacete e visor
-            for (int y = -5; y <= -3; y++) { p2(-1, y, w); p2(0, y, w); }
-            p2(-1 - step, -2, w); p2(0 + step, -2, w);                                 // pernas
-            p2(1, -5, c565(0xB8C4D8));                                                  // mochila
-            if (d > 3.3f) {
-                int fx = 4;
-                for (int y = 1; y <= 10; y++) p2(fx, -y, c565(0xC0C4CC));
-                int wv = (int)(t * 4) % 2;
-                for (int y = 0; y < 3; y++)
-                    for (int x = 1; x <= 5; x++) p2(fx + x, -10 + y + (x > 3 ? wv : 0), c565(0x58A6FF));
-                p2(fx + 2, -9, c565(0xFFFFFF));
+            uint16_t w = c565(0xF4F4F8), visor = c565(0xE3B341), pack = c565(0xB8C4D8);
+            uint16_t pole = c565(0xC0C4CC), cloth = c565(0x58A6FF), wh = c565(0xFFFFFF);
+            if (b < 0) {
+                int step = (d < 3.1f) && ((int)(t * 6) % 2);
+                p2(-1, -7, w); p2(0, -7, w); p2(-1, -6, w); p2(0, -6, visor);   // capacete e visor
+                for (int y = -5; y <= -3; y++) { p2(-1, y, w); p2(0, y, w); }
+                p2(-1 - step, -2, w); p2(0 + step, -2, w);                       // pernas
+                p2(1, -5, pack);                                                  // mochila
+                if (d > 3.3f) {
+                    int fx = 4;
+                    for (int y = 1; y <= 10; y++) p2(fx, -y, pole);
+                    int wv = (int)(t * 4) % 2;
+                    for (int y = 0; y < 3; y++)
+                        for (int x = 1; x <= 5; x++) p2(fx + x, -10 + y + (x > 3 ? wv : 0), cloth);
+                    p2(fx + 2, -9, wh);
+                }
+            } else if (b < 2.0f) {
+                // de pé: arranca o mastro (0-0,5), põe-no atravessado e levanta o joelho (0,5-1,1),
+                // parte-o (1,1) e deixa cair os dois pedaços (1,4-1,8)
+                bool knee = b > 0.5f && b < 1.5f;
+                p2(-1, -7, w); p2(0, -7, w); p2(-1, -6, w); p2(0, -6, visor);
+                for (int y = -5; y <= -3; y++) { p2(-1, y, w); p2(0, y, w); }
+                p2(-1, -2, w);
+                if (knee) { p2(1, -3, w); p2(1, -2, w); } else p2(0, -2, w);   // joelho levantado
+                p2(-2, -5, pack);
+                if (b < 0.5f) {   // o mastro sobe e vem para a mão
+                    int up = (int)(b / 0.5f * 3), fx = 4 - (int)(b / 0.5f * 2);
+                    for (int y = 1; y <= 10; y++) p2(fx, -y - up, pole);
+                    for (int y = 0; y < 3; y++)
+                        for (int x = 1; x <= 5; x++) p2(fx + x, -10 - up + y, cloth);
+                    p2(1, -4, w);   // braço
+                } else if (b < 1.1f) {   // atravessado sobre o joelho, mãos nas pontas
+                    for (int x = -4; x <= 5; x++) p2(x, -4, pole);
+                    for (int y = 0; y < 3; y++)
+                        for (int x = 0; x < 3; x++) p2(6 + x, -6 + y, cloth);
+                    p2(-4, -5, w); p2(5, -5, w);   // mãos
+                } else if (b < 1.4f) {   // partido em V, com um estalo
+                    for (int x = -4; x <= 0; x++) p2(x, -6 - (x + 4) / 2 + 2, pole);
+                    for (int x = 1; x <= 5; x++) p2(x, -4 + (x - 1) / 2 - 2, pole);
+                    for (int y = 0; y < 3; y++)
+                        for (int x = 0; x < 3; x++) p2(6 + x, -5 + y, cloth);
+                    if (b < 1.25f) {
+                        for (int k = 0; k < 5; k++) {
+                            float an = k * 1.2566f;
+                            blend(s_ox + 1 + (int)(cosf(an) * 7), s_oy - 9 + (int)(sinf(an) * 7), 0xFFFFFF, 220);
+                            blend(s_ox + 1 + (int)(cosf(an) * 5), s_oy - 9 + (int)(sinf(an) * 5), 0xFFF0A0, 200);
+                        }
+                    }
+                } else {   // os pedaços caem
+                    float f = clampf((b - 1.4f) / 0.4f);
+                    int dy = (int)(f * 5);
+                    for (int x = -8; x <= -4; x++) p2(x, -6 + dy, pole);
+                    for (int x = 6; x <= 10; x++) p2(x, -6 + dy, pole);
+                    for (int y = 0; y < 2; y++)
+                        for (int x = 0; x < 3; x++) p2(11 + x, -7 + dy + y, cloth);
+                }
+            } else {
+                // sentado na lua, de lado, curvado e com as mãos no capacete
+                for (int x = -8; x <= -4; x++) p2(x, -1, pole);   // os pedaços no chão
+                for (int x = 6; x <= 10; x++) p2(x, -1, pole);
+                for (int x = 0; x < 3; x++) p2(11 + x, -1, cloth);
+                static const char *const SIT[5] = {"..ww..", ".wWWw.", "..WV..", ".PWW..", "..WWWW"};
+                int sag = ((int)(t * 0.7f)) % 3 == 2;   // de vez em quando um suspiro (a cabeça desce)
+                for (int r = 0; r < 5; r++)
+                    for (int k = 0; k < 6; k++) {
+                        char ch = SIT[r][k];
+                        if (ch == '.') continue;
+                        int yy = -5 + r + (r < 3 ? sag : 0);
+                        if (r < 3 && sag && r == 2) continue;   // o visor some quando a cabeça desce
+                        p2(k - 2, yy, ch == 'V' ? visor : ch == 'P' ? pack : w);
+                    }
+            }
+        }
+        if (d > run_t) {   // os dois passageiros saem da nave a correr
+            int fr = ((int)(t * 9)) & 1;
+            int dxp = lx + (int)((d - run_t) * 75);
+            if (dxp < BW + 10) runner_dog(dxp, ground_y(dxp + 3), fr);
+            if (d > own_t) {
+                int ox = lx + (int)((d - own_t) * 62);
+                if (ox < BW + 12) runner_owner(ox, ground_y(ox) + 1, fr);
             }
         }
         if (d > 4.0f) {   // mensagem de missão cumprida

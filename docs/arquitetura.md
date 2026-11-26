@@ -37,7 +37,7 @@ está na placa) seria o próximo passo se um dia a tela ficar solta.
 | `main/ui.c` | Templates, toasts, confirmações, páginas e swipe, canvas do plot, fundo 4 ou 8 bpp, ícones na RAM, dock, selos, modo relógio (ecrã inteiro, gestos, hora local) |
 | `main/bootanim.c` | Tela de carregamento (Pixels ou Nascer do sol, ao acaso com `esp_random`) com barra de progresso, num canvas próprio na camada de cima. Fica até chegar a primeira tela do host (mínimo 5 s); o buffer de 110 KB é libertado no fim. Sem memória, fica o spinner "Aguardando uConsole" |
 | `main/notify.c` | Aviso de mensagem direta ("Ondas LoRa") num canvas 160×96 RGB565A8 (46 KB, transparente) ao centro; o fundo escurecido e a faixa do texto são objetos do LVGL na camada de cima |
-| `main/clockface.c` | Mostradores do relógio em pixel art, desenhados direto no buffer RGB565: fontes 5×7 e 3×5, dígitos em blocos, ícone 16×16, chuva, neve e relâmpagos |
+| `main/clockface.c` | Mostradores do relógio em pixel art, desenhados direto no buffer RGB565: fontes 5×7 e 3×5, dígitos em blocos, ícone 16×16, chuva, neve e relâmpagos, o cão junto à casa da paisagem |
 | `main/fonts/` | Montserrat Medium 12/14/16/20 com ASCII, Latin-1 e `– — … ← → − ≤ ≥`. O fallback para a Montserrat do LVGL dá os símbolos |
 | `components/` | Drivers JD9853 e AXS5106 do demo Waveshare. O `i2c_write` do toque não fazia nada e foi corrigido |
 

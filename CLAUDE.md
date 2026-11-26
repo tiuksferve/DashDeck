@@ -11,7 +11,7 @@ mensagem, até 8 KB (descrito no cabeçalho de `firmware/main/ui.c` e em `docs/a
 
 - **Menu inicial (boxes):** AIO, Meshtastic, GPS, ADS-B, AIS, Sondas, SDR, Câmara, Stocks, Rede, Partilhas, Aplicações, Serviços, Sistema.
 - **Dock** (início e Aplicações): Início, Relógio, Captura, Brilho, Som (volume e brilho do uConsole), Bloquear.
-- **Firmware atual:** 0.25.20 (gravado em 25/11).
+- **Firmware atual:** 0.25.21 (gravado em 26/11).
 
 ## Onde está cada coisa
 - `host/providers.py`: telas com dados (system, gps, adsb, ais, mesh, clock, aio, sdr, net, console, windows, camera, stocks).

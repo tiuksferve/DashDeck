@@ -48,6 +48,9 @@ typedef struct {
     int alh, alm;           // alarme diário
     bool alon;
     int hot;                // zona a ser tocada (realçada)
+    // cão junto à casa da paisagem (mostrador 0): -1 nenhum, 0 a dormir, 1 a brincar com o dono.
+    // pet_x/pet_y: canto esquerdo e base da casa; pet_l: luz do dia 0..100 (escurece as cores)
+    int pet, pet_x, pet_y, pet_l;
 } clock_state_t;
 
 // Zona do mostrador do temporizador em (x, y), ou CZ_NONE.
@@ -59,6 +62,10 @@ void clockface_draw(uint16_t *buf, int stride_px, int w, int h, const clock_stat
 
 // true se o mostrador tem animação (precisa de redesenho frequente).
 bool clockface_animated(const clock_state_t *st);
+// true se o cão está a brincar; a zona onde ele (e a bola) se mexem fica em x, y, w, h.
+bool clockface_pet_rect(const clock_state_t *st, int *x, int *y, int *w, int *h);
+// Só o cão (por cima do fundo já reposto nessa zona), para os quadros entre os desenhos completos.
+void clockface_draw_pet(uint16_t *buf, int stride_px, int w, int h, const clock_state_t *st, uint32_t ms);
 
 // Fonte pixel 5x7 (a mesma do relógio), para outros desenhos (ex.: animação de arranque).
 // Largura do texto em px na escala sc.

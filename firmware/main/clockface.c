@@ -333,10 +333,225 @@ static void particles(const clock_state_t *st, float t)
     }
 }
 
+// ---------- o cão junto à casa (paisagem) ----------
+// Em memória do Romeu, um schnauzer branco. De dia brinca com o dono, que lhe atira uma bola ou uma
+// vareta: ele corre a buscá-la, traz de volta e senta-se à espera da próxima. À noite (e com chuva,
+// neve ou nevoeiro) dorme enrolado ao lado da casa. Os sprites estão virados à direita.
+// '#' pelo branco, 'g' barba e sobrancelhas, 'e' olho, 'n' focinho, 't' cauda (abana).
+
+// Pequeno (schnauzer miniatura): pela altura do joelho do dono.
+static const char *const DOG_RUN[2][5] = {
+    {".....#.", "t...##n", "t####g.", ".####..", ".#..#.."},
+    {".....#.", "t...##n", "t####g.", ".####..", "#..#..#"},
+};
+static const char *const DOG_SIT[5] = {"..#..", "..##n", "t.##g", "####.", ".#.#."};
+static const char *const DOG_SLEEP[3] = {"#..#..", "#.###.", "#####g"};
+
+#define PET_P 9.0f       // s por cada lançamento
+#define PET_V 48.0f      // px/s a correr
+#define PET_GO 1.2f      // o cão parte
+#define PET_THROW 0.8f   // a bola sai da mão
+#define PET_LAND 1.9f    // e cai
+
+static uint32_t mixc(uint32_t a, uint32_t b, int k)   // k 0..100 (0 = a)
+{
+    int r = (int)((a >> 16) & 0xFF) + (((int)((b >> 16) & 0xFF) - (int)((a >> 16) & 0xFF)) * k) / 100;
+    int g = (int)((a >> 8) & 0xFF) + (((int)((b >> 8) & 0xFF) - (int)((a >> 8) & 0xFF)) * k) / 100;
+    int bb = (int)(a & 0xFF) + (((int)(b & 0xFF) - (int)(a & 0xFF)) * k) / 100;
+    return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)bb;
+}
+
+// Sprite com os pés em y e o canto esquerdo em x; left = virado à esquerda (espelhado).
+// Contorno escuro meio transparente, para se ver sobre a relva clara ou a neve.
+static void dog_sprite(const char *const *rows, int nr, int x, int y, bool left, int k, bool wag)
+{
+    const int w = (int)strlen(rows[0]);
+    const int top = y - nr + 1;
+    uint16_t fur = c565(mixc(0xA8B0CC, 0xF4F4EE, k)), beard = c565(mixc(0x737B9A, 0xC2C6CE, k));   // branco ao luar
+    uint16_t dark = c565(0x1E1E28);
+    bool on[8][12] = {{0}};
+    for (int j = 0; j < nr; j++)
+        for (int i = 0; i < w; i++) {
+            char ch = rows[j][i];
+            if (ch == '.') continue;
+            int jj = (ch == 't' && wag) ? j - 1 : j;
+            on[jj + 1][(left ? w - 1 - i : i) + 1] = true;
+        }
+    for (int j = 0; j < nr + 1; j++)
+        for (int i = 0; i < w + 2; i++) {
+            if (on[j][i]) continue;
+            bool n = (j > 0 && on[j - 1][i]) || on[j + 1][i] || (i > 0 && on[j][i - 1]) || (i < 11 && on[j][i + 1]);
+            if (n) blend(x + i - 1, top + j - 1, 0x262A3A, 130);
+        }
+    for (int j = 0; j < nr; j++)
+        for (int i = 0; i < w; i++) {
+            char ch = rows[j][i];
+            if (ch == '.') continue;
+            int jj = (ch == 't' && wag) ? j - 1 : j;
+            put(x + (left ? w - 1 - i : i), top + jj, ch == 'g' ? beard : (ch == 'e' || ch == 'n') ? dark : fur);
+        }
+}
+
+// O dono, virado à esquerda, com os pés em (x.., gy). arm: ângulo do braço a partir de "para baixo"
+// (positivo = para a frente). Devolve a posição da mão.
+static void owner(int x, int gy, float arm, int k, int *hx, int *hy)
+{
+    uint16_t hair = c565(mixc(0x1A120E, 0x3C281E, k)), skin = c565(mixc(0x6A5650, 0xE6BEA0, k));
+    uint16_t shirt = c565(mixc(0x1E2E48, 0x3A6EA8, k)), pants = c565(mixc(0x161A26, 0x2A2F45, k));
+    // contorno suave
+    for (int j = gy - 9; j <= gy + 1; j++)
+        for (int i = x - 2; i <= x + 3; i++) {
+            bool body = (j >= gy - 8 && j <= gy - 7 && (i == x || i == x + 1)) ||
+                        (j >= gy - 6 && j <= gy - 3 && i >= x - 1 && i <= x + 2) || (j >= gy - 2 && j <= gy && (i == x || i == x + 1));
+            if (!body) {
+                bool n = false;
+                for (int d = 0; d < 4 && !n; d++) {
+                    int ii = i + (d == 0) - (d == 1), jj = j + (d == 2) - (d == 3);
+                    n = (jj >= gy - 8 && jj <= gy - 7 && (ii == x || ii == x + 1)) ||
+                        (jj >= gy - 6 && jj <= gy - 3 && ii >= x - 1 && ii <= x + 2) ||
+                        (jj >= gy - 2 && jj <= gy && (ii == x || ii == x + 1));
+                }
+                if (n) blend(i, j, 0x262A3A, 100);
+            }
+        }
+    rect(x, gy - 8, 2, 1, hair);
+    rect(x, gy - 7, 2, 1, skin);
+    put(x + 1, gy - 7, hair);   // nuca
+    rect(x - 1, gy - 6, 4, 4, shirt);
+    rect(x, gy - 2, 1, 3, pants);
+    rect(x + 1, gy - 2, 1, 3, pants);
+    float sx = x + 0.5f, sy = gy - 5.5f, dx = -sinf(arm), dy = cosf(arm);
+    for (int s = 1; s <= 3; s++) put((int)lroundf(sx + dx * s), (int)lroundf(sy + dy * s), s == 3 ? skin : shirt);
+    *hx = (int)lroundf(sx + dx * 4);
+    *hy = (int)lroundf(sy + dy * 4);
+}
+
+static void toy(bool stick, float x, float y, float ang, int k)
+{
+    if (stick) {
+        uint16_t c = c565(mixc(0x2E2012, 0x8A5A2C, k));
+        float cx = cosf(ang), cy = sinf(ang);
+        for (int s = -2; s <= 2; s++) put((int)lroundf(x + cx * s * 0.9f), (int)lroundf(y + cy * s * 0.9f), c);
+    } else {
+        uint16_t c = c565(mixc(0x501818, 0xE03A3A, k)), hi = c565(mixc(0x704040, 0xFF9A8A, k));
+        int bx = (int)lroundf(x), by = (int)lroundf(y);
+        rect(bx, by, 2, 2, c);
+        put(bx, by, hi);
+    }
+}
+
+static float lerpf(float a, float b, float s) { return a + (b - a) * s; }
+static float clamp01(float v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
+
+static void pet_draw(const clock_state_t *st, float t)
+{
+    const int k = st->pet_l < 0 ? 0 : st->pet_l > 100 ? 100 : st->pet_l;
+    const int gy = st->pet_y + 3;   // pés na relva, à frente da casa
+    if (st->pet == 0) {             // a dormir ao lado da casa
+        int x = st->pet_x + 16;
+        dog_sprite(DOG_SLEEP, 3, x, gy, false, k, false);
+        float ph = fmodf(t, 3.0f) / 3.0f;   // um "z" que sobe e se desvanece
+        int zx = x + 5 + (int)(ph * 4), zy = gy - 7 - (int)(ph * 9);
+        int a = (int)(230 * (1 - ph));
+        uint32_t zc = mixc(0xC8D0EA, 0xFFFFFF, k);
+        for (int i = 0; i < 4; i++) { blend(zx + i, zy, zc, a); blend(zx + i, zy + 3, zc, a); }
+        blend(zx + 2, zy + 1, zc, a);
+        blend(zx + 1, zy + 2, zc, a);
+        return;
+    }
+    const int n = (int)(t / PET_P);
+    const float u = fmodf(t, PET_P);
+    const bool stick = n % 3 == 2;   // de vez em quando uma vareta em vez da bola
+    const int ox = st->pet_x - 7;    // dono à esquerda da casa
+    const int xs = ox - 8;           // onde o cão se senta (5 px de largura)
+    int xl = ox - 36 - (n * 37) % 70;   // onde a bola cai
+    if (xl < 8) xl = 8;
+    const float xb = stick ? xl : xl - 3;   // onde fica no chão (a bola ainda salta um pouco)
+    const float run0 = xs - 2, run1 = xb + (stick ? 3 : 2);   // x do cão (sprite de 7) ao partir e ao chegar
+    const float d = run0 - run1, tr = d / PET_V;
+    const float ta = PET_GO + tr, tp = ta + 0.35f, tb = tp + tr;
+
+    // braço: em repouso, puxa atrás, atira, e volta devagar
+    float arm;
+    if (u < 0.3f) arm = 0.3f;
+    else if (u < 0.7f) arm = lerpf(0.3f, -2.5f, (u - 0.3f) / 0.4f);
+    else if (u < 0.85f) arm = lerpf(-2.5f, 2.2f, (u - 0.7f) / 0.15f);
+    else if (u < 1.6f) arm = 2.2f;
+    else arm = lerpf(2.2f, 0.3f, clamp01((u - 1.6f) / 0.5f));
+    int hx, hy;
+    owner(ox, gy, arm, k, &hx, &hy);
+
+    // o cão
+    const int fr = ((int)(t * 9)) & 1;
+    float dx;
+    if (u < PET_GO) {
+        dog_sprite(DOG_SIT, 5, xs, gy, true, k, u > PET_THROW && fr);   // abana a cauda quando a bola sai
+    } else if (u < ta) {
+        dx = run0 - (u - PET_GO) * PET_V;
+        dog_sprite(DOG_RUN[fr], 5, (int)dx, gy - (fr ? 1 : 0), true, k, false);
+    } else if (u < tp) {
+        dx = run1;
+        dog_sprite(DOG_RUN[0], 5, (int)dx, gy, true, k, false);
+        if (u > ta + 0.15f) toy(stick, stick ? dx - 1 : dx - 2, gy - 3, 0, k);   // já na boca
+    } else if (u < tb) {
+        dx = run1 + (u - tp) * PET_V;
+        dog_sprite(DOG_RUN[fr], 5, (int)dx, gy - (fr ? 1 : 0), false, k, false);
+        int mx = (int)dx + 7, my = gy - 3;
+        toy(stick, stick ? mx : mx - 1, stick ? my : my - 1, 0, k);
+    } else {
+        float h = u < tb + 0.4f ? sinf((u - tb) / 0.4f * 3.14159f) * 3 : 0;   // pulinho de alegria
+        dog_sprite(DOG_SIT, 5, xs, gy - (int)h, true, k, fr);
+    }
+
+    // a bola (ou a vareta)
+    if (u < PET_THROW) {
+        toy(stick, hx - 1, hy - 1, 1.2f, k);
+    } else if (u < PET_LAND) {
+        float s = (u - PET_THROW) / (PET_LAND - PET_THROW);
+        float x = lerpf(hx - 1, xl, s), y = lerpf(hy - 1, gy - 1, s) - 22 * 4 * s * (1 - s);
+        toy(stick, x, y, u * 14, k);
+    } else if (u < ta + 0.15f) {
+        if (!stick && u < PET_LAND + 0.3f) {
+            float s = (u - PET_LAND) / 0.3f;
+            toy(false, lerpf(xl, xb, s), gy - 1 - sinf(s * 3.14159f) * 3, 0, k);
+        } else {
+            toy(stick, xb, stick ? gy : gy - 1, 0, k);
+        }
+    } else if (u >= tp && u < tb) {
+        // na boca (desenhada com o cão)
+    } else if (u >= tb && u < PET_P - 0.5f) {
+        toy(stick, ox - 3, stick ? gy : gy - 1, 0, k);   // largada aos pés do dono
+    } else if (u >= tb) {
+        toy(stick, hx - 1, hy - 1, 1.2f, k);             // o dono apanha-a para o próximo lançamento
+    }
+}
+
+void clockface_draw_pet(uint16_t *buf, int stride_px, int w, int h, const clock_state_t *st, uint32_t ms)
+{
+    B = buf;
+    BW = w;
+    BH = h;
+    BS = stride_px;
+    if (st->face == 0 && st->pet >= 0) pet_draw(st, (float)(ms % 3600000u) / 1000.0f);
+}
+
+bool clockface_pet_rect(const clock_state_t *st, int *x, int *y, int *w, int *h)
+{
+    if (st->face != 0 || st->pet != 1) return false;
+    int x0 = st->pet_x - 7 - 36 - 70 - 8;
+    if (x0 < 0) x0 = 0;
+    *x = x0;
+    *y = st->pet_y + 3 - 40;
+    *w = st->pet_x - x0;
+    *h = 46;
+    return true;
+}
+
 // ---------- mostradores ----------
 
 static void face_landscape(const clock_state_t *st, const struct tm *tm, float t)
 {
+    if (st->face == 0 && st->pet >= 0) pet_draw(st, t);
     particles(st, t);
     const uint16_t ink = c565(0xFFFFFF);
     const int out = c565(0x0E1020);

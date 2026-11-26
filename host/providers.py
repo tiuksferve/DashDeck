@@ -2899,6 +2899,10 @@ class ClockProvider(Provider):
                 log.debug("relógio: cena %s em %.2f s", key, time.monotonic() - t0)
             clock["bg"] = key
             scr["_bg"] = self._scene
+            if scene == "lago":   # o cão junto à casa: brinca de dia com tempo seco, senão dorme
+                hx, base = self.cs.house_spot(w, h)
+                play = not night and kind in ("limpo", "parcial", "nublado")
+                clock["pet"] = [hx, base, round(self.cs.light(minute, sr, ss) * 100), int(play)]
         return scr
 
 

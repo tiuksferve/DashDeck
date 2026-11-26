@@ -179,6 +179,9 @@ Depois de 5 min sem toques, o relógio escurece para 10%. O toque seguinte repõ
   - A previsão muda a cena: nuvens, chuva, neve (também nas montanhas e no telhado), nevoeiro e trovoada com relâmpagos.
   - **Inverno** (dezembro a fevereiro): a terra, as colinas e o telhado ficam com neve, mesmo sem nevar (`winter_snow`).
   - Em cima ficam a hora, os segundos e a data; à direita, o ícone, a temperatura, a máxima (↑), a mínima (↓) e a probabilidade de chuva.
+  - **O cão**, em memória do Romeu, um schnauzer branco:
+    - De dia, com tempo seco, brinca junto à casa: o dono atira-lhe uma bola (ou, de vez em quando, uma vareta), ele corre a buscá-la, traz de volta e senta-se à espera da próxima.
+    - À noite, e com chuva, neve ou nevoeiro, dorme enrolado ao lado da casa.
   - A cena é refeita a cada 5 min.
 - **Digital retro:**
   - Dígitos grandes em blocos, como num LCD, com os "8" apagados por trás e os dois pontos a piscar.

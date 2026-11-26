@@ -371,6 +371,16 @@ def _city(cv: "_Canvas", w: int, h: int, HZ: int, L: float, G: float, cf: float,
                 cv.p[y * w + xx] = _mul(cv.p[y * w + xx], .8)
 
 
+def house_spot(w: int, h: int) -> tuple[int, int]:
+    """Canto esquerdo e base da casa da paisagem do lago (o ESP desenha o cão ao lado)."""
+    return w - 94, h - 22 - 5
+
+
+def light(minute: int, sr: int, ss: int) -> float:
+    """Luz do dia 0..1 (0 = noite), a mesma que escurece a paisagem."""
+    return _clamp((sun_elev(minute, sr, ss) + .12) / .4)
+
+
 def render_scene(w: int, h: int, minute: int, kind: str, sr: int, ss: int, epoch: float,
                  scene: str = "lago", winter: bool = False) -> Image.Image:
     """Paisagem sem a hora nem as partículas (essas são do ESP). Devolve uma imagem RGB w x h.
@@ -381,7 +391,7 @@ def render_scene(w: int, h: int, minute: int, kind: str, sr: int, ss: int, epoch
     HZ = h - 22 if scene in ("lago", "cidade") else int(h * 0.56)
     cf = CLOUD_FACTOR.get(kind, 0)
     e = sun_elev(minute, sr, ss)
-    L = _clamp((e + .12) / .4)
+    L = light(minute, sr, ss)
     G = _clamp(1 - abs(e) / .3) * (1 - cf * .6)
     snowy = kind == "neve" or winter
     top = _mix(_hex("#070b24"), _hex("#2f6fd0"), L)
@@ -516,7 +526,7 @@ def render_scene(w: int, h: int, minute: int, kind: str, sr: int, ss: int, epoch
             for r in range(hgt - 2):
                 wd = 1 + 2 * int(r / 2.2)
                 cv.rect(tx - wd // 2, base - hgt + r, wd, 1, snow_c if snowy and r % 3 == 0 else tree)
-        hx = w - 94
+        hx, _ = house_spot(w, h)
         wall = _mix(_hex("#3c3236"), _hex("#d6b892"), L)
         roof = snow_c if snowy else _mix(_hex("#3a1a20"), _hex("#b0473a"), L)
         cv.rect(hx, base - 8, 13, 8, wall)
