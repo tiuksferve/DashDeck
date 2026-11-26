@@ -1,0 +1,14 @@
+# Build do ESP-IDF (o flash.sh compila em /dev/shm/deck3-build) e componentes descarregados
+firmware/build/
+firmware/managed_components/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/dependencies.lock.bak
+# Gerado no build e com o caminho absoluto do componente local (o BSP em firmware/components)
+firmware/dependencies.lock
+# Python
+__pycache__/
+*.pyc
+# Editores
+.idea/
+.vscode/

@@ -1,0 +1,11 @@
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<!-- Anuncia o deckd na rede local: o Deck³ procura "_deck3._tcp" por mDNS. -->
+<service-group>
+  <name replace-wildcards="yes">Deck3 em %h</name>
+  <service>
+    <type>_deck3._tcp</type>
+    <port>8765</port>
+    <txt-record>v=1</txt-record>
+  </service>
+</service-group>
