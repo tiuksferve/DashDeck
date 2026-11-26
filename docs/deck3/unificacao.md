@@ -1,0 +1,228 @@
+# Unificação DashDeck + Deck³
+
+Documento de passagem para a sessão do DashDeck, que vai conduzir a união. Escrito na sessão do
+Deck³ a 26/11/2026. Lê-se de uma vez antes de mexer em código.
+
+## Decisões já tomadas pelo dono
+
+1. **Um só projeto, um só serviço no uConsole** a servir os dois ecrãs: o DashDeck pela USB e o
+   Deck³ por Wi-Fi (no futuro também pela internet). Não é uma biblioteca partilhada que um projeto
+   instala do outro.
+2. **A base é o repositório do DashDeck** (`github.com/tiuksferve/DashDeck`), que mantém o histórico e o URL.
+3. **Golden version:** a tag `v1.0` no estado atual do `main` e o ramo `1.x` para correções.
+   A união faz-se no ramo `unificado` e só entra no `main` quando o DashDeck funcionar igual
+   através do serviço unido.
+4. **O DashDeck não pode ser afetado.** O `dashd` atual continua a correr até ser substituído
+   sem perdas. O firmware do C6 não precisa de mudar.
+5. **Quem conduz é a sessão do DashDeck.** A sessão do Deck³ passa a trabalhar só no firmware
+   do cubo (`Deck3/firmware/`).
+
+Ainda por fazer (pedir confirmação ao dono antes de cada passo):
+- criar a tag e os ramos, só localmente (o push é sempre do dono);
+- decidir o nome final do projeto unido. Pode manter-se "DashDeck"; o GitHub redireciona se mais
+  tarde for renomeado.
+
+## Estado de partida
+
+| | DashDeck | Deck³ |
+|---|---|---|
+| Repositório | `~/PycharmProjects/DashDeck`, 23 commits, `main` limpo e igual ao remoto, sem tags | `~/PycharmProjects/Deck3`, **sem commits** (tudo por versionar) |
+| Ecrã | ESP32-C6, 320×172, LVGL 9.2, USB | ESP32-S3, AMOLED 480×480, LVGL 9.6, Wi-Fi |
+| Firmware | 0.25.21 | 0.6.0 (`firmware/main/deck.h`) |
+| Serviço | `dashd` (`host/dashd.py`), `dashd-sonde` | `deckd` (`host/deckd.py`), `deck3-sonde` |
+| Estado | `~/.config/dashd`, `~/.cache/dashd` | `~/.config/deck3`, `~/.cache/deck3`, `~/.local/state/deck3` |
+
+**O Deck³ é hoje um fork do host do DashDeck.** Os ficheiros `engine.py`, `providers.py` e os
+módulos de apoio foram copiados do DashDeck a 26/11, e as diferenças são poucas e estão listadas
+abaixo. Unir é, no essencial, voltar a ter um só motor e juntar-lhe o transporte WebSocket e as
+partes próprias do cubo.
+
+## O host do Deck³, ficheiro a ficheiro (`Deck3/host/`)
+
+| Ficheiro | Origem | O que fazer na união |
+|---|---|---|
+| `engine.py` | `dashd.py` sem a classe `Link` (serial) nem `main()`; tem o gancho `make_link()` e lê `cfg["engine"]` | **Não copiar.** Aplicar ao `dashd.py` só o gancho `make_link()` (ver diferenças) |
+| `providers.py` | cópia do DashDeck | **Não copiar.** Levar só as duas opções novas (ver diferenças) |
+| `camclient`, `clockscene`, `emojis`, `icons`, `maptiles`, `meshbridge`, `routes`, `stocks`, `wltop`, `xdgapps`, `sonderx` | cópias; só caminhos e nomes mudados | Não copiar |
+| `deckd.py` | do Deck³ | **Levar.** Tem `WsLink`, `Dev`, `DeckApp` (subclasse de `App`) e `Server` (WebSocket, `/fw/`, `/ctl`) |
+| `ws.py` | do Deck³, WebSocket em Python puro (sem dependências) | Levar |
+| `deckproviders.py` | do Deck³: box **Config** (Ecrã e som, Bateria, Wi-Fi, Bluetooth, Aparelho, Sensores) | Levar. Os providers usam `self.session` (o aparelho) |
+| `deckctl.py` | do Deck³: controlo local por `POST /ctl` (`status`, `last`, `notify`, `send`, `ota`, `put`, `ls`, `rm`, `tap`, `swipe`, `back`, `home`) | Levar. Útil para testar telas sem tocar no ecrã, também no DashDeck |
+| `fakedeck.py` | do Deck³: aparelho falso por WebSocket, para testes | Levar |
+| `config.toml` | `[deckd]`, `[keys]`, `[about]` + o menu do DashDeck copiado | Juntar as secções novas ao config do DashDeck |
+| `deck3-sonde.service`, `deckd.service` | do Deck³ | Passam a desnecessárias (um serviço, uma sonda) |
+
+Ficheiros de `Deck3/setup/`: `install.sh` (dependências `python3-serial`, `python3-pil`, `python3-gi`;
+regra udev com `DECK3_SERIAL`), `provision.py` (grava Wi-Fi e token no cubo pela USB), `deck3.service.xml`
+(anúncio mDNS `_deck3._tcp`, porta 8765), `99-deck3.rules`, `idf-env.sh` (IDF para Xtensa/S3),
+`sd_exemplos.py`.
+
+## Diferenças do fork que devem voltar ao motor único
+
+Todas foram feitas para não interferir com o DashDeck. No motor único passam a opções ou a
+comportamento por aparelho.
+
+1. **`make_link()`** (`engine.py`): `App.__init__` chama `self.make_link()` em vez de criar `Link(...)`.
+   No motor único isto torna-se uma lista de transportes (ver arquitetura).
+2. **`cfg["engine"]` em vez de `cfg["dashd"]`**: só nome. No motor único fica `[dashd]` ou outro
+   nome, à escolha.
+3. **GPS, `tty = ""`** (`providers.py`, `NmeaReader`): com o tty vazio, o leitor usa só o gpsmux e
+   nunca abre a porta série.
+4. **Meshtastic, `mark_read`** (opção do nó, por omissão `true`): com `false`, abrir uma conversa
+   não a marca como lida no MeshDeckWeb.
+5. **Sistema** (`SystemProvider`): o Deck³ tirou a página 2 (rotação do DashDeck), porque o estado
+   do cubo está em Config › Aparelho. No motor único, a página da rotação só aparece no aparelho que
+   tem rotação, ou seja, o C6.
+6. **Caminhos e textos:** `dashd`/`DashDeck` passaram a `deck3`/`Deck³` (logs, `~/.config`, capturas
+   `deck3-*.png`, unidade `deck3-sonde`). No motor único volta a haver um só conjunto de caminhos.
+
+## O que o `DeckApp` acrescenta ao motor (`Deck3/host/deckd.py`)
+
+Isto é o que hoje é "do cubo" e tem de passar a ser **por aparelho**:
+
+- **Transporte `WsLink`:** `send(msg, raw)`, `acks`, `jpg_acks`, `dev_id`, `local_ip`. Tem a mesma
+  interface que o `Link` serial e aplica `lcd_safe` através de `link.safe`.
+- **Tamanho:** `canvas_area()` devolve `(444, 372)`, contra o `esp_w`/`esp_h` do C6.
+- **Hora:** `send_time()` envia `epoch` + `tz` (regra POSIX de `/etc/localtime`); o ESP trata
+  sozinho da mudança de hora.
+- **Ainda não implementado no cubo** (desligado): `send_icons`, `send_emojis`, `send_bg`, `send_dock`,
+  `send_header` estão vazios no `DeckApp`. É a "fase 2" do Deck³: fundos dos mapas, JPEG da câmara,
+  ícones e emojis, dock. No motor único decide-se pelas `caps` do `hello`.
+- **Botões físicos:** a secção `[keys]` (`boot_short = back`, `boot_long = home`,
+  `user_short = open:config`, `pwr_short = bl`; também `shell:` e `launch:`).
+- **Mensagens próprias** (`DECK_MSGS`): `key`, `imu`, `mic`, `bat`, `bt`, `wifi_scan`, `bat_low`,
+  `offline_log`, `cfg`, `sd`, `ls`, `file`, `rm`, `slider`, `ota`, `pong`.
+- **No `hello`:**
+  - adota o brilho que o aparelho guardou (`bl`);
+  - envia `idle` (`dim`/`off`), `about` (linhas do `[about]`) e `bat?`.
+- **A cada minuto (`tick60`):** pede `bat?`.
+- **Registos:**
+  - `bateria-<id>.csv`;
+  - `eventos-<id>.jsonl`: eventos de fora de casa, entregues em lotes com `last`;
+  - em ambos os casos, `notify-send` com bateria fraca.
+- **`control()`:** `status`, `last`, `inject` (simula toques), `send`, `ota` (serve o `.bin` em `/fw/`).
+- **Compatibilidade com os providers do Deck³:**
+  - `bl`, `any_session()`, `provider()` (põe `session`);
+  - `handle_result()` aceita um texto como aviso;
+  - `current_provider()`.
+
+## Arquitetura proposta
+
+```
+host/
+  dashd.py            motor: menus, telas, detalhes, serviços, avisos (um só)
+  providers.py ...    providers partilhados
+  deckproviders.py    box Config (só aparece em aparelhos que a anunciem)
+  transports/
+    serial_link.py    Link atual (DashDeck, USB, acks bgack/iconack/emojiack/jpgack)
+    ws_link.py        WsLink + Server (Deck³, Wi-Fi; mais tarde internet com TLS ou VPN)
+firmware/
+  (atual do C6)       ou firmware/dashdeck-c6/
+  deck3-s3/           Deck3/firmware/ inteiro (BSP local incluído)
+```
+
+### O ponto difícil: um motor, vários ecrãs
+
+O `App` guarda hoje **um** estado de navegação: `stack`, tela aberta, página, detalhe, `esp_ready`,
+`backlight`, `rotation`, `esp_w`/`esp_h`, últimos envios. Para servir os dois ao mesmo tempo:
+
+- **Uma sessão por aparelho** com esse estado e o seu transporte. O motor recebe eventos
+  `(sessão, tipo, dados)` e responde para a sessão de onde vieram.
+- **Os providers continuam partilhados.** É isso que resolve o SDR: um só readsb/AIS/GPS e as duas
+  telas a mostrá-lo ao mesmo tempo. O `enter`/`leave` dos providers que ligam serviços (ADS-B e AIS
+  ligam o SDR ao entrar e desligam-no ao sair) passa a contar sessões: só desliga quando a última
+  sessão sai.
+- **Adaptação por aparelho**, a partir das `caps` e do tamanho do `hello`:
+  - `canvas_area`;
+  - o que enviar: ícones, emojis, fundos, dock;
+  - fontes (`lcd_safe`/`_EXTRA`: as fontes do S3 têm o ³ e cobrem Latin-1);
+  - `[keys]`;
+  - páginas que só fazem sentido num aparelho (rotação no C6, Config no cubo).
+- **Avisos globais** (squawk de emergência, mensagens Meshtastic, alarme do relógio): vão para
+  todas as sessões ligadas.
+- **Ordem sugerida:** primeiro refatorar o `App` para "uma sessão" explícita sem mudar
+  comportamento (o DashDeck tem de continuar igual); depois permitir várias.
+
+### `hello` do Deck³ (o que anuncia)
+
+`dev: "deck3"`, `fw`, `w`/`h` (480×480), `bl`, `vol`, `sd`, e `caps` com: `vox`, `notify`, `audio`,
+`mic`, `imu`, `keys`, `ota`, `confirm`, `slider`, `chart`, `bat`, `wifi_scan`, `about`, `sd`, `image`,
+`scene`, `away`. O C6 não envia `caps`: a falta de `caps` significa "DashDeck clássico".
+
+### Templates que o cubo tem e o C6 não
+
+Estão todos em `Deck3/docs/protocolo.md`:
+- `kv` com sliders e gráficos (`tpl: panel`);
+- `log` (`update` com `append`);
+- `image`;
+- `scene` (`tpl: vox`);
+- `img`/`bg_img` nas boxes do menu;
+- `notify` com modelo de voxels.
+
+`plot` é uma adaptação do `plot.c` do DashDeck e aceita os mesmos dados.
+
+## Plano por fases (cada uma verificável)
+
+| Fase | O que se faz | Feito quando |
+|---|---|---|
+| 0 | Tag `v1.0`, ramo `1.x`, ramo `unificado` (num `git worktree`, para não mexer na pasta em uso). Fazer o primeiro commit do Deck³ no repositório dele, para haver um ponto de partida | O dono confirma e faz o push |
+| 1 | Trazer `Deck3/firmware`, `docs` e `setup` para o ramo `unificado` (só pastas, sem tocar no código do DashDeck) | O firmware do S3 compila a partir do novo sítio (`flash.sh build`) |
+| 2 | Refatorar o `App` para uma sessão explícita e o `Link` para um transporte trocável | O `dashd` do ramo, numa cópia do config, funciona no C6 exatamente como o `v1.0` |
+| 3 | Juntar o transporte WebSocket, o `DeckApp` e o `deckproviders` | O cubo funciona com o serviço unido (com o `deckd` parado). O `deckctl.py` e o `fakedeck.py` passam |
+| 4 | Várias sessões ao mesmo tempo; os providers com serviços contam sessões | C6 e cubo ligados ao mesmo tempo, ADS-B nos dois, sem conflitos no SDR |
+| 5 | Instalador único (pergunta que aparelhos há), migração do estado (`~/.config/deck3` → novo sítio), um só serviço de sondas, docs | Instalação limpa num uConsole só com o cubo, e só com o C6 |
+| 6 | Desligar `dashd` e `deckd` antigos, juntar `unificado` ao `main` | O dono confirma |
+
+Depois da união continua a fase 2 do Deck³ (fundos, câmara, ícones, dock) e a fase 3 (relógio
+em pixel art com o `clockscene.py`), já no motor único.
+
+## Cuidados
+
+- **USB:**
+  - o S3 e o C6 têm o mesmo VID:PID (303a:1001), por isso as regras udev têm de distinguir os dois
+    pelo `ATTRS{serial}` (o serial não vai para o git);
+  - o `provision.py` reconhece o cubo pelo `hello` com `"dev":"deck3"`;
+  - abrir a porta USB do S3 reinicia o chip.
+- **Firmware do S3:** o ambiente é `Deck3/setup/idf-env.sh` (Xtensa) e o build vai para
+  `/dev/shm/deck3-build`. Não usar o `~/esp/idf-env.sh` do DashDeck, que é RISC-V/C6. O BSP tem
+  correções locais (`firmware/components/.../DECK3.md`), entre elas o `bsp_display_lock` invertido.
+- **Memória do S3:** a RAM interna é muito justa. Medir com `deckctl.py send '{"t":"stats"}'` e
+  depois `deckctl.py last stats`. Valor de referência: heap ~47 KB, maior bloco ~27 KB.
+- **AXP2101:** não mexer nas tensões. A corrente de carga é escolha do dono (botão em Config › Bateria).
+- **Bluetooth:** está fora do firmware (esgotava a RAM). O OTA por Wi-Fi existe mas fica para rever.
+- **Regras gerais:**
+  - não pôr dados pessoais nos ficheiros (indicativo, utilizador, número de série); a exceção são os
+    créditos do "Sobre", por decisão do dono;
+  - commits em inglês, e o push é do dono;
+  - documentação em português europeu.
+- **Sessões:** enquanto a união decorre, a sessão do Deck³ só mexe em `Deck3/firmware/`. As mudanças
+  de firmware feitas lá entram no ramo `unificado` copiando a pasta de novo antes da fase 6
+  (ou, melhor, com o commit do Deck³ da fase 0 e um `git subtree`/`merge` do histórico dele).
+
+## Progresso
+
+A partir da fase 1 este documento vive no ramo `unificado`, em `docs/deck3/unificacao.md`.
+
+| Fase | Estado |
+|---|---|
+| 0 | Feita a 26/11: tag `v1.0` e ramo `1.x` em `e34eaf3`; ramo `unificado` no worktree `~/PycharmProjects/DashDeck-unificado` |
+| 1 | Feita a 26/11: o commit `5e81354` do Deck³ entrou com o histórico (merge) e as pastas mudaram de sítio: `firmware/` → `firmware/deck3-s3/`, `docs/` → `docs/deck3/` (com o `README.md`), `setup/` → `setup/deck3/`. O `host/` do Deck³ fica para a fase 3. O S3 compila com `firmware/deck3-s3/flash.sh build` |
+
+### Trazer mudanças do firmware do Deck³
+
+O `flash.sh` do S3 funciona nas duas arrumações (procura `../setup/` e senão `../../setup/deck3/`).
+Convém que a sessão do Deck³ adote a mesma versão do `flash.sh`, para as sincronizações não darem
+conflitos. Para trazer um commit novo do repositório do Deck³ (só a pasta `firmware/`):
+
+```
+git fetch ~/PycharmProjects/Deck3 main:refs/remotes/deck3/main
+git merge -s ours --no-commit deck3/main
+git rm -rq firmware/deck3-s3 && git read-tree --prefix=firmware/deck3-s3/ -u deck3/main:firmware
+git commit
+```
+
+A pasta passa a ser igual à do Deck³; as mudanças feitas aqui dentro do `firmware/deck3-s3/` perdem-se,
+por isso não se mexe nela neste ramo.
+
+Para compilar aqui sem estragar o build da sessão do Deck³ (`/dev/shm/deck3-build`, que aponta para
+a pasta antiga): `DECK3_BUILD=/dev/shm/deck3-unif-build firmware/deck3-s3/flash.sh build`.

@@ -8,3 +8,10 @@ __pycache__/
 # Editores
 .idea/
 .vscode/
+# Firmware do Deck³ (ESP32-S3): o flash.sh compila em /dev/shm/deck3-build
+firmware/deck3-s3/build/
+firmware/deck3-s3/managed_components/
+firmware/deck3-s3/sdkconfig
+firmware/deck3-s3/sdkconfig.old
+firmware/deck3-s3/dependencies.lock
+firmware/deck3-s3/dependencies.lock.bak

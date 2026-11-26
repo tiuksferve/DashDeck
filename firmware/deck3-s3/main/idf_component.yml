@@ -1,0 +1,8 @@
+dependencies:
+  idf: ">=5.5"
+  # BSP oficial da Waveshare: display CO5300 (QSPI), toque CST9220, ES8311/ES7210, SD, I2C
+  waveshare/esp32_s3_touch_amoled_2_16: "^2.0.1"
+  waveshare/qmi8658: "^2.0.2"
+  lvgl/lvgl: "~9.6.0"   # o esp_lvgl_adapter do BSP precisa do 9.3+
+  espressif/esp_websocket_client: "^1.4.0"
+  espressif/mdns: "^1.8.0"
