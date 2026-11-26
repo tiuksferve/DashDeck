@@ -15,7 +15,8 @@ latência baixa e não precisa de emparelhamento. Uma bateria no pino VBAT (o ca
 está na placa) seria o próximo passo se um dia a tela ficar solta.
 
 ```
- dashd.py ─┬─ Link (thread)      serial /dev/esp-dash, reconexão, fila de eventos, fila de acks
+ dashd.py ─┬─ SerialLink         transports/serial_link.py: serial /dev/esp-dash, reconexão, fila de eventos, fila de acks
+           ├─ Session            session.py: estado do ecrã ligado (transporte, pilha, páginas, tamanho, o que já foi enviado)
            ├─ App (loop)         pilha de navegação, build() de cada tela, envio só do que mudou
            ├─ providers.py       system · gps (NmeaReader) · adsb, ais (+maptiles) · mesh (+meshbridge) · clock (+clockscene) · aio (aiov2_ctl) · sdr · net · console · windows (+wltop)
            ├─ icons.py           ícones (tema GTK, ficheiros, emoji) → RGB565A8 32×32
@@ -176,6 +177,7 @@ enquanto o ESP desenhava, e o mapa aparecia pela metade. O fundo só é usado se
 
 - **Navegação:** pilha de nós do `config.toml`. Os providers podem acrescentar telas de detalhe (`on_tap` devolve uma tela).
 - **Atualização:** a cada `refresh` s, a tela aberta é reconstruída e só é enviada se o JSON mudou.
+- **Sessão e transporte:** o estado de cada ecrã vive numa `Session` (`host/session.py`); o `App` expõe os campos dela como atributos (`app.stack`, `app.esp_w`, ...). O transporte vem de `App.make_link()` (por omissão o `SerialLink` de `host/transports/serial_link.py`), o ponto onde entrará o WebSocket do Deck³ (ver `docs/deck3/unificacao.md`).
 - **Ligação:** reabre a porta sozinha, descarta o lixo acumulado e ignora `hello` repetidos (menos de 2 s). Em cada `hello` volta a enviar brilho, estado, dock, ícones e a tela.
 - **Rotação:** se o `rot` do `hello` for diferente da rotação pedida (`config.toml` ou, se existir, a escolhida no menu em `~/.config/dashd/state.json`), envia `rot` uma vez e o ESP reinicia. Pelo menu (Sistema > DashDeck), o dashd grava a escolha, envia `rot` e não manda telas até ao `hello` seguinte.
 - **Janelas abertas:** `wltop.py` liga-se ao socket do compositor (`$XDG_RUNTIME_DIR/wayland-0`), pede o `zwlr_foreign_toplevel_manager_v1` e junta título, `app_id` e estado de cada janela em duas idas e voltas. Cada ação abre uma ligação nova (os identificadores não passam de uma ligação para outra), procura a janela pelo `app_id` e título (ou posição) e envia `activate` (com o `wl_seat`), `set_minimized` ou `close`.

@@ -19,12 +19,12 @@ import tomllib
 import unicodedata
 from pathlib import Path
 
-import serial  # pyserial
-
 import emojis
 import icons
 import providers
 import xdgapps
+from session import Session, delegate_to_session
+from transports.serial_link import SerialLink
 
 log = logging.getLogger("dashd")
 HERE = Path(__file__).resolve().parent
@@ -118,77 +118,7 @@ def host_version() -> str:
         return ""
 
 
-class Link:
-    """Ligação serial com reconexão automática. Entrega eventos numa fila."""
-
-    def __init__(self, port: str, events: queue.Queue):
-        self.port = port
-        self.events = events
-        self.acks: queue.Queue = queue.Queue()   # confirmações "bgack" do ESP (fluxo do mapa)
-        self.jpg_acks: queue.Queue = queue.Queue()   # "jpgack" (visor da câmara, noutra thread)
-        self.ser: serial.Serial | None = None
-        self.lock = threading.Lock()
-        threading.Thread(target=self._run, daemon=True, name="link").start()
-
-    def send(self, msg: dict, raw: bool = False) -> None:
-        """raw=True: sem adaptar o texto à fonte do ESP (dados base64, ex.: imagens da câmara)."""
-        data = (json.dumps(msg if raw else lcd_safe(msg), ensure_ascii=False, separators=(",", ":")) + "\n").encode()
-        with self.lock:
-            if not self.ser:
-                return
-            try:
-                self.ser.write(data)
-            except (serial.SerialException, OSError) as e:
-                log.warning("erro ao escrever: %s", e)
-                self._close()
-
-    def _close(self) -> None:
-        try:
-            if self.ser:
-                self.ser.close()
-        except Exception:
-            pass
-        self.ser = None
-
-    def _run(self) -> None:
-        while True:
-            if not self.ser:
-                try:
-                    s = serial.Serial(self.port, 115200, timeout=0.5)
-                    time.sleep(0.2)
-                    s.reset_input_buffer()  # descarta hellos/logs acumulados enquanto ninguém lia
-                    with self.lock:
-                        self.ser = s
-                    log.info("ligado a %s", self.port)
-                    self.events.put(("connected", None))
-                except (serial.SerialException, OSError):
-                    time.sleep(2)
-                    continue
-            try:
-                line = self.ser.readline()
-            except (serial.SerialException, OSError, TypeError) as e:
-                log.warning("ligação perdida: %s", e)
-                with self.lock:
-                    self._close()
-                self.events.put(("disconnected", None))
-                time.sleep(1)
-                continue
-            if not line:
-                continue
-            text = line.decode("utf-8", errors="replace").strip()
-            if text.startswith("{"):
-                try:
-                    m = json.loads(text)
-                    if m.get("t") in ("bgack", "iconack", "emojiack"):
-                        self.acks.put(m)
-                    elif m.get("t") == "jpgack":
-                        self.jpg_acks.put(m)
-                    else:
-                        self.events.put(("msg", m))
-                except json.JSONDecodeError:
-                    log.debug("JSON inválido do ESP: %r", text)
-            elif text:
-                log.debug("esp: %s", text.lstrip("# "))
+Link = SerialLink   # nome antigo
 
 
 # --------------------------------------------------------------------------- ações
@@ -252,14 +182,17 @@ STATE_PT = {"active": ("ativo", "ok"), "inactive": ("parado", "sub"), "failed": 
             "activating": ("iniciando", "warn"), "deactivating": ("parando", "warn")}
 
 
+@delegate_to_session
 class App:
     def __init__(self, cfg: dict):
+        # estado do ecrã ligado (hoje um só): os self.stack, self.esp_w, ... abaixo vivem na sessão
+        self.session = Session()
         self.cfg = cfg
         d = cfg.get("dashd", {})
         self.refresh = float(d.get("refresh", 2.0))
         self.backlight = int(d.get("backlight", 80))
         self.events: queue.Queue = queue.Queue()
-        self.link = Link(d.get("port", "/dev/esp-dash"), self.events)
+        self.link = self.make_link()
         self.root = {"id": "home", "type": "submenu", "label": d.get("title", "DashDeck"),
                      "items": cfg.get("menu", [])}
         self.stack: list[dict] = [self.root]
@@ -297,6 +230,10 @@ class App:
         self.screen_off = int(d.get("screen_off", 0))                 # s sem toques na tela inicial
         self.icons_sent: set[str] = set()
         self._icon_src: dict[str, str] = {}
+
+    def make_link(self):
+        """Transporte do ecrã: por omissão o DashDeck pela USB (o Deck³ terá o seu, por WebSocket)."""
+        return SerialLink(self.cfg.get("dashd", {}).get("port", "/dev/esp-dash"), self.events, prepare=lcd_safe)
 
     # ---- estado guardado (escolhas feitas no próprio DashDeck)
     STATE = Path.home() / ".config" / "dashd" / "state.json"
