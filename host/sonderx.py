@@ -26,8 +26,9 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+import paths
 
-DIR = Path.home() / ".cache" / "dashd" / "sonde"
+DIR = paths.CACHE / "sonde"
 DECODERS = [Path.home() / "PycharmProjects/SondeDeck/decoders/rs1729/demod/mod/rs41mod",
             Path("/usr/local/bin/rs41mod"), Path("/usr/bin/rs41mod")]
 KEYS = ("frame", "lat", "lon", "alt", "vel_h", "vel_v", "heading", "sats", "temp", "humidity", "pressure",

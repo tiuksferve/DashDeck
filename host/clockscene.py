@@ -16,10 +16,11 @@ import urllib.request
 from pathlib import Path
 
 from PIL import Image
+import paths
 
 log = logging.getLogger("dashd.clock")
 
-CACHE = Path.home() / ".cache" / "dashd" / "weather.json"
+CACHE = paths.CACHE / "weather.json"
 API = ("https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
        "&current=temperature_2m,weather_code,wind_speed_10m,is_day"
        "&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset"

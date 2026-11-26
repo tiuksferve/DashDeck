@@ -15,12 +15,13 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
+import paths
 
 log = logging.getLogger("dashd.stocks")
 
 CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{}?range=1d&interval=5m"
 LOGO = "https://companiesmarketcap.com/img/company-logos/64/{}.png"
-LOGOS = Path.home() / ".cache" / "dashd" / "logos"
+LOGOS = paths.CACHE / "logos"
 UA = {"User-Agent": "Mozilla/5.0 (X11; Linux aarch64)"}   # o Yahoo recusa pedidos sem browser
 
 

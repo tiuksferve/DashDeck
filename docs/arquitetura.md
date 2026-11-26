@@ -18,6 +18,7 @@ está na placa) seria o próximo passo se um dia a tela ficar solta.
  dashd.py ─┬─ SerialLink         transports/serial_link.py: serial /dev/esp-dash, reconexão, fila de eventos, fila de acks
            ├─ Session            session.py: estado do ecrã ligado (transporte, pilha, páginas, tamanho, o que já foi enviado)
            ├─ App (loop)         pilha de navegação, build() de cada tela, envio só do que mudou
+           │                     (deckd.py: DeckApp, a mesma classe para o Deck³, por WebSocket; docs/deck3/)
            ├─ providers.py       system · gps (NmeaReader) · adsb, ais (+maptiles) · mesh (+meshbridge) · clock (+clockscene) · aio (aiov2_ctl) · sdr · net · console · windows (+wltop)
            ├─ icons.py           ícones (tema GTK, ficheiros, emoji) → RGB565A8 32×32
            ├─ stocks.py          cotações (Yahoo Finance) e logotipos em cache (box Stocks)

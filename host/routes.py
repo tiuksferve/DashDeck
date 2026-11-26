@@ -17,12 +17,13 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+import paths
 
 log = logging.getLogger("dashd.routes")
 
 API = "https://hexdb.io/api/v1"
 ADSBDB = "https://api.adsbdb.com/v0/callsign/"
-CACHE = Path.home() / ".cache" / "dashd" / "routes.json"
+CACHE = paths.CACHE / "routes.json"
 ROUTE_TTL, MISS_TTL = 24 * 3600, 6 * 3600
 OLD = 2 * 365 * 86400          # rota registada há mais de 2 anos: mostrada a cinza
 VALID = re.compile(r"^[A-Z]{3}[0-9][0-9A-Z]{0,4}$")   # voo comercial: 3 letras ICAO + número

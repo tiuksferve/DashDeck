@@ -1,0 +1,506 @@
+# Configuração do deckd (host/deckd.py): o menu do Deck³. Edite e reinicie (systemctl --user restart deckd).
+# Não é preciso regravar o aparelho.
+#
+# O motor e os providers vieram do DashDeck (as mesmas funções), mas são do Deck³: não é preciso ter o
+# DashDeck instalado. Se os dois estiverem no mesmo uConsole, cada um tem o seu estado (~/.config/deck3).
+#
+# Tipos de item (os do DashDeck): submenu · provider · service · shell (cmd, done) · launch (cmd) · text · home
+# Ícones em voxels: vox = deck3 block chart plane ship radio gps wifi gear clock apps cam power mail chip
+#                         audio home (ou do cartão SD: deck3/vox/<nome>.json). Sem vox, usa-se o "icon" do
+#                   DashDeck (gps, wifi, settings...) ou um bloco na "color".
+
+[deckd]
+port = 8765          # WebSocket + firmware OTA; anunciado por mDNS como _deck3._tcp
+title = "Deck³"
+refresh = 2.0        # segundos entre atualizações da tela aberta (só vai o que mudou)
+backlight = 80       # 0..100 (o aparelho guarda o último brilho escolhido)
+bl_levels = [20, 50, 80, 100]
+dim = 60             # escurece após N s sem toques (AMOLED: evita marcas); 0 = nunca
+off = 300            # apaga após N s; um toque, um botão ou agitar o cubo acorda
+
+# Botões do aparelho: <botão>_<gesto> = ação
+#   botões: boot (BOOT), user (IO18), pwr (PWR, pelo AXP2101; o toque longo de vários segundos desliga)
+#   gestos: short, long, double
+#   ações: back · home · bl (alterna o brilho) · open:<id do menu> · shell:<comando> · launch:<comando> · none
+[keys]
+boot_short = "back"
+boot_long = "home"
+user_short = "open:config"
+user_double = "shell:grim ~/Pictures/deck3-$(date +%Y%m%d-%H%M%S).png"
+pwr_short = "bl"
+
+# Créditos da cena "Sobre o Deck³" (toque no título "Deck³" da tela inicial)
+[about]
+lines = ["O DashDeck elevado ao cubo", "ESP-IDF · LVGL · voxels"]
+
+[[menu]]
+id = "config"
+label = "Config"
+vox = "gear"
+type = "provider"
+provider = "config"
+battery_mah = 1000   # capacidade da bateria ligada ao Deck³ (para as estimativas)
+# Páginas: ecrã e som (brilho, volume, escurecer/apagar) · bateria (gráfico e estimativa) · Wi-Fi ·
+# Bluetooth · aparelho (estado, testes, reiniciar) · sensores (microfone, IMU)
+
+[[menu]]
+id = "aio"
+label = "AIO"
+icon = "power"
+img = "board.svg"   # placa eletrónica (host/icons/board.svg)
+color = "#3FB950"
+type = "provider"
+provider = "aio"
+# Interruptores da placa AIO v2 (GPS, LoRa, SDR, USB) pelo aiov2_ctl. Tocar liga; desligar pede
+# confirmação. Desligar o LoRa pára o meshtasticd (como na aplicação).
+# cmd = "/usr/local/bin/aiov2_ctl"
+# Perfis (box "Perfis"): um toque põe os recursos (on/off: GPS LORA SDR USB) e os serviços
+# (start/stop: unidades systemd) como no perfil; pede confirmação com o que vai mudar.
+# O perfil que já corresponde ao estado atual aparece como "Ativo". Sem perfis aqui, usa estes mesmos.
+
+  [[menu.profiles]]
+  id = "mesh"
+  label = "Meshtastic"
+  img = "emoji:📶"
+  on = ["GPS", "LORA"]
+  off = ["SDR"]
+  stop = ["readsb", "ais-catcher"]
+
+  [[menu.profiles]]
+  id = "adsb"
+  label = "ADS-B"
+  img = "emoji:✈"
+  on = ["GPS", "SDR"]
+  start = ["readsb"]          # do grupo "sdr": pára o ais-catcher
+
+  [[menu.profiles]]
+  id = "ais"
+  label = "AIS"
+  img = "emoji:🚢"
+  on = ["GPS", "SDR"]
+  start = ["ais-catcher"]
+
+  [[menu.profiles]]
+  id = "eco"
+  label = "Poupança"
+  img = "emoji:🔋"
+  off = ["GPS", "LORA", "SDR", "USB"]
+  stop = ["readsb", "ais-catcher"]
+
+[[menu]]
+id = "mesh"
+label = "Meshtastic"
+icon = "mail"
+color = "#67EA94"
+type = "provider"
+provider = "mesh"
+# Dados pela API local do MeshDeckWeb (127.0.0.1:8080): a API do meshtasticd só aceita um cliente.
+# Páginas (swipe): Painel · Nós · Conversas (toque abre a conversa; Responder na mensagem) · Mapa. Não lidas = selo vermelho.
+channel = 0                       # canal inicial das respostas rápidas (troca-se na tela)
+quick = ["OK", "A caminho", "Cheguei", "Preciso de ajuda", "Posição: {pos}"]
+start_cmd = "cd $HOME/PycharmProjects/MeshDeckWeb && nohup ./start.sh --connect >> $HOME/.config/meshdeck/server.log 2>&1 &"
+
+[[menu]]
+id = "gps"
+label = "GPS"
+icon = "gps"
+color = "#3FB950"
+type = "provider"
+provider = "gps"
+# Se o meshtasticd usar o GPS (GPS.SerialPath no config.yaml), a posição vem do Meshtastic;
+# senão o deckd lê NMEA direto deste tty.
+tty = "/dev/ttyAMA0"
+baud = 9600
+
+[[menu]]
+id = "adsb"
+label = "ADS-B"
+icon = "eye"
+img = "emoji:✈"   # imagem colorida no lugar do símbolo
+color = "#58A6FF"
+type = "provider"
+provider = "adsb"
+unit = "readsb"
+group = "sdr"
+# Página "Mapa" (swipe): tiles em cache em ~/.cache/deck3/tiles (funciona offline depois de vistos).
+# map_style: "simples" (Esri Dark Gray, pouco detalhe), "satelite" (Esri + nomes) ou "osm" (OSM escurecido).
+# map = false desliga o fundo; map_url = "https://.../{z}/{x}/{y}.png" usa outro servidor.
+map_style = "simples"
+track_minutes = 30                 # trajeto guardado de cada aeronave (o AIS usa o do AIS-catcher)
+squawk_alert = true                # cartão "Monitor de emergências" (avisa em qualquer tela com 7500/7600/7700)
+routes = true                      # origem e destino pelo indicativo no adsbdb.com/hexdb.io (só o indicativo sai do uConsole)
+
+[[menu]]
+id = "ais"
+label = "AIS"
+icon = "loop"
+img = "emoji:🚢"   # imagem colorida no lugar do símbolo
+color = "#39C5CF"
+type = "provider"
+provider = "ais"
+unit = "ais-catcher"
+group = "sdr"
+url = "http://127.0.0.1:8119"      # servidor web do serviço ais-catcher (navios e trajetos)
+map_style = "simples"
+
+[[menu]]
+id = "sonde"
+label = "Sondas"
+icon = "upload"
+img = "emoji:🎈"
+color = "#58A6FF"
+type = "provider"
+provider = "sonde"
+unit = "deck3-sonde"               # serviço --user com o receptor sem janela (host/sonderx.py)
+group = "sdr"                      # partilha o SDR com o readsb e o ais-catcher (pára-os ao ligar)
+gain = 40                          # dB (0 = automático)
+ppm = 0
+idle_stop = 1800                   # s sem pacotes, depois de um voo, até o receptor sair e libertar o SDR
+# decoder = "~/PycharmProjects/SondeDeck/decoders/rs1729/demod/mod/rs41mod"   # (é o de omissão)
+# Radiossondas RS41 (balões meteorológicos). Páginas (swipe): Controlo (escolher a frequência liga o
+# receptor) · Mapa (trajeto, lançamento, rebentamento, pouso previsto) · Dados · Altitude · Estatísticas.
+# Frequências: RS41 ouvidas no SondeHub nas estações europeias em novembro de 2026 (podem mudar).
+# As estações francesas, Barcelona e Múrcia lançam M10/M20, que o rs41mod não descodifica.
+freqs = [
+  { mhz = 403.40, name = "Lisboa (Portela)" },
+  { mhz = 402.50, name = "Sevilha (Morón)" },
+  { mhz = 403.00, name = "Madrid (Barajas) · Jokioinen" },
+  { mhz = 404.00, name = "Corunha · Viena · Liubliana" },
+  { mhz = 401.50, name = "Santander" },
+  { mhz = 403.75, name = "Funchal (Madeira)" },
+  { mhz = 402.00, name = "Lajes (Açores)" },
+  { mhz = 401.00, name = "Valentia (Irlanda)" },
+  { mhz = 405.70, name = "Camborne (Reino Unido)" },
+  { mhz = 405.80, name = "Herstmonceux (Reino Unido)" },
+  { mhz = 403.10, name = "Lerwick (Reino Unido)" },
+  { mhz = 403.50, name = "Payerne (Suíça) · Uccle (Bélgica)" },
+  { mhz = 403.90, name = "De Bilt (Países Baixos) · Essen" },
+  { mhz = 405.30, name = "Essen · Zagreb" },
+  { mhz = 405.10, name = "Lindenberg (Alemanha)" },
+  { mhz = 404.20, name = "Praga" },
+  { mhz = 404.50, name = "Legionowo (Polónia)" },
+  { mhz = 403.70, name = "Budapeste" },
+]
+
+[[menu]]
+id = "sdr"
+label = "SDR"
+icon = "eye"
+img = "emoji:📻"
+color = "#D29922"
+type = "provider"
+provider = "sdr"
+# Monitor do RTL-SDR: alimentação na AIO, dongle, quem o usa, frequência, há quanto tempo e o histórico.
+# "Libertar SDR" pára o serviço (ou fecha o programa) que o tem aberto.
+
+[[menu]]
+id = "camera"
+label = "Câmara"
+icon = "image"
+img = "emoji:📷"
+color = "#F778BA"
+type = "provider"
+provider = "camera"
+url = "http://127.0.0.1:8090"      # camd do CamDeck (entra com o token de ~/.config/camdeck/local-token)
+quality = 70                       # qualidade JPEG do visor (mais baixa = mais quadros por segundo)
+# Páginas (swipe): Visor (vídeo ao vivo; Foto e Gravar por cima da imagem) · Galeria (fotos e vídeos
+# um a um; os vídeos tocam no ecrã, sem som; Apagar com confirmação) · Estado (sensor, fps,
+# temperatura, gravação, disco; botões para a resolução do vídeo e das fotos e Abrir no uConsole).
+
+[[menu]]
+id = "stocks"
+label = "Stocks"
+icon = "bars"
+img = "emoji:📈"
+color = "#3FB950"
+type = "provider"
+provider = "stocks"
+refresh = 60                       # s entre atualizações com a tela aberta (5 min só com o box do menu)
+# Cotações do Yahoo Finance (só o símbolo sai do uConsole). Cada box: logotipo, nome, cotação e a
+# variação do dia (verde a subir, vermelho a descer). Toque: gráfico do dia e valores.
+# Os logotipos são descarregados uma vez para ~/.cache/deck3/logos (não vão para o repositório).
+symbols = [
+  { sym = "SIE.DE", name = "Siemens" },
+  { sym = "TSLA", name = "Tesla" },
+  { sym = "SPCX", name = "SpaceX", logo_crop = 0.65 },   # só o X com a curva (o logotipo é muito largo)
+  { sym = "AAPL", name = "Apple" },
+  { sym = "NVDA", name = "NVIDIA" },
+]
+
+[[menu]]
+id = "net"
+label = "Rede"
+icon = "wifi"
+color = "#58A6FF"
+type = "provider"
+provider = "net"
+# Pelo NetworkManager. Páginas (swipe): Wi-Fi (estado, Procurar, ligar/desligar o Wi-Fi) ·
+# Redes (as guardadas e as abertas ligam-se com um toque; uma rede nova com palavra-passe liga-se
+# uma vez no uConsole) · VPN (ligações VPN/WireGuard do NetworkManager e o Tailscale, se existir).
+
+[[menu]]
+id = "shares"
+label = "Partilhas"
+img = "emoji:📂"
+color = "#3FB950"
+type = "provider"
+provider = "shares"
+# Pastas do home partilhadas pela rede Wi-Fi (Samba; configuração em /etc/samba/smb.conf, ver
+# docs/configuracao.md). A box só mostra o estado (ponto verde/vermelho), o endereço e quantos
+# aparelhos estão ligados, nunca que pastas são. Ligar/Desligar também liga/desliga o arranque no boot.
+units = ["smbd", "wsdd"]
+host = "UCONSOLE"                  # nome NetBIOS (netbios name no smb.conf)
+
+[[menu]]
+id = "apps"
+label = "Aplicações"
+icon = "list"
+color = "#D2A8FF"
+type = "submenu"
+# Mesmos programas de Acessórios no menu do uConsole (lidos dos .desktop a cada 30 s):
+# Category=Utility, sem System/Accessibility. Os itens abaixo vêm a seguir (fora de Acessórios).
+xdg_category = "Utility"
+xdg_exclude = ["System", "Accessibility"]
+
+  [[menu.items]]
+  id = "open"
+  label = "Abertas"
+  icon = "list"
+  img = "emoji:🪟"
+  type = "provider"
+  provider = "windows"
+  # Programas abertos no uConsole (fica à frente dos outros). Um toque: Mostrar, Minimizar, Fechar.
+  # icons = { "app_id" = "imagem" } para programas sem .desktop; hide = ["app_id", ...] esconde.
+
+  [[menu.items]]
+  id = "term"
+  label = "Terminal"
+  icon = "keyboard"
+  type = "launch"
+  cmd = "lxterminal"
+
+  [[menu.items]]
+  id = "gqrx"
+  label = "Gqrx"
+  icon = "volume"
+  type = "launch"
+  cmd = "gqrx"
+
+  [[menu.items]]
+  id = "files"
+  label = "Arquivos"
+  icon = "folder"
+  app_icon = "system-file-manager"
+  type = "launch"
+  cmd = "pcmanfm"
+
+  [[menu.items]]
+  id = "pycharm"
+  label = "PyCharm"
+  icon = "edit"
+  img = "/opt/pycharm/bin/pycharm.png"   # instalado em /opt, sem .desktop (por isso não vem dos Acessórios)
+  type = "launch"
+  cmd = "/opt/pycharm/bin/pycharm"
+
+[[menu]]
+id = "services"
+label = "Serviços"
+icon = "power"
+color = "#F0883E"
+type = "submenu"
+layout = "grid"
+# Cada box mostra o estado ("ativo · auto" = arranca no boot). O detalhe tem Ligar/Parar/Reiniciar e
+# "Auto no boot"/"Sem arranque". user = true: serviço do utilizador (systemctl --user, sem sudo).
+# restart_only = true: só Reiniciar (o próprio deckd). group: ao ligar, pára os outros do grupo (SDR).
+# Fora de propósito: NetworkManager, wpa_supplicant e afins (pará-los pelo ecrã cortava a rede).
+
+  [[menu.items]]
+  id = "svc_readsb"
+  label = "ADS-B"
+  img = "emoji:✈"
+  type = "service"
+  unit = "readsb"
+  group = "sdr"
+  note = "Recetor de aviões (usa o SDR)"
+
+  [[menu.items]]
+  id = "svc_ais"
+  label = "AIS"
+  img = "emoji:🚢"
+  type = "service"
+  unit = "ais-catcher"
+  group = "sdr"
+  note = "Recetor de navios (usa o SDR)"
+
+  [[menu.items]]
+  id = "svc_tar1090"
+  label = "tar1090"
+  img = "emoji:🗺"
+  type = "service"
+  unit = "tar1090"
+  note = "Mapa web do ADS-B (porta 80/tar1090); só trabalha com o readsb ligado"
+
+  [[menu.items]]
+  id = "svc_mesh"
+  label = "meshtasticd"
+  img = "emoji:📡"
+  type = "service"
+  unit = "meshtasticd"
+  note = "Rádio LoRa do Meshtastic"
+
+  [[menu.items]]
+  id = "svc_gpsmux"
+  label = "GPS mux"
+  img = "emoji:🛰"
+  type = "service"
+  unit = "meshdeck-gpsmux"
+  note = "Partilha o GPS entre o meshtasticd e outras apps (MeshDeck)"
+
+  [[menu.items]]
+  id = "svc_gpsd"
+  label = "gpsd"
+  img = "emoji:📍"
+  type = "service"
+  unit = "gpsd"
+
+  [[menu.items]]
+  id = "svc_deckd"
+  label = "deckd"
+  img = "emoji:🖥"
+  type = "service"
+  unit = "deckd"
+  user = true
+  restart_only = true
+  confirm_restart = "Reiniciar o Deck³? O ecrã fica uns segundos sem resposta."
+  note = "Este ecrã (só reiniciar)"
+
+  [[menu.items]]
+  id = "svc_camd"
+  label = "CamDeck"
+  img = "emoji:📷"
+  type = "service"
+  unit = "camd"
+  user = true
+  note = "Servidor da câmara (porta 8090)"
+
+  [[menu.items]]
+  id = "svc_ssh"
+  label = "SSH"
+  img = "emoji:🔑"
+  type = "service"
+  unit = "ssh"
+  note = "Acesso remoto pelo terminal"
+
+  [[menu.items]]
+  id = "svc_vnc"
+  label = "VNC"
+  img = "emoji:🔭"
+  type = "service"
+  unit = "wayvnc"
+  note = "Ecrã remoto do uConsole"
+
+  [[menu.items]]
+  id = "svc_connect"
+  label = "Pi Connect"
+  img = "emoji:🌐"
+  type = "service"
+  unit = "rpi-connect"
+  user = true
+  note = "Raspberry Pi Connect (acesso pela Internet)"
+
+  [[menu.items]]
+  id = "svc_bt"
+  label = "Bluetooth"
+  icon = "bluetooth"
+  type = "service"
+  unit = "bluetooth"
+
+  [[menu.items]]
+  id = "svc_modem"
+  label = "Modem 4G"
+  img = "emoji:📶"
+  type = "service"
+  unit = "ModemManager"
+  note = "Gere modems 4G/LTE"
+
+  [[menu.items]]
+  id = "svc_cups"
+  label = "Impressão"
+  img = "emoji:🖨"
+  type = "service"
+  unit = "cups"
+  note = "CUPS (impressoras)"
+
+  [[menu.items]]
+  id = "svc_pg"
+  label = "PostgreSQL"
+  img = "emoji:🗄"
+  type = "service"
+  unit = "postgresql"
+  note = "Base de dados (usada pelo Intercept)"
+
+  [[menu.items]]
+  id = "svc_web"
+  label = "lighttpd"
+  img = "emoji:🌍"
+  type = "service"
+  unit = "lighttpd"
+  note = "Servidor web (serve a página do tar1090)"
+
+[[menu]]
+id = "system"
+label = "Sistema"
+icon = "settings"
+type = "provider"
+provider = "system"
+
+# Itens que no DashDeck estão no dock (o Deck³ ainda não tem dock)
+[[menu]]
+id = "relogio"
+label = "Relógio"
+icon = "bell"
+img = "emoji:⏰"
+type = "provider"
+provider = "clock"
+# Ecrã inteiro com a hora e a previsão do dia. Swipe para os lados troca o mostrador,
+# para cima/baixo muda o brilho, um toque volta ao Deck³ (o mostrador e o brilho ficam guardados).
+face = "paisagem"         # mostrador inicial: "paisagem", "retro" ou "previsao"
+lcd_color = "ambar"       # cor do digital retro: "ambar", "verde" ou "ciano"
+brightness = 50           # brilho inicial no relógio (o normal volta ao sair)
+dim_after = 300           # segundos sem toques até escurecer (0 = nunca); um toque repõe o brilho
+dim_brightness = 10       # brilho quando escurecido (%)
+weather = true            # previsão do Open-Meteo (sem chave), a cada 30 min, com cache offline
+# Posição da previsão: GPS (ou nó Meshtastic). Para uma posição fixa, descomente:
+# lat = 38.72
+# lon = -9.14
+# As coordenadas saem do uConsole arredondadas a 0,01° (~1 km).
+
+[[menu]]
+id = "shot"
+label = "Captura"
+icon = "image"
+img = "emoji:📸"
+type = "shell"
+cmd = "grim \"$HOME/Pictures/captura-$(date +%Y%m%d-%H%M%S).png\""
+done = "Captura em ~/Pictures"
+
+[[menu]]
+id = "console"
+label = "Som"
+icon = "audio"
+img = "emoji:🔊"
+type = "provider"
+provider = "console"
+# Volume (PipeWire) e brilho do ecrã do uConsole. O "Brilho" ao lado é o do Deck³.
+volume_step = 5           # % por toque
+volume_max = 100          # limite do Vol +
+# backlight = "/sys/class/backlight/backlight@0"   # por omissão, o primeiro que existir
+
+[[menu]]
+id = "lock"
+label = "Bloquear"
+icon = "eye"
+img = "emoji:🔒"
+# o mesmo que Ctrl+Alt+L no labwc (/etc/xdg/labwc/rc.xml); o loginctl lock-session não tem quem o ouça
+type = "launch"
+cmd = "swaylock -p"

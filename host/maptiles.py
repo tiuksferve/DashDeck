@@ -21,6 +21,7 @@ import urllib.request
 from pathlib import Path
 
 from PIL import Image, ImageEnhance, ImageOps
+import paths
 
 log = logging.getLogger("dashd.map")
 
@@ -80,7 +81,7 @@ class TileMap:
             self.style = {"layers": [url], "credit": url.split("/")[2]}
         self.name = url or style
         self.credit = self.style.get("credit", "")
-        self.root = Path(cache or os.path.expanduser("~/.cache/dashd/tiles"))
+        self.root = Path(cache) if cache else paths.CACHE / "tiles"
         self.on_ready = on_ready          # chamado (sem args) quando chegam tiles novos
         self.q: queue.Queue = queue.Queue()
         self.pending: set = set()

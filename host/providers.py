@@ -27,6 +27,7 @@ import routes
 import stocks
 import wltop
 import xdgapps
+import paths
 
 log = logging.getLogger("dashd.providers")
 
@@ -137,11 +138,12 @@ class SystemProvider(Provider):
         used, total = self._mem()
         return f"{t:.0f}°C · RAM {100 * used / total:.0f}%" if t else ""
 
-    # ---- página DashDeck: o próprio ecrã (firmware, rotação)
+    # ---- página DashDeck: o próprio ecrã (firmware, rotação). Só em ecrãs que rodam (o C6); o estado do
+    # Deck³ está na box Config › Aparelho
     ROT_NAMES = {0: "vertical", 1: "horizontal", 2: "vertical invertida", 3: "horizontal invertida"}
 
     def pages(self) -> int:
-        return 2
+        return 2 if getattr(self.app, "has_rotation", True) else 1
 
     def _deck(self) -> dict:
         a = self.app
@@ -161,6 +163,8 @@ class SystemProvider(Provider):
         return {"tpl": "kv", "rows": [r if r[2:] and r[2] else r[:2] for r in rows], "buttons": btns}
 
     def on_button(self, btn_id: str):
+        if not getattr(self.app, "has_rotation", True):
+            return None
         rot = self.app.rotation
         if btn_id == "rot_flip":
             nv = rot ^ 2                       # 1 <-> 3, 0 <-> 2
@@ -174,7 +178,7 @@ class SystemProvider(Provider):
         return None
 
     def render(self, page: int = 0) -> dict:
-        if page == 1:
+        if page == 1 and self.pages() > 1:
             out = self._deck()
             out["title"] = "Sistema · DashDeck"
             return out
@@ -362,6 +366,10 @@ class NmeaReader:
                 time.sleep(2)
                 continue
             if self.tcp and self._run_tcp():
+                continue
+            if not self.port:   # tty = "" no config: só o gpsmux (o tty fica para outro programa)
+                self.via, self.error = "", "sem gpsmux"
+                time.sleep(3)
                 continue
             try:
                 with serial.Serial(self.port, self.baud, timeout=1) as s:
@@ -805,7 +813,8 @@ class MeshtasticProvider(Provider):
         self._conv_key = key
         d = self.br.dash() or {}
         if (d.get("unread") or {}).get(key):
-            self.br.mark_read(key)            # abrir a conversa = ler (também no MeshDeckWeb)
+            if self.node.get("mark_read", True):   # abrir a conversa = ler (também no MeshDeckWeb)
+                self.br.mark_read(key)
         return {"id": "mesh_conv", "label": self._conv_name(d, key), "dynamic": "conv", "owner": self.node["id"],
                 **self._conversation()}
 
@@ -2348,7 +2357,7 @@ class AioProvider(Provider):
         {"id": "eco", "label": "Poupança", "img": "emoji:🔋", "off": ["GPS", "LORA", "SDR", "USB"],
          "stop": ["readsb", "ais-catcher"]},
     ]
-    POWER_FILE = Path.home() / ".config" / "dashd" / "aio_power.json"
+    POWER_FILE = paths.CONFIG / "aio_power.json"
     BAT = Path("/sys/class/power_supply/axp20x-battery")
     AC = Path("/sys/class/power_supply/axp22x-ac/online")
 
@@ -2677,8 +2686,8 @@ class ClockProvider(Provider):
     ESP mostra o aviso animado e o uConsole toca um som até um toque no aviso (ou 60 s).
     O mostrador, o brilho, a cor do LCD, o temporizador e o alarme ficam em ~/.config/dashd/clock.json.
     """
-    STATE = Path.home() / ".config" / "dashd" / "clock.json"
-    SOUND = Path.home() / ".cache" / "dashd" / "alarme.wav"
+    STATE = paths.CONFIG / "clock.json"
+    SOUND = paths.CACHE / "alarme.wav"
     LCD = {"ambar": 0, "âmbar": 0, "verde": 1, "ciano": 2}
     FACES = {"paisagem": 0, "retro": 1, "previsao": 2, "previsão": 2, "cidade": 3, "temporizador": 4, "alarme": 4}
     NFACES = 5
@@ -4120,8 +4129,8 @@ class StocksProvider(Provider):
 
 # ------------------------------------------------------------------ Sondas (radiossondas RS41)
 
-SONDE_DIR = Path.home() / ".cache" / "dashd" / "sonde"
-SONDE_ENV = Path.home() / ".config" / "dashd" / "sonde.env"
+SONDE_DIR = paths.CACHE / "sonde"
+SONDE_ENV = paths.CONFIG / "sonde.env"
 
 
 def user_unit(pid: int) -> str:

@@ -25,6 +25,7 @@ import providers
 import xdgapps
 from session import Session, delegate_to_session
 from transports.serial_link import SerialLink
+import paths
 
 log = logging.getLogger("dashd")
 HERE = Path(__file__).resolve().parent
@@ -235,8 +236,11 @@ class App:
         """Transporte do ecrã: por omissão o DashDeck pela USB (o Deck³ terá o seu, por WebSocket)."""
         return SerialLink(self.cfg.get("dashd", {}).get("port", "/dev/esp-dash"), self.events, prepare=lcd_safe)
 
+    SHOT_PREFIX = "dashdeck"   # capturas em ~/Pictures/<prefixo>-<data>.png
+    has_rotation = True        # o ecrã roda (página Sistema › DashDeck); o Deck³ não
+
     # ---- estado guardado (escolhas feitas no próprio DashDeck)
-    STATE = Path.home() / ".config" / "dashd" / "state.json"
+    STATE = paths.CONFIG / "state.json"
 
     def load_state(self) -> dict:
         try:
@@ -974,7 +978,7 @@ class App:
                 x, y = x0 + i % pw, y0 + i // pw
                 if x < w and y < h:
                     px[x, y] = ((v >> 11) * 255 // 31, (v >> 5 & 63) * 255 // 63, (v & 31) * 255 // 31)
-        path = self.shot_path or str(Path.home() / "Pictures" / time.strftime("dashdeck-%Y%m%d-%H%M%S.png"))
+        path = self.shot_path or str(Path.home() / "Pictures" / time.strftime(self.SHOT_PREFIX + "-%Y%m%d-%H%M%S.png"))
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         img.save(path)
         self.shot_parts = []

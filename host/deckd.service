@@ -1,0 +1,12 @@
+[Unit]
+Description=Deck³ — painel portátil em cubo (ESP32-S3 AMOLED) do uConsole, por Wi-Fi
+After=default.target network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 -u %h/PycharmProjects/DashDeck/host/deckd.py
+Restart=always
+RestartSec=3
+Environment=WAYLAND_DISPLAY=wayland-0
+
+[Install]
+WantedBy=default.target
