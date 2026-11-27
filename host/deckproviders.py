@@ -1,10 +1,10 @@
-"""Providers próprios do Deck³ (Config, estado do aparelho). Os do DashDeck vêm do providers.py de lá.
+"""Providers próprios do DashDeck³ (Config, estado do aparelho). Os do DashDeck vêm do providers.py de lá.
 
 A interface é a mesma do DashDeck (summary, badge, pages, render, on_tap, on_button), para os módulos
 de lá (Meshtastic, ADS-B, AIS, GPS, Stocks...) se portarem quase sem mudanças. Diferenças:
   - o ecrã é 480×480 (quadrado): listas e kv têm mais espaço, as boxes ficam em 3 colunas;
-  - cada box pode ter "vox": um modelo de voxels (embutidos: deck3 block chart plane ship radio gps
-    wifi gear clock apps cam power mail chip audio home; ou um enviado com {"t":"vox"});
+  - o ícone de cada box é uma imagem que o dashd desenha e guarda no cartão (icons/<id>.bin); sem ela, o
+    cubo mostra uma placa de 8 bits com a inicial;
   - `self.session` dá acesso ao aparelho (hello, último imu/mic, send()).
 """
 from __future__ import annotations
@@ -130,7 +130,7 @@ class SystemProvider(Provider):
         return {"tpl": "kv", "rows": [[r[0], r[1]] + ([r[2]] if len(r) > 2 and r[2] else []) for r in rows]}
 
 
-# --------------------------------------------------------------------------------- o próprio Deck³
+# --------------------------------------------------------------------------------- o próprio DashDeck³
 
 class DeckProvider(Provider):
     """Estado do aparelho e testes do hardware (som, microfone, IMU, botões)."""
@@ -179,7 +179,7 @@ class DeckProvider(Provider):
             return {"tpl": "kv", "rows": rows,
                     "buttons": [{"id": "beep", "label": "Bip"}, {"id": "chime", "label": "Aviso"},
                                 {"id": "stats", "label": "Atualizar", "color": "#2A323D"},
-                                {"id": "reboot", "label": "Reiniciar", "color": "#2A323D", "confirm": "Reiniciar o Deck³?"}]}
+                                {"id": "reboot", "label": "Reiniciar", "color": "#2A323D", "confirm": "Reiniciar o DashDeck³?"}]}
         rows = []
         if self.mic_on:
             m = self.mic or {}
@@ -201,7 +201,7 @@ class DeckProvider(Provider):
         if btn_id == "beep":
             s.send({"t": "beep", "f": 880, "ms": 150})
         elif btn_id == "chime":
-            s.send({"t": "notify", "from": "deckd", "text": "Teste de aviso em voxels"})
+            s.send({"t": "notify", "from": "deckd", "text": "Teste de aviso em pixel art"})
         elif btn_id == "stats":
             s.send({"t": "hello?"})
         elif btn_id == "reboot":
@@ -221,7 +221,7 @@ class DeckProvider(Provider):
         self.mic_on = self.imu_on = False
 
 
-# ------------------------------------------------------------------------------- Config do Deck³
+# ------------------------------------------------------------------------------- Config do DashDeck³
 
 STATE_FILE = paths.DECK3_STATE
 
@@ -459,8 +459,8 @@ class ConfigProvider(DeckProvider):
         for n in saved:
             if n == c.get("ssid"):
                 continue
-            items.append({"id": "del:" + n, "label": n, "sub": "guardada no Deck³ · tocar para apagar",
-                          "confirm": f"Apagar a rede {n} do Deck³?"})
+            items.append({"id": "del:" + n, "label": n, "sub": "guardada no DashDeck³ · tocar para apagar",
+                          "confirm": f"Apagar a rede {n} do DashDeck³?"})
         if self.scanning:
             items.append({"id": "-", "label": "A procurar redes…", "color": "#8A97A8"})
         elif self.scan is not None:
@@ -472,7 +472,7 @@ class ConfigProvider(DeckProvider):
                 if ss in nm:
                     items.append({"id": "add:" + ss, "label": ss, "sub": "conhecida do uConsole · tocar para enviar",
                                   "right": f"{a['rssi']} dBm", "color": "#3EC6FF",
-                                  "confirm": f"Enviar {ss} e a palavra-passe do uConsole para o Deck³?"})
+                                  "confirm": f"Enviar {ss} e a palavra-passe do uConsole para o DashDeck³?"})
                 else:
                     items.append({"id": "unk:" + ss, "label": ss,
                                   "sub": ("protegida" if a.get("lock") else "aberta") + " · desconhecida do uConsole",
@@ -480,7 +480,7 @@ class ConfigProvider(DeckProvider):
         return {"tpl": "list", "items": items,
                 "buttons": [{"id": "scan", "label": "Procurar"},
                             {"id": "share", "label": "Copiar do uConsole", "color": "#2A323D",
-                             "confirm": "Enviar para o Deck³ as redes Wi-Fi guardadas no uConsole (até 8)?"}]}
+                             "confirm": "Enviar para o DashDeck³ as redes Wi-Fi guardadas no uConsole (até 8)?"}]}
 
     def page_bt(self) -> dict:
         self.ask({"t": "bt?"}, 3)
@@ -496,7 +496,7 @@ class ConfigProvider(DeckProvider):
                      ["Serviços", "bateria, informação do aparelho"]]
         if b.get("err"):
             rows.append(["Erro", b["err"], "err"])
-        rows.append(["", "Ligado, o telemóvel ou o PC encontram o Deck³ e mostram a bateria dele. Gasta mais bateria."])
+        rows.append(["", "Ligado, o telemóvel ou o PC encontram o DashDeck³ e mostram a bateria dele. Gasta mais bateria."])
         return {"tpl": "kv", "rows": rows,
                 "buttons": [{"id": "bt_off" if on else "bt_on", "label": "Desligar" if on else "Ligar",
                              "color": "#2A323D" if on else None}]}

@@ -112,7 +112,7 @@ static bool start(void)
     ble_svc_gatt_init();
     ble_svc_bas_init();
     ble_svc_dis_init();
-    ble_svc_dis_model_number_set("Deck3");
+    ble_svc_dis_model_number_set("DashDeck3");
     ble_svc_gap_device_name_set(s_info.name);
     ble_svc_gap_device_appearance_set(0x00C0);   // relógio genérico (o mais parecido com um cubo de mesa)
     if (s_last_pct >= 0) ble_svc_bas_battery_level_set(s_last_pct);
@@ -132,7 +132,7 @@ void ble_init(void)
 {
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    snprintf(s_info.name, sizeof(s_info.name), "Deck\xC2\xB3 %02x%02x", mac[4], mac[5]);
+    snprintf(s_info.name, sizeof(s_info.name), "DashDeck\xC2\xB3 %02x%02x", mac[4], mac[5]);
     if (store_get("bt", 0)) start();
 }
 

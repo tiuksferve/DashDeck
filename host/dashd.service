@@ -1,5 +1,5 @@
 [Unit]
-Description=DashDeck — ecrãs do uConsole: DashDeck (ESP32-C6, USB) e Deck³ (ESP32-S3, Wi-Fi)
+Description=DashDeck — ecrãs do uConsole: DashDeck (ESP32-C6, USB) e DashDeck³ (ESP32-S3, Wi-Fi)
 After=default.target network-online.target
 
 [Service]

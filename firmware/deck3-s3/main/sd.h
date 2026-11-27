@@ -1,6 +1,6 @@
 #pragma once
-// Cartão SD (SDMMC 1 bit: CMD 1, CLK 2, D0 3), montado em /sdcard. Os ficheiros do Deck³ ficam em
-// /sdcard/deck3/ (modelos de voxels em vox/<nome>.json, mais tarde cenas e ícones).
+// Cartão SD (SDMMC 1 bit: CMD 1, CLK 2, D0 3), montado em /sdcard. Os ficheiros do DashDeck³ ficam em
+// /sdcard/deck3/ (ícones das boxes em icons/<id>.bin, eventos de fora de casa, imagens).
 // O host gere-os pela ligação: "sd?", "ls", "file" (escrever, base64, em pedaços), "rm".
 #include <stdbool.h>
 #include <stddef.h>

@@ -1,6 +1,6 @@
 <?xml version="1.0" standalone='no'?>
 <!DOCTYPE service-group SYSTEM "avahi-service.dtd">
-<!-- Anuncia o deckd na rede local: o Deck³ procura "_deck3._tcp" por mDNS. -->
+<!-- Anuncia o deckd na rede local: o DashDeck³ procura "_deck3._tcp" por mDNS. -->
 <service-group>
   <name replace-wildcards="yes">Deck3 em %h</name>
   <service>

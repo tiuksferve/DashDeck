@@ -148,7 +148,6 @@ void sd_init(void)
     }
     s_ok = true;
     mkdir(SD_ROOT, 0775);
-    mkdir(SD_ROOT "/vox", 0775);
     mkdir(SD_ROOT "/log", 0775);
     mkdir(SD_ROOT "/icons", 0775);
     mkdir(SD_ROOT "/scenes", 0775);
@@ -254,7 +253,7 @@ bool sd_handle(const cJSON *msg, link_via_t via)
         reply(via, o);
         return true;
     }
-    if (!strcmp(t, "ls")) {   // {"t":"ls","path":"vox"} -> {"t":"ls","items":[[nome, bytes, pasta?]...]}
+    if (!strcmp(t, "ls")) {   // {"t":"ls","path":"icons"} -> {"t":"ls","items":[[nome, bytes, pasta?]...]}
         cJSON *o = status("ls", false, NULL);
         if (!s_ok || !sd_path(rel ? rel : "", p, sizeof(p))) {
             cJSON_AddStringToObject(o, "err", "caminho inválido ou sem cartão");
@@ -286,7 +285,7 @@ bool sd_handle(const cJSON *msg, link_via_t via)
         reply(via, o);
         return true;
     }
-    if (!strcmp(t, "file")) {   // {"t":"file","path":"vox/x.json","data":"<base64>","append":false}
+    if (!strcmp(t, "file")) {   // {"t":"file","path":"icons/x.bin","data":"<base64>","append":false}
         cJSON *o = status("file", false, NULL);
         const char *b64 = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "data"));
         if (!s_ok || !sd_path(rel, p, sizeof(p)) || !b64) {

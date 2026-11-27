@@ -1,5 +1,5 @@
 #pragma once
-// Barramento de mensagens do Deck³: o mesmo protocolo do DashDeck (um objeto JSON por mensagem) por
+// Barramento de mensagens do DashDeck³: o mesmo protocolo do DashDeck (um objeto JSON por mensagem) por
 // dois transportes:
 //   - Wi-Fi: WebSocket para o deckd (net.c), o transporte normal;
 //   - USB-Serial-JTAG: linhas JSON, de reserva e para configurar (Wi-Fi, token) sem rede.

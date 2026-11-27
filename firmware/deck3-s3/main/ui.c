@@ -1,7 +1,7 @@
-// Interface do Deck³. Estrutura do ecrã (480×480, AMOLED: fundo preto puro = píxeis apagados):
+// Interface do DashDeck³. Estrutura do ecrã (480×480, AMOLED: fundo preto puro = píxeis apagados):
 //   cabeçalho (56 px): ← · título · pontos de página · hora · Wi-Fi · bateria
-//   corpo: tela do host (menu em boxes com voxels, list, kv, text, botões) ou o ecrã de arranque
-//   camada de cima: avisos (toast), confirmações, notificações em voxels, progresso, painel de acordar
+//   corpo: tela do host (menu em boxes com ícones, list, kv, text, botões) ou o ecrã de arranque
+//   camada de cima: avisos (toast), confirmações, notificações em pixel art, progresso, painel de acordar
 #include "ui.h"
 
 #include <math.h>
@@ -12,6 +12,7 @@
 #include <time.h>
 
 #include "anim.h"
+#include "bg.h"
 #include "audio.h"
 #include "esp_err.h"
 #include "bsp/esp-bsp.h"
@@ -30,7 +31,6 @@
 #include "power.h"
 #include "sd.h"
 #include "store.h"
-#include "voxel.h"
 
 static const char *TAG = "ui";
 
@@ -75,32 +75,13 @@ static float s_boot_prog, s_boot_exit_t;
 static bool s_away;                // modo "fora de casa": relógio em vez da animação (sem o uConsole)
 static int64_t s_last_flush;
 
-// imagem de fundo da tela ("bg") e cena em voxels (tpl "vox")
+// imagem de fundo da tela ("bg")
 static lv_obj_t *s_bgimg;
-static lv_obj_t *s_scene_cv;
-static uint32_t *s_scene_buf;
-static const vox_model_t *s_scene_m;
-static lv_timer_t *s_scene_tm;
-static int64_t s_scene_t0;
-#define SCENE_W 444
-#define SCENE_H 330
 
-// entrada das telas: boxes a subir em cascata, ícones a dar uma volta, página a deslizar
-typedef struct {
-    lv_obj_t *cv;
-    uint32_t *buf;
-    const vox_model_t *m;
-    uint32_t tint;
-    int size;
-} icon_t;
-#define MAX_ICONS 24
-static icon_t s_icons[MAX_ICONS];
-static int s_nicons;
-static lv_timer_t *s_intro_tm;
-static int64_t s_intro_t0;
+// entrada das telas: boxes a subir em cascata, página a deslizar
 static int s_page = -1;
 
-// "Sobre o Deck³" (toque no título da tela inicial)
+// "Sobre o DashDeck³" (toque no título da tela inicial)
 static lv_obj_t *s_about, *s_about_cv, *s_about_txt;
 static uint32_t *s_about_buf;
 static lv_timer_t *s_about_tm;
@@ -112,12 +93,15 @@ static int s_dim_s = 60, s_off_s = 300, s_bl = 80;
 static int s_bl_state;            // 0 normal, 1 escurecido, 2 apagado
 static lv_obj_t *s_wake_pane;
 
-// notificação ("Ondas LoRa" em voxels)
+// notificação ("Ondas LoRa" em pixel art)
 #define NCV_W 360
 #define NCV_H 320
 static lv_obj_t *s_notif, *s_notif_cv, *s_notif_band;
 static uint32_t *s_notif_buf;
 static lv_timer_t *s_notif_tm;
+static lv_obj_t *s_pomo;          // ecrã do Pomodoro (cubo girado para a direita)
+static bool s_notif_local;       // alarme/temporizador do próprio cubo: o toque só cala, não vai ao host
+static int64_t s_ring_until;     // o cubo toca o alarme na sua coluna até aqui (ou até um toque)
 static int64_t s_notif_t0;
 static float s_notif_total;
 
@@ -182,12 +166,6 @@ static void *buf_add(size_t bytes)
 
 static void body_free(void)
 {
-    if (s_scene_tm) lv_timer_delete(s_scene_tm);
-    s_scene_tm = NULL;
-    s_scene_cv = NULL;
-    if (s_intro_tm) lv_timer_delete(s_intro_tm);
-    s_intro_tm = NULL;
-    s_nicons = 0;
     for (int i = 0; i < s_nrefs; i++) free(s_refs[i]);
     s_nrefs = 0;
     lv_obj_clean(s_body);   // os canvas saem antes dos buffers
@@ -223,20 +201,15 @@ static int canvas_stride(lv_obj_t *cv)
     return db ? db->header.stride / 4 : 0;
 }
 
-// Canvas ARGB8888 com um modelo de voxels (ícones das boxes, estáticos).
-static lv_obj_t *vox_icon(lv_obj_t *parent, const char *model, uint32_t tint, int size)
+// Ícone de reserva das boxes (sem imagem do dashd): placa de 8 bits na cor do item com a inicial.
+static lv_obj_t *badge_icon(lv_obj_t *parent, const char *label_txt, uint32_t col, int size)
 {
-    const vox_model_t *m = vox_get(model);
-    if (!m) m = vox_get("block");
     uint32_t *buf = buf_add(size * size * 4);
     lv_obj_t *cv = lv_canvas_create(parent);
     if (!buf) return cv;
     lv_canvas_set_buffer(cv, buf, size, size, LV_COLOR_FORMAT_ARGB8888);
-    vox_view_t v = VOX_VIEW_DEFAULT;
-    v.tint = tint;
-    vox_render(m, &v, buf, size, size, canvas_stride(cv));
+    anim_badge(buf, size, canvas_stride(cv), col, label_txt);
     lv_obj_invalidate(cv);
-    if (s_nicons < MAX_ICONS) s_icons[s_nicons++] = (icon_t){.cv = cv, .buf = buf, .m = m, .tint = tint, .size = size};
     return cv;
 }
 
@@ -392,15 +365,41 @@ static void anim_tx_cb(void *o, int32_t v)
     lv_obj_set_style_translate_x(o, v, 0);
 }
 
-static void toast_del(lv_timer_t *t)
+// Avisos em fila: um de cada vez, com tempo de leitura conforme o tamanho do texto; esperam enquanto houver
+// uma notificação aberta. Repetidos são ignorados e "Brilho n%" atualiza o aviso que está à vista.
+#define TOAST_Q 6
+typedef struct {
+    char text[120];
+    char level[8];
+} toast_q_t;
+static toast_q_t s_tq[TOAST_Q];
+static int s_tq_n;
+static lv_obj_t *s_toast, *s_toast_l;
+static lv_timer_t *s_toast_tm;
+static char s_toast_lv[8];
+
+static uint32_t toast_ms(const char *t)
 {
-    lv_obj_delete(lv_timer_get_user_data(t));
+    int n = 0;
+    for (; *t; t++) n += ((uint8_t)*t & 0xC0) != 0x80;   // caracteres, não bytes
+    int ms = 1800 + 65 * n;
+    return ms < 2500 ? 2500 : ms > 7000 ? 7000 : ms;
 }
 
-static void toast_nolock(const char *text, const char *level)
+static void toast_pump(void);
+
+static void toast_del(lv_timer_t *t)
 {
-    uint32_t c = color_of(level, C_ACCENT);
-    if (level && !strcmp(level, "info")) c = C_ACCENT;
+    s_toast_tm = NULL;   // repeat 1: o LVGL apaga o timer
+    if (s_toast) lv_obj_delete(s_toast);
+    s_toast = s_toast_l = NULL;
+    toast_pump();
+}
+
+static void toast_make(const char *text, const char *level)
+{
+    uint32_t c = color_of(level[0] ? level : NULL, C_ACCENT);
+    if (!strcmp(level, "info")) c = C_ACCENT;
     lv_obj_t *t = box(lv_layer_top(), 0x151B23, 20);
     lv_obj_set_style_border_width(t, 2, 0);
     lv_obj_set_style_border_color(t, lv_color_hex(c), 0);
@@ -419,8 +418,55 @@ static void toast_nolock(const char *text, const char *level)
     lv_anim_set_duration(&a, 240);
     lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
     lv_anim_start(&a);
-    lv_timer_t *tm = lv_timer_create(toast_del, 2500, t);
-    lv_timer_set_repeat_count(tm, 1);
+    s_toast = t;
+    s_toast_l = l;
+    snprintf(s_toast_lv, sizeof(s_toast_lv), "%s", level);
+    s_toast_tm = lv_timer_create(toast_del, toast_ms(text), NULL);
+    lv_timer_set_repeat_count(s_toast_tm, 1);
+}
+
+static void toast_pump(void)
+{
+    if (s_toast || s_notif || !s_tq_n) return;
+    toast_q_t q = s_tq[0];
+    memmove(s_tq, s_tq + 1, --s_tq_n * sizeof(s_tq[0]));
+    toast_make(q.text, q.level);
+}
+
+// uma notificação vai tapar o ecrã: o aviso à vista volta para a frente da fila e reaparece depois
+static void toast_hold(void)
+{
+    if (!s_toast) return;
+    if (s_tq_n == TOAST_Q) s_tq_n--;
+    memmove(s_tq + 1, s_tq, s_tq_n * sizeof(s_tq[0]));
+    snprintf(s_tq[0].text, sizeof(s_tq[0].text), "%s", lv_label_get_text(s_toast_l));
+    snprintf(s_tq[0].level, sizeof(s_tq[0].level), "%s", s_toast_lv);
+    s_tq_n++;
+    if (s_toast_tm) lv_timer_delete(s_toast_tm);
+    s_toast_tm = NULL;
+    lv_obj_delete(s_toast);
+    s_toast = s_toast_l = NULL;
+}
+
+static void toast_nolock(const char *text, const char *level)
+{
+    if (!text || !text[0]) return;
+    if (s_toast) {
+        const char *cur = lv_label_get_text(s_toast_l);
+        bool same = !strcmp(cur, text);
+        if (same || (!strncmp(text, "Brilho ", 7) && !strncmp(cur, "Brilho ", 7))) {
+            if (!same) lv_label_set_text(s_toast_l, text);
+            if (s_toast_tm) lv_timer_reset(s_toast_tm);
+            return;
+        }
+    }
+    for (int i = 0; i < s_tq_n; i++)
+        if (!strcmp(s_tq[i].text, text)) return;
+    if (s_tq_n == TOAST_Q) memmove(s_tq, s_tq + 1, --s_tq_n * sizeof(s_tq[0]));   // fila cheia: sai o mais antigo
+    snprintf(s_tq[s_tq_n].text, sizeof(s_tq[0].text), "%s", text);
+    snprintf(s_tq[s_tq_n].level, sizeof(s_tq[0].level), "%s", level ? level : "");
+    s_tq_n++;
+    toast_pump();
 }
 
 void ui_toast(const char *text, const char *level)
@@ -486,7 +532,7 @@ static void wake_pane_cb(lv_event_t *e)
 
 static void idle_check(void)
 {
-    if (s_notif || s_prog) return;
+    if (s_notif || s_prog || s_pomo) return;   // o Pomodoro fica sempre aceso enquanto está de lado
     uint32_t idle = lv_display_get_inactive_time(NULL) / 1000;
     if (s_bl_state == 0 && s_dim_s > 0 && idle >= (uint32_t)s_dim_s) {
         bsp_display_brightness_set(s_bl > 10 ? 10 : s_bl);
@@ -577,7 +623,7 @@ static void set_title(const char *txt)
     memcpy(head, txt, hl);
     head[hl] = '\0';
     bool back = !lv_obj_has_flag(s_back, LV_OBJ_FLAG_HIDDEN);
-    int32_t avail = W - 44 - 96 - (back ? 52 : 0);   // painel menos os cantos, o estado à direita e o "voltar"
+    int32_t avail = W - 44 - 132 - (back ? 52 : 0);   // painel menos os cantos, o estado à direita e o "voltar"
     lv_obj_set_width(s_tbox, avail);
     lv_obj_align(s_tbox, LV_ALIGN_LEFT_MID, back ? 52 : 0, 2);
     const lv_font_t *f = &deck_font_28;
@@ -730,34 +776,6 @@ static void boot_show(void)
 }
 
 // ---- entrada das telas
-static void intro_tick(lv_timer_t *t)
-{
-    float sec = (esp_timer_get_time() - s_intro_t0) / 1e6f;
-    bool busy = false;
-    for (int i = 0; i < s_nicons; i++) {
-        icon_t *ic = &s_icons[i];
-        float k = (sec - i * 0.05f) / 0.7f;   // cada ícone dá uma volta e assenta (ease-out)
-        if (k < 0) {
-            busy = true;
-            continue;
-        }
-        if (k >= 1) k = 1;
-        else busy = true;
-        float u = 1 - k;
-        vox_view_t v = VOX_VIEW_DEFAULT;
-        v.tint = ic->tint;
-        v.yaw = 0.785f - u * u * u * 3.14159f;
-        v.glow = u * 0.8f;
-        memset(ic->buf, 0, ic->size * ic->size * 4);
-        vox_render(ic->m, &v, ic->buf, ic->size, ic->size, canvas_stride(ic->cv));
-        lv_obj_invalidate(ic->cv);
-    }
-    if (!busy) {
-        lv_timer_delete(s_intro_tm);
-        s_intro_tm = NULL;
-    }
-}
-
 static void intro_start(const char *tpl, int slide_dir)
 {
     if (slide_dir) {   // mudança de página: o corpo entra do lado do gesto
@@ -796,13 +814,12 @@ static void intro_start(const char *tpl, int slide_dir)
         lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
         lv_anim_start(&a);
     }
-    if (s_nicons && !s_intro_tm) {
-        s_intro_t0 = esp_timer_get_time();
-        s_intro_tm = lv_timer_create(intro_tick, 33, NULL);
-    }
 }
 
 // ------------------------------------------------------------------------------------- templates
+
+// cores das placas de reserva quando o item não diz a sua (ciano, violeta, rosa, laranja, verde, âmbar)
+static const uint32_t PAL_BADGE[6] = {0x2DB8E0, 0x7C6BFF, 0xE8508F, 0xF07A3A, 0x3FBF6A, 0xE0A020};
 
 static void build_menu(const cJSON *scr)
 {
@@ -816,10 +833,8 @@ static void build_menu(const cJSON *scr)
         lv_obj_set_style_border_width(t, 1, 0);
         lv_obj_set_style_border_color(t, lv_color_hex(C_LINE), 0);
         make_clickable(t, 'i', jstr(it, "id"), jstr(it, "confirm"));
-        // ícone: "vox" (modelo) > "icon" (nome do DashDeck) > bloco na cor do item
-        const char *model = jstr(it, "vox");
-        if (!model) model = vox_for_icon(jstr(it, "icon"));
-        uint32_t tint = color_of(jstr(it, "color"), 0);
+        // ícone: a imagem do dashd (icons/<id>.bin) ou uma posta no cartão; sem ela, uma placa de 8 bits
+        uint32_t tint = color_of(jstr(it, "color"), PAL_BADGE[lv_obj_get_child_count(s_body) % 6]);
         lv_obj_t *cv;
         const char *img = jstr(it, "img");
         const lv_image_dsc_t *ic = NULL;
@@ -842,7 +857,7 @@ static void build_menu(const cJSON *scr)
             lv_obj_set_size(cv, 84, 84);
             lv_image_set_inner_align(cv, LV_IMAGE_ALIGN_CONTAIN);
         } else {
-            cv = vox_icon(t, model, tint, 84);
+            cv = badge_icon(t, jstr(it, "label"), tint, 84);
         }
         lv_obj_align(cv, LV_ALIGN_TOP_MID, 0, 8);
         lv_obj_remove_flag(cv, LV_OBJ_FLAG_CLICKABLE);
@@ -1264,45 +1279,6 @@ static void build_image(const cJSON *scr)
     }
 }
 
-// ---- "vox": {"model": "nome", "caption": "...", "spin": true} cena em voxels (até 24x24x24, do cartão
-// ou do host) que se monta voxel a voxel e depois roda devagar; o IMU inclina-a
-static void scene_tick(lv_timer_t *t)
-{
-    if (!s_scene_cv || !s_scene_m) return;
-    float sec = (esp_timer_get_time() - s_scene_t0) / 1e6f;
-    float ft = vox_fly_time(s_scene_m);
-    vox_view_t v = VOX_VIEW_DEFAULT;
-    v.fly = sec < ft + 0.1f ? sec * 1.5f + 1 : 0;
-    v.yaw = 0.785f + (sec > ft / 1.5f ? (sec - ft / 1.5f) * 0.3f : 0);
-    v.pitch = 0.6f + imu_tilt();
-    memset(s_scene_buf, 0, SCENE_W * SCENE_H * 4);
-    vox_render(s_scene_m, &v, s_scene_buf, SCENE_W, SCENE_H, canvas_stride(s_scene_cv));
-    lv_obj_invalidate(s_scene_cv);
-}
-
-static void build_scene(const cJSON *scr)
-{
-    s_scene_m = vox_get(jstr(scr, "model"));
-    if (!s_scene_m) {
-        lv_obj_t *l = label(s_body, "Modelo não encontrado (deck3/vox/<nome>.json no cartão)", &deck_font_20, C_WARN);
-        lv_obj_set_width(l, lv_pct(100));
-        lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
-        return;
-    }
-    s_scene_buf = buf_add(SCENE_W * SCENE_H * 4);
-    if (!s_scene_buf) return;
-    s_scene_cv = lv_canvas_create(s_body);
-    lv_canvas_set_buffer(s_scene_cv, s_scene_buf, SCENE_W, SCENE_H, LV_COLOR_FORMAT_ARGB8888);
-    if (jstr(scr, "caption")) {
-        lv_obj_t *l = label(s_body, jstr(scr, "caption"), &deck_font_20, C_SUB);
-        lv_obj_set_width(l, lv_pct(100));
-        lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
-    }
-    s_scene_t0 = esp_timer_get_time();
-    scene_tick(NULL);
-    if (!cJSON_IsFalse(cJSON_GetObjectItem(scr, "spin"))) s_scene_tm = lv_timer_create(scene_tick, 50, NULL);
-}
-
 static void build_body(const cJSON *scr)
 {
     body_free();
@@ -1319,13 +1295,12 @@ static void build_body(const cJSON *scr)
     else if (!strcmp(tpl, "image")) build_image(scr);
     else if (!strcmp(tpl, "plot")) build_plot(scr);
     else if (!strcmp(tpl, "log")) build_log(scr);
-    else if (!strcmp(tpl, "vox")) build_scene(scr);
     else if (!strcmp(tpl, "list")) build_list(scr);
     else if (!strcmp(tpl, "kv")) build_kv(scr);
     else if (!strcmp(tpl, "text")) build_text(scr);
     else {
         char msg[80];
-        snprintf(msg, sizeof(msg), "Template \"%s\" ainda não existe no Deck³", tpl);
+        snprintf(msg, sizeof(msg), "Template \"%s\" ainda não existe no DashDeck³", tpl);
         lv_obj_t *l = label(s_body, msg, &deck_font_20, C_WARN);
         lv_obj_set_width(l, lv_pct(100));
         lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
@@ -1418,14 +1393,35 @@ static void gesture_cb(lv_event_t *e)
 
 // ------------------------------------------------------------------------------------ notificação
 
-static void notif_close(void)
+// Notificações em fila: a seguinte só aparece quando a atual fecha (tempo, toque ou voltar)
+#define NOTIF_Q 4
+static cJSON *s_nq[NOTIF_Q];
+static int s_nq_n;
+static void notify_start(const cJSON *msg);
+
+static void notif_free(void)
 {
+    if (s_notif_local) s_ring_until = 0;
+    s_notif_local = false;
     if (s_notif_tm) lv_timer_delete(s_notif_tm);
     s_notif_tm = NULL;
     if (s_notif) lv_obj_delete(s_notif);
     s_notif = s_notif_cv = s_notif_band = NULL;
     heap_caps_free(s_notif_buf);
     s_notif_buf = NULL;
+}
+
+static void notif_close(void)
+{
+    notif_free();
+    if (s_nq_n) {
+        cJSON *m = s_nq[0];
+        memmove(s_nq, s_nq + 1, --s_nq_n * sizeof(s_nq[0]));
+        notify_start(m);
+        cJSON_Delete(m);
+    } else {
+        toast_pump();
+    }
 }
 
 static void notif_tick(lv_timer_t *t)
@@ -1452,23 +1448,36 @@ static void notif_tap(lv_event_t *e)
 {
     lv_indev_t *in = lv_indev_active();
     if (in) lv_indev_wait_release(in);   // o toque não passa para a tela por baixo
-    link_send_event("notify", "act", "open", NULL, NULL);
+    if (!s_notif_local) link_send_event("notify", "act", "open", NULL, NULL);
     notif_close();
 }
 
 static void notify_show(const cJSON *msg)
 {
-    notif_close();
+    if (!s_notif) {
+        notify_start(msg);
+        return;
+    }
+    if (s_nq_n == NOTIF_Q) {   // fila cheia: sai a mais antiga
+        cJSON_Delete(s_nq[0]);
+        memmove(s_nq, s_nq + 1, --s_nq_n * sizeof(s_nq[0]));
+    }
+    s_nq[s_nq_n++] = cJSON_Duplicate(msg, 1);
+}
+
+static void notify_start(const cJSON *msg)
+{
+    notif_free();
+    toast_hold();
     wake_nolock();
     const char *k = jstr(msg, "kind");
     int kind = k && !strcmp(k, "alarm") ? 1 : k && !strcmp(k, "squawk") ? 2 : 0;
-    const vox_model_t *m = jstr(msg, "vox") ? vox_get(jstr(msg, "vox")) : NULL;
-    bool tint = !m;   // os modelos de origem ganham a cor do tipo; os do host ficam como são
-    if (!m) m = vox_get(kind == 1 ? "clock" : kind == 2 ? "plane" : "mail");
+    int spr = anim_sprite_id(jstr(msg, "sprite"));   // "mail" "clock" "plane"; sem ele, o do tipo
+    if (spr < 0) spr = kind == 1 ? SPR_CLOCK : kind == 2 ? SPR_PLANE : SPR_MAIL;
     s_notif_buf = heap_caps_calloc(1, NCV_W * NCV_H * 4, MALLOC_CAP_SPIRAM);
     if (!s_notif_buf) return;
     const char *from = jstr(msg, "from");
-    anim_notify_start(m, from ? from : jstr(msg, "title"), kind, tint);
+    anim_notify_start(spr, from ? from : jstr(msg, "title"), kind);
 
     s_notif = box(lv_layer_top(), 0x000000, 0);
     lv_obj_set_size(s_notif, W, H);
@@ -1507,8 +1516,17 @@ static void notify_show(const cJSON *msg)
     lv_obj_update_layout(s_notif_band);
     lv_obj_set_y(s_notif_band, H);
 
-    int dur = jint(msg, "dur", 8);
-    s_notif_total = dur > 0 && dur <= 300 ? (float)dur : 8;
+    // sem "dur": animação + tempo de leitura do texto (6 a 20 s)
+    const char *txt = jstr(msg, "text");
+    int n = 0;
+    for (const char *c = txt ? txt : ""; *c; c++) n += ((uint8_t)*c & 0xC0) != 0x80;
+    float rd = NOTIFY_ANIM + 2.5f + n * 0.07f;
+    rd = rd < 6 ? 6 : rd > 20 ? 20 : rd;
+    int dur = jint(msg, "dur", 0);
+    s_notif_total = dur > 0 && dur <= 300 ? (float)dur : rd;
+    s_notif_local = cJSON_IsTrue(cJSON_GetObjectItem(msg, "local"));   // do próprio cubo: o toque não vai ao host
+    if (s_notif_local && cJSON_IsTrue(cJSON_GetObjectItem(msg, "ring")))   // alarme: toca até ao fim ou a um toque
+        s_ring_until = esp_timer_get_time() + (int64_t)(s_notif_total * 1e6f);
     s_notif_t0 = esp_timer_get_time();
     s_notif_tm = lv_timer_create(notif_tick, 33, NULL);
     notif_tick(NULL);
@@ -1533,13 +1551,17 @@ static void notify_show(const cJSON *msg)
 
 // ------------------------------------------------------------------------------------ relógio
 // tpl "clock" do dashd: ecrã inteiro com uma das faces de anim.c (a hora é a do relógio do cubo; o dashd dá a
-// previsão). Swipe para os lados troca a face (guardada no cubo); um toque volta.
+// previsão, a paisagem e o cão). Swipe para os lados troca a face (guardada no cubo); um toque volta, menos
+// nas zonas da face do temporizador e alarme.
+// O temporizador e o alarme são só do cubo: guardados na NVS, contados aqui (tick_1s, mesmo sem uConsole)
+// e tocados na coluna do cubo. Os do DashDeck (C6 + som no uConsole) são outros.
 static lv_obj_t *s_clk, *s_clk_cv, *s_clk_name;
 static uint32_t *s_clk_buf;
 static lv_timer_t *s_clk_tm;
 static int64_t s_clk_t0, s_clk_name_until;
 static int s_clk_face;
 static clock3_t s_clk_data;
+static char s_clk_bg[48];
 
 static void clock_hide(void)
 {
@@ -1549,6 +1571,101 @@ static void clock_hide(void)
     s_clk = s_clk_cv = s_clk_name = NULL;
     heap_caps_free(s_clk_buf);
     s_clk_buf = NULL;
+}
+
+// epoch "local" (a hora local contada como se fosse UTC; é a base de tend): 0 sem hora acertada
+static int64_t local_now(struct tm *out)
+{
+    time_t now = time(NULL);
+    struct tm tm, g;
+    localtime_r(&now, &tm);
+    if (out) *out = tm;
+    if (tm.tm_year <= 120) return 0;
+    gmtime_r(&now, &g);
+    int dd = tm.tm_yday - g.tm_yday;
+    if (dd > 1) dd = -1;   // passagem de ano
+    if (dd < -1) dd = 1;
+    return (int64_t)now + dd * 86400 + (tm.tm_hour - g.tm_hour) * 3600 + (tm.tm_min - g.tm_min) * 60;
+}
+
+static void clock_load(void)
+{
+    clock3_t *c = &s_clk_data;
+    c->tset = store_get("tset", 300);
+    c->tend = store_get("tend", 0);
+    c->tleft = store_get("tleft", 0);
+    int hm = store_get("alhm", 7 * 60 + 30);
+    c->alh = (hm / 60) % 24;
+    c->alm = hm % 60;
+    c->alon = store_get("alon", 0) != 0;
+}
+
+static void clock_save(void)
+{
+    clock3_t *c = &s_clk_data;
+    store_set("tset", c->tset);
+    store_set("tend", (int32_t)c->tend);
+    store_set("tleft", c->tleft);
+    store_set("alhm", c->alh * 60 + c->alm);
+    store_set("alon", c->alon);
+}
+
+static void clock_ring(bool alarm)
+{
+    clock3_t *c = &s_clk_data;
+    char from[24], title[40], text[48];
+    if (alarm) {
+        snprintf(from, sizeof(from), "ALARME %02d:%02d", c->alh, c->alm);
+        snprintf(title, sizeof(title), "Alarme das %02d:%02d", c->alh, c->alm);
+        snprintf(text, sizeof(text), "Toque para parar");
+    } else {
+        snprintf(from, sizeof(from), "TEMPO!");
+        snprintf(title, sizeof(title), "Temporizador terminado");
+        int mn = c->tset / 60, sc = c->tset % 60;
+        if (mn && sc) snprintf(text, sizeof(text), "%d min %d s · toque para parar", mn, sc);
+        else if (mn) snprintf(text, sizeof(text), "%d min · toque para parar", mn);
+        else snprintf(text, sizeof(text), "%d s · toque para parar", sc);
+    }
+    cJSON *m = cJSON_CreateObject();
+    cJSON_AddStringToObject(m, "kind", "alarm");
+    cJSON_AddStringToObject(m, "from", from);
+    cJSON_AddStringToObject(m, "title", title);
+    cJSON_AddStringToObject(m, "text", text);
+    cJSON_AddNumberToObject(m, "dur", 60);
+    cJSON_AddBoolToObject(m, "sound", false);   // o som é o toque contínuo de clock_check
+    cJSON_AddBoolToObject(m, "local", true);
+    cJSON_AddBoolToObject(m, "ring", true);
+    notify_show(m);
+    cJSON_Delete(m);
+}
+
+// a cada segundo (tick_1s): fim do temporizador, hora do alarme e o bip-bip enquanto toca
+static void clock_check(void)
+{
+    static int32_t last_al = -1;   // minuto (dia do ano * 1440 + minuto) do último alarme
+    clock3_t *c = &s_clk_data;
+    struct tm tm;
+    int64_t now = local_now(&tm);
+    if (now && c->tend && now >= c->tend) {
+        c->tend = 0;
+        c->tleft = 0;
+        clock_save();
+        clock_ring(false);
+    }
+    int32_t stamp = tm.tm_yday * 1440 + tm.tm_hour * 60 + tm.tm_min;
+    if (now && c->alon && tm.tm_hour == c->alh && tm.tm_min == c->alm && stamp != last_al) {
+        last_al = stamp;
+        clock_ring(true);
+    }
+    if (s_ring_until && esp_timer_get_time() < s_ring_until && (esp_timer_get_time() / 1000000) % 2 == 0) {
+        audio_tone(988, 120, 0);
+        audio_tone(0, 80, 0);
+        audio_tone(988, 120, 0);
+        audio_tone(0, 80, 0);
+        audio_tone(1319, 160, 0);
+    } else if (s_ring_until && esp_timer_get_time() >= s_ring_until) {
+        s_ring_until = 0;
+    }
 }
 
 static void clock_tick(lv_timer_t *t)
@@ -1568,13 +1685,16 @@ static void clock_tick(lv_timer_t *t)
     }
     power_info_t p;
     power_get(&p);
-    s_clk_data.time = hm;
-    s_clk_data.date = date;
-    s_clk_data.bat = p.percent;
-    s_clk_data.chg = p.charging;
-    s_clk_data.shift = (int)((now / 60) % 9);
+    clock3_t *c = &s_clk_data;
+    c->time = hm;
+    c->date = date;
+    c->bat = p.percent;
+    c->chg = p.charging;
+    c->shift = (int)((now / 60) % 9);
+    c->now = local_now(NULL);
+    c->scene = bg_get(s_clk_bg);
     float el = (esp_timer_get_time() - s_clk_t0) / 1e6f;
-    anim_clock_draw(s_clk_face, s_clk_buf, W, H, canvas_stride(s_clk_cv), el, &s_clk_data);
+    anim_clock_draw(s_clk_face, s_clk_buf, W, H, canvas_stride(s_clk_cv), el, c);
     lv_obj_invalidate(s_clk_cv);
     if (s_clk_name && esp_timer_get_time() > s_clk_name_until) lv_obj_add_flag(s_clk_name, LV_OBJ_FLAG_HIDDEN);
 }
@@ -1584,6 +1704,54 @@ static void clock_face_name(void)
     lv_label_set_text(s_clk_name, anim_clock_name(s_clk_face));
     lv_obj_remove_flag(s_clk_name, LV_OBJ_FLAG_HIDDEN);
     s_clk_name_until = esp_timer_get_time() + 1500000;
+}
+
+// Toque numa zona do temporizador/alarme: muda e guarda no cubo (o host não sabe nem precisa de saber).
+static void clock_zone(int z)
+{
+    clock3_t *c = &s_clk_data;
+    bool run = c->tend > 0, paused = !run && c->tleft > 0;
+    c->now = local_now(NULL);
+    switch (z) {
+    case CZ_TMIN_UP: case CZ_TMIN_DN: case CZ_TSEC_UP: case CZ_TSEC_DN:
+        if (run || paused) return;
+        c->tset += z == CZ_TMIN_UP ? 60 : z == CZ_TMIN_DN ? -60 : z == CZ_TSEC_UP ? 10 : -10;
+        if (c->tset < 0) c->tset = 0;
+        if (c->tset > 99 * 60 + 59) c->tset = 99 * 60 + 59;
+        break;
+    case CZ_TGO:
+        if (run) {
+            c->tleft = (int)(c->tend - c->now);
+            c->tend = 0;
+        } else {
+            int left = paused ? c->tleft : c->tset;
+            if (left <= 0 || !c->now) return;   // sem hora acertada não dá para contar
+            c->tend = c->now + left;
+            c->tleft = 0;
+        }
+        break;
+    case CZ_TRESET:
+        c->tend = 0;
+        c->tleft = 0;
+        break;
+    case CZ_AH_UP: case CZ_AH_DN: case CZ_AM_UP: case CZ_AM_DN:
+        if (z == CZ_AH_UP) c->alh = (c->alh + 1) % 24;
+        if (z == CZ_AH_DN) c->alh = (c->alh + 23) % 24;
+        if (z == CZ_AM_UP) c->alm = (c->alm + 1) % 60;
+        if (z == CZ_AM_DN) c->alm = (c->alm + 59) % 60;
+        break;
+    case CZ_AON:
+        c->alon = !c->alon;
+        break;
+    }
+    clock_save();
+}
+
+static int clock_zone_at(void)
+{
+    lv_point_t pt;
+    lv_indev_get_point(lv_indev_active(), &pt);
+    return anim_clock_zone(s_clk_face, pt.x, pt.y);
 }
 
 static void clock_ev(lv_event_t *e)
@@ -1596,30 +1764,50 @@ static void clock_ev(lv_event_t *e)
         store_set("clkface", s_clk_face);
         clock_face_name();
         lv_indev_wait_release(lv_indev_active());   // o gesto não conta também como toque
+    } else if (code == LV_EVENT_LONG_PRESSED_REPEAT) {   // manter o dedo numa seta repete
+        int z = clock_zone_at();
+        if (z != CZ_NONE && z != CZ_TGO && z != CZ_TRESET && z != CZ_AON) clock_zone(z);
     } else if (code == LV_EVENT_SHORT_CLICKED) {
-        send_tap("back", NULL, NULL);
+        int z = clock_zone_at();
+        if (z != CZ_NONE) clock_zone(z);
+        else send_tap("back", NULL, NULL);
     }
 }
 
-// Dados do "clock" do dashd: previsão e ícone do tempo ({"wx":{t,max,min,rain}, "icon":{pal,d}}).
+// Dados do "clock" do dashd: previsão, ícone, fundo da paisagem, cão e chuva/neve.
 static void clock_apply(const cJSON *scr)
 {
     const cJSON *c = cJSON_GetObjectItem(scr, "clock");
+    clock3_t *d = &s_clk_data;
     const cJSON *wx = cJSON_GetObjectItem(c, "wx");
-    s_clk_data.has_wx = cJSON_IsObject(wx);
-    if (s_clk_data.has_wx) {
-        s_clk_data.temp = jint(wx, "t", 0);
-        s_clk_data.tmax = jint(wx, "max", 0);
-        s_clk_data.tmin = jint(wx, "min", 0);
-        s_clk_data.rain = jint(wx, "rain", 0);
+    d->has_wx = cJSON_IsObject(wx);
+    if (d->has_wx) {
+        d->temp = jint(wx, "t", 0);
+        d->tmax = jint(wx, "max", 0);
+        d->tmin = jint(wx, "min", 0);
+        d->rain = jint(wx, "rain", 0);
     }
     const cJSON *ic = cJSON_GetObjectItem(c, "icon");
-    const char *d = jstr(ic, "d");
+    const char *dd = jstr(ic, "d");
     const cJSON *pal = cJSON_GetObjectItem(ic, "pal");
-    s_clk_data.has_icon = d && strlen(d) >= 256 && cJSON_IsArray(pal);
-    if (s_clk_data.has_icon) {
-        for (int i = 0; i < 256; i++) s_clk_data.icon[i] = (uint8_t)(d[i] - '0');
-        for (int i = 0; i < 8; i++) s_clk_data.icon_pal[i] = color_of(cJSON_GetStringValue(cJSON_GetArrayItem(pal, i)), 0);
+    d->has_icon = dd && strlen(dd) >= 256 && cJSON_IsArray(pal);
+    if (d->has_icon) {
+        for (int i = 0; i < 256; i++) d->icon[i] = (uint8_t)(dd[i] - '0');
+        for (int i = 0; i < 8; i++) d->icon_pal[i] = color_of(cJSON_GetStringValue(cJSON_GetArrayItem(pal, i)), 0);
+    }
+    strlcpy(s_clk_bg, jstr(c, "bg") ? jstr(c, "bg") : "", sizeof(s_clk_bg));
+    const char *an = jstr(c, "anim");
+    d->anim = !an ? CLK_NONE : !strcmp(an, "rain") ? CLK_RAIN : !strcmp(an, "storm") ? CLK_STORM
+            : !strcmp(an, "snow") ? CLK_SNOW : CLK_NONE;
+    d->night = cJSON_IsTrue(cJSON_GetObjectItem(c, "night"));
+    const cJSON *pj = cJSON_GetObjectItem(c, "pet");   // [x da casa, base, luz 0..100, 1 brinca|0 dorme]
+    if (cJSON_GetArraySize(pj) >= 4) {
+        d->pet_x = cJSON_GetArrayItem(pj, 0)->valueint;
+        d->pet_y = cJSON_GetArrayItem(pj, 1)->valueint;
+        d->pet_l = cJSON_GetArrayItem(pj, 2)->valueint;
+        d->pet = cJSON_GetArrayItem(pj, 3)->valueint ? 1 : 0;
+    } else {
+        d->pet = -1;
     }
     if (s_clk) return;
     s_clk_buf = heap_caps_calloc(1, W * H * 4, MALLOC_CAP_SPIRAM);
@@ -1631,6 +1819,7 @@ static void clock_apply(const cJSON *scr)
     lv_obj_remove_flag(s_clk, LV_OBJ_FLAG_GESTURE_BUBBLE);
     lv_obj_add_event_cb(s_clk, clock_ev, LV_EVENT_GESTURE, NULL);
     lv_obj_add_event_cb(s_clk, clock_ev, LV_EVENT_SHORT_CLICKED, NULL);
+    lv_obj_add_event_cb(s_clk, clock_ev, LV_EVENT_LONG_PRESSED_REPEAT, NULL);
     s_clk_cv = lv_canvas_create(s_clk);
     lv_canvas_set_buffer(s_clk_cv, s_clk_buf, W, H, LV_COLOR_FORMAT_XRGB8888);
     lv_obj_remove_flag(s_clk_cv, LV_OBJ_FLAG_CLICKABLE);
@@ -1645,6 +1834,205 @@ static void clock_apply(const cJSON *scr)
     s_clk_t0 = esp_timer_get_time();
     s_clk_tm = lv_timer_create(clock_tick, 66, NULL);   // ~15 qps
     clock_tick(NULL);
+}
+
+// ------------------------------------------------------------------------------------- Pomodoro
+// O cubo em pé na mesa e girado 90° para a direita (imu.c) abre o Pomodoro; de volta ao normal, fecha.
+// 25 min de foco, 5 de pausa e, a cada 4 focos, 15 de pausa longa. A contagem continua com o ecrã
+// fechado (pomo_check no tick_1s); no fim de cada fase o cubo toca e, se o ecrã estiver fechado, avisa.
+// O ecrã é desenhado direito para quem olha (anim_pomo_draw) e rodado 90° para o painel.
+static const int POMO_LEN[] = {25 * 60, 5 * 60, 15 * 60};
+static struct {
+    int phase, done, today, yday, left;
+    bool run;
+    int64_t end_us;
+} s_po = {.left = 25 * 60, .yday = -1};
+static lv_obj_t *s_pomo_cv;
+static uint32_t *s_pomo_buf, *s_pomo_up;
+static lv_timer_t *s_pomo_tm;
+static int64_t s_pomo_t0;
+
+static int pomo_left(void)
+{
+    if (!s_po.run) return s_po.left;
+    int64_t us = s_po.end_us - esp_timer_get_time();
+    return us <= 0 ? 0 : (int)((us + 999999) / 1000000);
+}
+
+static void pomo_count(void)   // mais um foco concluído hoje (guardado; recomeça a zero noutro dia)
+{
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    int yd = tm.tm_year > 120 ? tm.tm_yday : s_po.yday;
+    if (yd != s_po.yday) s_po.today = 0;
+    s_po.yday = yd;
+    s_po.today++;
+    store_set("po_today", s_po.today);
+    store_set("po_yday", s_po.yday);
+}
+
+// passa à fase seguinte; natural = o tempo acabou (conta o foco e a pausa começa sozinha)
+static void pomo_next(bool natural)
+{
+    if (s_po.phase == POMO_FOCUS) {
+        if (natural) {
+            s_po.done++;
+            pomo_count();
+        }
+        s_po.phase = s_po.done >= 4 ? POMO_LONG : POMO_SHORT;
+        s_po.run = natural;
+    } else {
+        if (s_po.phase == POMO_LONG) s_po.done = 0;
+        s_po.phase = POMO_FOCUS;
+        s_po.run = false;   // o foco seguinte começa com um toque
+    }
+    s_po.left = POMO_LEN[s_po.phase];
+    if (s_po.run) s_po.end_us = esp_timer_get_time() + (int64_t)s_po.left * 1000000;
+}
+
+static void pomo_draw(void)
+{
+    if (!s_pomo) return;
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    char hm[8];
+    snprintf(hm, sizeof(hm), "%02d:%02d", tm.tm_hour, tm.tm_min);
+    if (tm.tm_year > 120 && tm.tm_yday != s_po.yday && s_po.yday >= 0) s_po.today = 0;   // outro dia
+    pomo_t p = {.phase = s_po.phase, .total = POMO_LEN[s_po.phase], .left = pomo_left(), .run = s_po.run,
+                .done = s_po.done, .today = s_po.today, .clock = tm.tm_year > 120 ? hm : NULL};
+    anim_pomo_draw(s_pomo_up, W, H, W, (esp_timer_get_time() - s_pomo_t0) / 1e6f, &p);
+    // rodar 90°: o topo de quem olha é o lado esquerdo do painel (cubo girado para a direita)
+    int st = canvas_stride(s_pomo_cv);
+    for (int y = 0; y < H; y++) {
+        uint32_t *row = &s_pomo_buf[y * st];
+        const uint32_t *col = &s_pomo_up[W - 1 - y];
+        for (int x = 0; x < W; x++) row[x] = col[x * W];
+    }
+    lv_obj_invalidate(s_pomo_cv);
+}
+
+static void pomo_tick(lv_timer_t *t)
+{
+    pomo_draw();
+}
+
+static void pomo_zone(int z)
+{
+    if (z == PZ_GO) {
+        if (s_po.run) {
+            s_po.left = pomo_left();
+            s_po.run = false;
+        } else {
+            if (s_po.left <= 0) s_po.left = POMO_LEN[s_po.phase];
+            s_po.end_us = esp_timer_get_time() + (int64_t)s_po.left * 1000000;
+            s_po.run = true;
+            audio_tone(1047, 60, 0);
+        }
+    } else if (z == PZ_RESET) {
+        if (!s_po.run && s_po.left == POMO_LEN[s_po.phase]) {   // já estava no início: recomeça o ciclo
+            s_po.phase = POMO_FOCUS;
+            s_po.done = 0;
+        }
+        s_po.run = false;
+        s_po.left = POMO_LEN[s_po.phase];
+    } else if (z == PZ_SKIP) {
+        bool was = s_po.run;
+        pomo_next(false);
+        if (was && s_po.phase != POMO_FOCUS) {   // saltar um foco a contar começa logo a pausa
+            s_po.run = true;
+            s_po.end_us = esp_timer_get_time() + (int64_t)s_po.left * 1000000;
+        }
+    }
+    pomo_draw();
+}
+
+static void pomo_ev(lv_event_t *e)
+{
+    lv_point_t pt;
+    lv_indev_get_point(lv_indev_active(), &pt);
+    pomo_zone(anim_pomo_zone(W - 1 - pt.y, pt.x));   // ponto do painel -> coordenadas de quem olha
+}
+
+static void pomo_hide(void)
+{
+    if (s_pomo_tm) lv_timer_delete(s_pomo_tm);
+    s_pomo_tm = NULL;
+    if (s_pomo) lv_obj_delete(s_pomo);
+    s_pomo = s_pomo_cv = NULL;
+    heap_caps_free(s_pomo_buf);
+    heap_caps_free(s_pomo_up);
+    s_pomo_buf = s_pomo_up = NULL;
+}
+
+static void pomo_show(void)
+{
+    if (s_pomo) return;
+    s_pomo_buf = heap_caps_malloc(W * H * 4, MALLOC_CAP_SPIRAM);
+    s_pomo_up = heap_caps_malloc(W * H * 4, MALLOC_CAP_SPIRAM);
+    if (!s_pomo_buf || !s_pomo_up) {
+        pomo_hide();
+        return;
+    }
+    s_pomo = box(lv_layer_top(), 0x000000, 0);   // por cima de tudo menos dos avisos que vierem depois
+    lv_obj_set_size(s_pomo, W, H);
+    lv_obj_add_flag(s_pomo, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_pomo, pomo_ev, LV_EVENT_SHORT_CLICKED, NULL);
+    s_pomo_cv = lv_canvas_create(s_pomo);
+    lv_canvas_set_buffer(s_pomo_cv, s_pomo_buf, W, H, LV_COLOR_FORMAT_XRGB8888);
+    lv_obj_remove_flag(s_pomo_cv, LV_OBJ_FLAG_CLICKABLE);
+    s_pomo_t0 = esp_timer_get_time();
+    s_pomo_tm = lv_timer_create(pomo_tick, 200, NULL);
+    pomo_draw();
+}
+
+// a cada segundo: fim da fase (mesmo com o ecrã fechado)
+static void pomo_check(void)
+{
+    if (!s_po.run || esp_timer_get_time() < s_po.end_us) return;
+    bool was_focus = s_po.phase == POMO_FOCUS;
+    pomo_next(true);
+    for (int i = 0; i < 2; i++) {   // fim do foco: a subir; fim da pausa: a descer
+        audio_tone(was_focus ? 784 : 1319, 150, 0);
+        audio_tone(988, 150, 0);
+        audio_tone(was_focus ? 1319 : 784, 280, 0);
+        audio_tone(0, 250, 0);
+    }
+    wake_nolock();
+    if (s_pomo) return;
+    cJSON *m = cJSON_CreateObject();
+    cJSON_AddStringToObject(m, "kind", "alarm");
+    cJSON_AddStringToObject(m, "from", was_focus ? "POMODORO" : "AO TRABALHO");
+    cJSON_AddStringToObject(m, "title", was_focus ? "Pomodoro concluído" : "Fim da pausa");
+    cJSON_AddStringToObject(m, "text", was_focus ? (s_po.phase == POMO_LONG ? "Pausa longa de 15 min" : "Pausa de 5 min")
+                                                 : "Gire o cubo para a direita para começar o foco");
+    cJSON_AddBoolToObject(m, "sound", false);
+    cJSON_AddBoolToObject(m, "local", true);
+    notify_show(m);
+    cJSON_Delete(m);
+}
+
+void ui_orient(bool right)
+{
+    if (!bsp_display_lock(500)) return;
+    if (right) pomo_show();
+    else pomo_hide();
+    wake_nolock();
+    bsp_display_unlock();
+}
+
+bool ui_pomo_key(int key, int ev)
+{
+    bool used = false;
+    if (bsp_display_lock(500)) {
+        if (s_pomo && key == 0 && ev == 0) {   // BOOT curto: iniciar / pausar
+            pomo_zone(PZ_GO);
+            used = true;
+        }
+        bsp_display_unlock();
+    }
+    return used;
 }
 
 // ------------------------------------------------------------------------------------ "Sobre"
@@ -1699,7 +2087,7 @@ static void about_show(void)
     lv_obj_set_flex_align(s_about_txt, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(s_about_txt, 4, 0);
     lv_obj_remove_flag(s_about_txt, LV_OBJ_FLAG_CLICKABLE);
-    label(s_about_txt, "Deck\xC2\xB3 " DECK3_FW_VERSION " \xC2\xB7 o DashDeck elevado ao cubo", &deck_font_20, 0xFFFFFF);
+    label(s_about_txt, "DashDeck\xC2\xB3 " DECK3_FW_VERSION, &deck_font_20, 0xFFFFFF);
     const cJSON *ln;
     cJSON_ArrayForEach(ln, s_about_lines) {
         if (cJSON_IsString(ln)) label(s_about_txt, ln->valuestring, &deck_font_16, 0xB8C2D0);
@@ -1799,7 +2187,7 @@ void ui_send_hello(link_via_t via)
     cJSON_AddNumberToObject(o, "vol", audio_get_vol());
     cJSON_AddBoolToObject(o, "sd", sd_ok());
     cJSON *caps = cJSON_AddArrayToObject(o, "caps");
-    const char *cl[] = {"vox", "notify", "audio", "mic", "imu", "keys", "ota", "confirm", "slider", "chart", "bat", "wifi_scan", "about", "sd", "image", "scene", "away"};
+    const char *cl[] = {"notify", "audio", "mic", "imu", "keys", "ota", "confirm", "slider", "chart", "bat", "wifi_scan", "about", "sd", "image", "away"};
     for (size_t i = 0; i < sizeof(cl) / sizeof(cl[0]); i++) cJSON_AddItemToArray(caps, cJSON_CreateString(cl[i]));
     link_send_via(o, via);
     cJSON_Delete(o);
@@ -1839,21 +2227,6 @@ void ui_handle(const cJSON *msg, link_via_t via)
         esp_restart();
     }
     if (!strcmp(t, "imu")) { imu_handle(msg); return; }
-    if (!strcmp(t, "vox")) {
-        // "save": true guarda o modelo no cartão (deck3/vox/<id>.json): fica disponível sem reenvio
-        if (vox_define(msg) && cJSON_IsTrue(cJSON_GetObjectItem(msg, "save")) && sd_ok()) {
-            cJSON *c = cJSON_Duplicate(msg, true);
-            cJSON_DeleteItemFromObject(c, "t");
-            cJSON_DeleteItemFromObject(c, "save");
-            char *txt = cJSON_PrintUnformatted(c);
-            char rel[48];
-            snprintf(rel, sizeof(rel), "vox/%s.json", jstr(msg, "id"));
-            if (txt) sd_write_text(rel, txt);
-            cJSON_free(txt);
-            cJSON_Delete(c);
-        }
-        return;
-    }
     if (!strcmp(t, "time")) {
         const char *tz = jstr(msg, "tz");
         if (tz) { setenv("TZ", tz, 1); tzset(); }
@@ -1865,6 +2238,7 @@ void ui_handle(const cJSON *msg, link_via_t via)
         return;
     }
     if (audio_handle(msg)) return;
+    if (!strcmp(t, "bg")) { bg_handle(msg); return; }   // fundo do mapa ou do relógio (sem o LVGL)
 
     if (!bsp_display_lock(2000)) {
         ESP_LOGW(TAG, "lock do LVGL ocupado; '%s' descartada", t);
@@ -1873,6 +2247,35 @@ void ui_handle(const cJSON *msg, link_via_t via)
     if (!strcmp(t, "screen")) show_screen(msg);
     else if (!strcmp(t, "update")) update_screen(msg);
     else if (!strcmp(t, "shot")) shot_take();
+    else if (!strcmp(t, "clkface")) {   // {"t":"clkface","v":n}: muda a face do relógio (testes e capturas)
+        s_clk_face = ((jint(msg, "v", 0) % ANIM_CLOCK_FACES) + ANIM_CLOCK_FACES) % ANIM_CLOCK_FACES;
+        store_set("clkface", s_clk_face);
+        if (s_clk) clock_face_name();
+    }
+    else if (!strcmp(t, "pomo")) {   // {"t":"pomo","show":true|false,"z":PZ_*,"left":s}: testes sem girar o cubo
+        const cJSON *sh = cJSON_GetObjectItem(msg, "show");
+        if (cJSON_IsTrue(sh)) pomo_show();
+        if (cJSON_IsFalse(sh)) pomo_hide();
+        int z = jint(msg, "z", PZ_NONE);
+        if (z > PZ_NONE && z <= PZ_SKIP) pomo_zone(z);
+        int left = jint(msg, "left", -1);   // encurta a fase atual (para ver o fim sem esperar)
+        if (left >= 0) {
+            s_po.left = left;
+            if (s_po.run) s_po.end_us = esp_timer_get_time() + (int64_t)left * 1000000;
+            if (s_pomo) pomo_draw();
+        }
+    }
+    else if (!strcmp(t, "bootanim")) {   // {"t":"bootanim"}: repete a sequência de arranque (testes e capturas)
+        if (s_screen && !s_boot_buf) {
+            s_boot_first = true;
+            boot_show_mode(false);
+            s_boot_exit = true;   // a tela atual volta no fim da sequência
+        }
+    }
+    else if (!strcmp(t, "clkzone")) {   // {"t":"clkzone","v":z}: toque numa zona CZ_* do temporizador (testes)
+        int z = jint(msg, "v", CZ_NONE);
+        if (z > CZ_NONE && z <= CZ_AON) clock_zone(z);
+    }
     else if (!strcmp(t, "toast")) toast_nolock(jstr(msg, "text"), jstr(msg, "level"));
     else if (!strcmp(t, "notify")) notify_show(msg);
     else if (!strcmp(t, "status")) strlcpy(s_status, jstr(msg, "text") ? jstr(msg, "text") : "", sizeof(s_status));
@@ -1963,6 +2366,8 @@ static void tick_1s(lv_timer_t *t)
     hdr_refresh();
     idle_check();
     battery_watch();
+    clock_check();
+    pomo_check();
     if (s_bl_dirty) {
         s_bl_dirty = false;
         store_set("bl", s_bl);
@@ -1983,6 +2388,9 @@ static void tick_1s(lv_timer_t *t)
 void ui_init(lv_display_t *disp)
 {
     s_bl = store_get("bl", 80);
+    clock_load();
+    s_po.today = store_get("po_today", 0);
+    s_po.yday = store_get("po_yday", -1);
     bsp_display_lock(0);   // 0 = esperar o tempo que for preciso
     s_scr = lv_screen_active();
     lv_obj_set_style_bg_color(s_scr, lv_color_hex(C_BG), 0);
@@ -2019,12 +2427,12 @@ void ui_init(lv_display_t *disp)
     lv_obj_set_flex_grow(s_tsub, 1);
     lv_obj_set_style_translate_y(s_tsub, 3, 0);   // na linha de base do título
     s_clock = label(s_hdr, "--:--", &deck_font_20, C_TEXT);
-    lv_obj_align(s_clock, LV_ALIGN_TOP_RIGHT, 0, 4);
+    lv_obj_align(s_clock, LV_ALIGN_TOP_RIGHT, -14, 6);   // longe do canto arredondado do painel
     s_link = box(s_hdr, C_ERR, LV_RADIUS_CIRCLE);
     lv_obj_set_size(s_link, 8, 8);
     lv_obj_align_to(s_link, s_clock, LV_ALIGN_OUT_LEFT_MID, -8, 0);
     s_bat = label(s_hdr, "", &deck_font_16, C_SUB);
-    lv_obj_align(s_bat, LV_ALIGN_BOTTOM_RIGHT, 0, -2);
+    lv_obj_align(s_bat, LV_ALIGN_BOTTOM_RIGHT, -10, -2);
     s_wifi = label(s_hdr, LV_SYMBOL_WIFI, &deck_font_16, 0x3A424D);
     // páginas: pontos num "comprimido" em baixo, ao centro, por cima do corpo
     s_dots = box(s_scr, C_BG, LV_RADIUS_CIRCLE);

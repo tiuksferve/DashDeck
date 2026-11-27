@@ -1,6 +1,6 @@
-"""O Deck³ no motor do DashDeck: transporte WebSocket, servidor e o que é só do cubo.
+"""O DashDeck³ no motor do DashDeck: transporte WebSocket, servidor e o que é só do cubo.
 
-O Deck³ (ESP32-S3 AMOLED em cubo) liga-se ao uConsole por Wi-Fi. É mais uma sessão do mesmo motor
+O DashDeck³ (ESP32-S3 AMOLED em cubo) liga-se ao uConsole por Wi-Fi. É mais uma sessão do mesmo motor
 (dashd.App), ao lado do DashDeck pela USB; os providers são os mesmos. Aqui está:
 
   - WsLink: o transporte da sessão do cubo (WebSocket com token, a partir da thread do asyncio);
@@ -62,7 +62,7 @@ class WsLink:
     """Transporte do motor (send, acks, jpg_acks) por WebSocket, a partir da thread do asyncio."""
 
     def __init__(self, events):
-        self.events = events   # session.SessionEvents: os eventos saem marcados com a sessão do Deck³
+        self.events = events   # session.SessionEvents: os eventos saem marcados com a sessão do DashDeck³
         self.acks: queue.Queue = queue.Queue()
         self.jpg_acks: queue.Queue = queue.Queue()
         self.loop: asyncio.AbstractEventLoop | None = None
@@ -86,7 +86,7 @@ class WsLink:
 
 
 class Dev:
-    """O aparelho ligado, visto pelos providers do Deck³ (self.session nos providers do deckproviders.py)."""
+    """O aparelho ligado, visto pelos providers do DashDeck³ (self.session nos providers do deckproviders.py)."""
 
     def __init__(self, app, sess: Session):
         self.app = app
@@ -121,7 +121,7 @@ DECK_ICON = {"mail": "emoji:💬", "gps": "emoji:🛰️", "wifi": "emoji:📶",
 
 
 class DeckMixin:
-    """O que é do Deck³ no motor. Cada método só muda o comportamento quando a sessão atual é a do cubo
+    """O que é do DashDeck³ no motor. Cada método só muda o comportamento quando a sessão atual é a do cubo
     (self.session.kind == "deck3"); para o DashDeck passa ao motor (super())."""
     DECK_MSGS = {"key", "imu", "mic", "bat", "bt", "wifi_scan", "bat_low", "offline_log", "cfg", "sd", "ls",
                  "file", "rm", "slider", "ota", "pong"}
@@ -143,7 +143,7 @@ class DeckMixin:
         extra = [i for i in cfg.get("dock", []) if i.get("type") not in ("home", "backlight") and i.get("id") not in ids]
         sess = Session(kind="deck3", emojis=False, layout="grid", dock_screens=set(), screen_off=0,
                        refresh=float(d.get("refresh", 2.0)), backlight=int(d.get("backlight", 80)), rotation=0)
-        sess.root = {"id": "home", "type": "submenu", "label": d.get("title", "Deck³"), "items": menu + extra}
+        sess.root = {"id": "home", "type": "submenu", "label": d.get("title", "DashDeck³"), "items": menu + extra}
         sess.stack = [sess.root]
         sess.link = WsLink(SessionEvents(self.events, sess))
         sess.link.safe = lcd_safe
@@ -182,7 +182,7 @@ class DeckMixin:
         self.start_deck()
         super().run()
 
-    # --- compatibilidade com os providers do Deck³
+    # --- compatibilidade com os providers do DashDeck³
     @property
     def bl(self) -> int:
         return self.deck_session.backlight if self.deck_session else self.backlight
@@ -199,7 +199,7 @@ class DeckMixin:
         return p
 
     def handle_result(self, res) -> None:
-        if isinstance(res, str):   # os providers do Deck³ devolvem o aviso como texto
+        if isinstance(res, str):   # os providers do DashDeck³ devolvem o aviso como texto
             self.toast(res, "info")
             self.show(full=False)
             return
@@ -215,8 +215,9 @@ class DeckMixin:
         return "deck3" if self.is_deck() else "dashdeck"
 
     def canvas_area(self) -> tuple[int, int]:
-        """No Deck³: corpo da tela (480x480, cabeçalho de 56 px, margens), para os plots e mapas."""
-        return (444, 372) if self.is_deck() else super().canvas_area()
+        """No DashDeck³: corpo da tela (480x480, cabeçalho de 56 px, margens), para os plots e mapas; deixa lugar
+        para uma fila de botões por baixo (Ligar readsb, Centrar...) sem ter de rolar."""
+        return (444, 320) if self.is_deck() else super().canvas_area()
 
     def send_time(self) -> None:
         if not self.is_deck():
@@ -265,10 +266,10 @@ class DeckMixin:
                         sent += 1
                     else:
                         dev.icon_failed.add(iid)
-                        log.warning("ícone %s (%s) não foi para o cartão do Deck³", iid, src)
+                        log.warning("ícone %s (%s) não foi para o cartão do DashDeck³", iid, src)
                 dev.icon_queue.pop(0)
             if sent:
-                log.info("%d ícone(s) enviados para o cartão do Deck³", sent)
+                log.info("%d ícone(s) enviados para o cartão do DashDeck³", sent)
                 link.events.put(("refresh", None))
         finally:
             dev.icon_busy = False
@@ -288,14 +289,11 @@ class DeckMixin:
                 return False
         return True
 
-    # o que o firmware do Deck³ ainda não tem (emojis no texto, fundos, dock, cabeçalho)
+    # o que o firmware do DashDeck³ ainda não tem (emojis no texto, dock, cabeçalho)
 
     def send_emojis(self, scr: dict) -> None:
         if not self.is_deck():
             super().send_emojis(scr)
-
-    def send_bg(self, bg) -> bool:
-        return False if self.is_deck() else super().send_bg(bg)
 
     def send_dock(self) -> None:
         if not self.is_deck():
@@ -364,7 +362,7 @@ class DeckMixin:
                 self.link.send({"t": "idle", "dim": int(st.get("dim", self.cfg_deck.get("dim", 60))),
                                 "off": int(st.get("off", self.cfg_deck.get("off", 300)))})
                 ab = self.cfg.get("about", {})
-                self.link.send({"t": "about", "lines": ab.get("lines", ["O DashDeck elevado ao cubo"])})
+                self.link.send({"t": "about", "lines": ab.get("lines", [])})
                 self.link.send({"t": "bat?", "n": 2})
                 self.link.send({"t": "ls", "path": "icons"})   # ícones que o cartão já tem
             return
@@ -390,8 +388,8 @@ class DeckMixin:
             if t == "bat":
                 self.log_battery(data)
             elif t == "bat_low":
-                log.warning("bateria fraca no Deck³: %s%%", data.get("pct"))
-                os.spawnvp(os.P_NOWAIT, "notify-send", ["notify-send", "-u", "critical", "Deck³",
+                log.warning("bateria fraca no DashDeck³: %s%%", data.get("pct"))
+                os.spawnvp(os.P_NOWAIT, "notify-send", ["notify-send", "-u", "critical", "DashDeck³",
                                                         f"Bateria fraca: {data.get('pct')}%"])
             elif t in ("ota", "cfg"):
                 log.info("%s", data)
@@ -411,7 +409,7 @@ class DeckMixin:
         self._offline_n += len(evs)
         low = [e for e in evs if e.get("t") == "bat_low"]
         if low:
-            os.spawnvp(os.P_NOWAIT, "notify-send", ["notify-send", "Deck³",
+            os.spawnvp(os.P_NOWAIT, "notify-send", ["notify-send", "DashDeck³",
                                                     f"Enquanto esteve fora a bateria desceu a {low[-1].get('pct')}%"])
         if msg.get("last"):
             n, self._offline_n = self._offline_n, 0
@@ -446,7 +444,7 @@ class DeckMixin:
             devs = [{"id": dev.id, "screen": ds.stack[-1].get("id"), **dev.hello}] if link.sock else []
             return {"ok": True, "devices": devs, "port": int(self.cfg_deck.get("port", 8765))}
         if not link.sock:
-            return {"ok": False, "err": "nenhum Deck³ ligado"}
+            return {"ok": False, "err": "nenhum DashDeck³ ligado"}
         if cmd == "last":
             return {"ok": True, "last": {dev.id: dev.last.get(req["t"]) if req.get("t") else dev.last}}
         if cmd == "inject":   # simula uma mensagem do aparelho (testes: deckctl.py tap/swipe/back)

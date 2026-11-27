@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""dashd — serviço do uConsole que controla o DashDeck (ESP32-C6, USB) e o Deck³ (ESP32-S3, Wi-Fi).
+"""dashd — serviço do uConsole que controla o DashDeck (ESP32-C6, USB) e o DashDeck³ (ESP32-S3, Wi-Fi).
 
 Os aparelhos são só renderizadores: este serviço decide o menu, as telas e as ações, com uma sessão por
 ecrã e os mesmos providers para os dois. Protocolo: uma mensagem JSON por linha no DashDeck
-(firmware/main/ui.c) e por frame de WebSocket no Deck³ (docs/deck3/protocolo.md; ver deck.py).
+(firmware/main/ui.c) e por frame de WebSocket no DashDeck³ (docs/deck3/protocolo.md; ver deck.py).
 """
 from __future__ import annotations
 
@@ -189,7 +189,7 @@ class Engine:
     """O motor: menus, telas, detalhes, serviços, avisos e ações, para um ou mais ecrãs (sessões).
 
     Os campos de session.Session (stack, esp_w, link, ...) são atributos da sessão atual (self.session); o
-    ciclo de eventos muda-a antes de tratar cada evento. O que é só do Deck³ está em deck.DeckMixin."""
+    ciclo de eventos muda-a antes de tratar cada evento. O que é só do DashDeck³ está em deck.DeckMixin."""
 
     def __init__(self, cfg: dict):
         self.cfg = cfg
@@ -242,7 +242,7 @@ class Engine:
         self._icon_src: dict[str, str] = {}
 
     def make_link(self):
-        """Transporte do DashDeck pela USB ([dashd] port; serial = false desliga-o). O do Deck³ está em deck.py."""
+        """Transporte do DashDeck pela USB ([dashd] port; serial = false desliga-o). O do DashDeck³ está em deck.py."""
         d = self.cfg.get("dashd", {})
         if not d.get("serial", True):
             return NullLink()
@@ -285,7 +285,7 @@ class Engine:
         return not devs or self.session.kind in devs
 
     SHOT_PREFIX = "dashdeck"   # capturas em ~/Pictures/<prefixo>-<data>.png
-    has_rotation = True        # o ecrã roda (página Sistema › DashDeck); o Deck³ não
+    has_rotation = True        # o ecrã roda (página Sistema › DashDeck); o DashDeck³ não
 
     # ---- estado guardado (escolhas feitas no próprio DashDeck)
     STATE = paths.CONFIG / "state.json"
@@ -930,9 +930,13 @@ class Engine:
             sess = next((s for s in self.sessions if s.kind == "dashdeck"), None)
             if sess:
                 self.dispatch((kind, data, sess))
-        elif kind in ("toast", "refresh", "notify"):
+        elif kind in ("toast", "refresh"):
             for _ in self.each_session(ready=False):
                 self.handle(kind, data)
+        elif kind == "notify":   # alarme/temporizador do DashDeck: só no C6 (o cubo tem os seus)
+            for sess in self.each_session(ready=False):
+                if sess.kind == "dashdeck":
+                    self.handle(kind, data)
         else:
             self.handle(kind, data)
 
@@ -949,7 +953,7 @@ class Engine:
         elif kind == "shot":
             if self.esp_ready:
                 self.shot(data)
-        elif kind == "notify":   # aviso pedido por um provider (alarme/temporizador do relógio)
+        elif kind == "notify":   # aviso pedido por um provider (alarme/temporizador do relógio do C6)
             if self.esp_ready:
                 self.link.send({"t": "notify", **data})
         elif kind == "msg":
@@ -1094,7 +1098,7 @@ from deck import DeckMixin  # noqa: E402  (o deck importa daqui só dentro das f
 
 
 class App(DeckMixin, Engine):
-    """O serviço: o motor com o DashDeck (USB) e o Deck³ (Wi-Fi), cada um na sua sessão."""
+    """O serviço: o motor com o DashDeck (USB) e o DashDeck³ (Wi-Fi), cada um na sua sessão."""
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -1102,8 +1106,8 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("-c", "--config", default=str(HERE / "config.toml"))
     ap.add_argument("-v", "--verbose", action="store_true")
     ap.add_argument("--no-serial", action="store_true", help="sem o DashDeck (USB)")
-    ap.add_argument("--no-deck", action="store_true", help="sem o Deck³ (Wi-Fi)")
-    ap.add_argument("--deck-port", type=int, help="porta do Deck³ (por omissão a do [deckd])")
+    ap.add_argument("--no-deck", action="store_true", help="sem o DashDeck³ (Wi-Fi)")
+    ap.add_argument("--deck-port", type=int, help="porta do DashDeck³ (por omissão a do [deckd])")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")

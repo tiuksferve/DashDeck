@@ -1,6 +1,7 @@
 // Template "plot", portado do DashDeck (firmware/main/ui.c: draw_plot, draw_tracks, draw_icons, draw_tag,
 // build_ctrl, map_ev) para o ecrã de 480x480: texto 16 px, ícones dos alvos 1,5x, botões maiores.
 #include "plot.h"
+#include "bg.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -298,8 +299,18 @@ static void draw(const cJSON *p, int32_t w, int32_t h)
     const int32_t R = jint(p, "R", (w < h ? w : h) / 2 - 3);
     const lv_color_t grid = lv_color_hex(C_GRID), sub = lv_color_hex(C_SUB);
     uint16_t bg = rgb565(C_PLOT_BG);
-    for (int32_t y = 0; y < h; y++)
-        for (int32_t x = 0; x < w; x++) s_px[y * s_stride + x] = bg;
+    const bgimg_t *img = bg_get(jstr(p, "bg"));   // tiles do mapa enviados pelo dashd ({"t":"bg"})
+    if (img) {
+        uint16_t pal[256];
+        int np = img->bpp == 8 ? 256 : 16;
+        for (int i = 0; i < np; i++) pal[i] = rgb565(img->pal[i]);
+        for (int32_t y = 0; y < h; y++)
+            for (int32_t x = 0; x < w; x++)
+                s_px[y * s_stride + x] = (x < img->w && y < img->h) ? pal[bg_px(img, x, y)] : bg;
+    } else {
+        for (int32_t y = 0; y < h; y++)
+            for (int32_t x = 0; x < w; x++) s_px[y * s_stride + x] = bg;
+    }
     draw_tracks(cJSON_GetObjectItemCaseSensitive(p, "tracks"));
     draw_icons(cJSON_GetObjectItemCaseSensitive(p, "pts"));
     lv_layer_t layer;

@@ -1,6 +1,6 @@
 """WebSocket mínimo (RFC 6455) sobre asyncio, só com a biblioteca padrão.
 
-O /usr/bin/python3 do uConsole não tem `websockets`; o Deck³ só precisa de mensagens de texto,
+O /usr/bin/python3 do uConsole não tem `websockets`; o DashDeck³ só precisa de mensagens de texto,
 ping/pong e close, por isso isto chega e evita dependências.
 """
 from __future__ import annotations

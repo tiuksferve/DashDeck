@@ -1,7 +1,7 @@
 #pragma once
-// Interface do Deck³: renderizador fino (como o DashDeck). O host manda telas genéricas em JSON e o
+// Interface do DashDeck³: renderizador fino (como o DashDeck). O host manda telas genéricas em JSON e o
 // ESP devolve toques. Templates compatíveis com o DashDeck (menu, list, kv, text, buttons), com
-// ícones em voxels, arranque animado, avisos e confirmações. Protocolo: docs/protocolo.md.
+// ícones do dashd (ou placas de 8 bits), arranque animado, avisos e confirmações. Protocolo: docs/protocolo.md.
 #include "cJSON.h"
 #include "link.h"
 #include "lvgl.h"
@@ -16,3 +16,5 @@ void ui_progress(const char *text, int pct);          // pct < 0 esconde
 void ui_wake(void);                                   // acende o ecrã (toque, botão, IMU)
 void ui_local_back(void);                             // BOOT sem host: fecha avisos/diálogos
 void ui_local_bl_cycle(void);                         // PWR sem host: alterna o brilho
+void ui_orient(bool right);                           // IMU: em pé e girado 90° à direita (Pomodoro) ou normal
+bool ui_pomo_key(int key, int ev);                    // botão com o Pomodoro aberto (true = usado)

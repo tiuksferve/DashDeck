@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Compila e grava o Deck³ (ESP32-S3).
+# Compila e grava o DashDeck³ (ESP32-S3).
 #   firmware/deck3-s3/flash.sh            compila e grava pela USB (porta /dev/deck3, ou DECK3_PORT=/dev/ttyACM0)
 #   firmware/deck3-s3/flash.sh build      só compila
-#   firmware/deck3-s3/flash.sh ota        compila e envia pelo Wi-Fi (o serviço tem de estar a correr e o Deck³ ligado)
+#   firmware/deck3-s3/flash.sh ota        compila e envia pelo Wi-Fi (o serviço tem de estar a correr e o DashDeck³ ligado)
 #   firmware/deck3-s3/flash.sh <args>     passa os argumentos ao idf.py (ex.: monitor, menuconfig)
 set -e
 cd "$(dirname "$0")"

@@ -121,7 +121,7 @@ def rgb565a8(src: str, size: int = SIZE) -> bytes | None:
 
 @functools.lru_cache(maxsize=64)
 def lvgl_bin(src: str, size: int) -> bytes | None:
-    """Imagem binária do LVGL 9 (cabeçalho de 12 bytes + ARGB8888, B G R A), para o Deck³ ler do cartão
+    """Imagem binária do LVGL 9 (cabeçalho de 12 bytes + ARGB8888, B G R A), para o DashDeck³ ler do cartão
     sem descodificar PNG (lv_image "S:icons/<id>.bin")."""
     img = _load(src, size)
     if img is None:

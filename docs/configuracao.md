@@ -21,11 +21,11 @@ Não é preciso regravar o ESP. Se o TOML tiver um erro, o serviço não arranca
 | `rotation` | `1` | 0 retrato, 1 horizontal, 2 retrato invertido, 3 horizontal invertido. O ESP grava o valor e reinicia sozinho. A rotação escolhida no menu (Sistema > DashDeck) fica em `~/.config/dashd/state.json` e passa à frente desta; apague esse ficheiro para voltar a usar a do config |
 | `screen_off` | `0` | Apaga o ecrã após N segundos sem toques na tela inicial (no config: 180). Um toque ou o BOOT liga-o, sem ativar nada. `0` = nunca |
 | `dock_screens` | `["home"]` | Ids das telas que mostram o dock (no config: `["home", "apps"]`: tela inicial e Aplicações) |
-| `serial` | `true` | `false` = o dashd não abre a USB (serve só o Deck³) |
+| `serial` | `true` | `false` = o dashd não abre a USB (serve só o DashDeck³) |
 
-## `[deckd]`: o Deck³
+## `[deckd]`: o DashDeck³
 
-O mesmo serviço serve o Deck³ (cubo ESP32-S3 AMOLED) por Wi-Fi, numa sessão própria, com os mesmos
+O mesmo serviço serve o DashDeck³ (cubo ESP32-S3 AMOLED) por Wi-Fi, numa sessão própria, com os mesmos
 providers: os dois ecrãs podem estar no ADS-B ao mesmo tempo e o SDR só é libertado quando o último sai.
 Os avisos (mensagens do Meshtastic, squawks, alarme) vão para os dois.
 
@@ -33,7 +33,7 @@ Os avisos (mensagens do Meshtastic, squawks, alarme) vão para os dois.
 |---|---|---|
 | `enabled` | `true` | Sem a secção, ou com `false`, o dashd só serve o DashDeck |
 | `port` | `8765` | WebSocket do aparelho, firmware da OTA (`/fw/`) e controlo local (`/ctl`, para o `deckctl.py`) |
-| `title` | `Deck³` | Título do menu principal do cubo |
+| `title` | `DashDeck³` | Título do menu principal do cubo |
 | `refresh`, `backlight` | `2.0`, `80` | Como no `[dashd]` (o cubo guarda o último brilho escolhido) |
 | `bl_levels` | `[20, 50, 80, 100]` | Níveis do botão de brilho |
 | `dim`, `off` | `60`, `300` | Segundos sem toques até escurecer e até apagar (AMOLED). Mudam-se também em Config › Ecrã e som |
@@ -42,11 +42,11 @@ O token do cubo está em `~/.config/deck3/token` (gravado no aparelho pelo `setu
 O menu do cubo é o mesmo `[[menu]]`; os itens do dock (menos Início e Brilho) aparecem no fim, porque
 o cubo não tem dock. `[keys]` diz o que fazem os botões físicos (`boot`, `user`, `pwr` × `short`, `long`,
 `double` = `back`, `home`, `bl`, `open:<id>`, `shell:<cmd>`, `launch:<cmd>`, `none`) e `[about]` as linhas
-da cena "Sobre o Deck³".
+da cena "Sobre o DashDeck³".
 
 ## Itens de menu: `[[menu]]` e `[[menu.items]]`
 
-Campos comuns (`devices = ["deck3"]` ou `["dashdeck"]` mostra o item só nesse ecrã; a box Config é só do Deck³):
+Campos comuns (`devices = ["deck3"]` ou `["dashdeck"]` mostra o item só nesse ecrã; a box Config é só do DashDeck³):
 
 | Campo | Descrição |
 |---|---|

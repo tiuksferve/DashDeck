@@ -2,7 +2,7 @@
 """deckctl — controla o deckd a partir do uConsole (scripts, atalhos, outros programas).
 
   deckctl.py status                         aparelhos ligados
-  deckctl.py notify "Texto" [--from Nome] [--kind alarm|squawk] [--vox modelo]
+  deckctl.py notify "Texto" [--from Nome] [--kind alarm|squawk] [--sprite mail|clock|plane]
   deckctl.py toast "Texto" [--level ok|warn|err|info]
   deckctl.py beep [freq] [ms]
   deckctl.py send '{"t":"bl","v":30}'       qualquer mensagem do protocolo
@@ -32,7 +32,7 @@ def main() -> int:
     ap.add_argument("args", nargs="*")
     ap.add_argument("--from", dest="frm", default="uConsole")
     ap.add_argument("--kind")
-    ap.add_argument("--vox")
+    ap.add_argument("--sprite")
     ap.add_argument("--level", default="info")
     ap.add_argument("--port", type=int, help="porta do deckd (por omissão a do [deckd] do config.toml)")
     a = ap.parse_args()
@@ -46,7 +46,7 @@ def main() -> int:
         req = {"cmd": "shot", **({"path": str(Path(a.args[0]).resolve())} if a.args else {})}
     elif a.cmd == "last":          # deckctl.py last [tipo]: últimas mensagens do aparelho
         req = {"cmd": "last", **({"t": a.args[0]} if a.args else {})}
-    elif a.cmd == "put":           # deckctl.py put ficheiro.json vox/nome.json  (para o cartão SD do Deck³)
+    elif a.cmd == "put":           # deckctl.py put icone.bin icons/nome.bin  (para o cartão SD do DashDeck³)
         if len(a.args) < 2 or not Path(a.args[0]).is_file():
             print("uso: deckctl.py put <ficheiro local> <caminho no cartão, em deck3/>", file=sys.stderr)
             return 2
@@ -84,8 +84,8 @@ def main() -> int:
             msg = {"t": "notify", "from": a.frm, "text": " ".join(a.args)}
             if a.kind:
                 msg["kind"] = a.kind
-            if a.vox:
-                msg["vox"] = a.vox
+            if a.sprite:
+                msg["sprite"] = a.sprite
         elif a.cmd == "toast":
             msg = {"t": "toast", "text": " ".join(a.args), "level": a.level}
         elif a.cmd == "beep":

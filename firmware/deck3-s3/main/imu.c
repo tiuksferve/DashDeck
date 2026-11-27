@@ -33,8 +33,26 @@ static void send_face(const char *face)
     link_send_event("imu", "face", face, NULL, NULL);
 }
 
+// Posição em pé sobre a mesa (medida na placa): normal = +y para cima (ay ≈ +8,9); girado 90° para a
+// esquerda (botões à esquerda) = +x para cima (ax ≈ +9,6); girado 90° para a direita (botões à direita)
+// = -x para cima (ax ≈ -9,6); deitado de costas = +z (az ≈ +8,6). O Pomodoro usa o giro para a direita.
+// "Em pé" exige o ecrã na vertical (|az| pequeno, até ~20°), parado (giroscópio calmo) e 1 g;
+// assim pegar no cubo, incliná-lo ou deitá-lo não conta como giro.
+enum { ORI_NONE, ORI_UP, ORI_LEFT, ORI_RIGHT };
+
+static int upright_pose(float ax, float ay, float az, float g, float gyro)
+{
+    if (fabsf(g - 9.81f) > 1.5f || fabsf(az) > 3.3f || gyro > 40) return ORI_NONE;
+    if (ay > 8.0f && fabsf(ax) < 2.5f) return ORI_UP;
+    if (ax > 8.0f && fabsf(ay) < 2.5f) return ORI_LEFT;
+    if (ax < -8.0f && fabsf(ay) < 2.5f) return ORI_RIGHT;
+    return ORI_NONE;
+}
+
 static void imu_task(void *arg)
 {
+    int ori = ORI_NONE, ori_cand = ORI_NONE;
+    int64_t ori_t = 0;
     const char *stable = NULL, *cand = NULL;
     int64_t cand_t = 0, last_stream = 0, last_shake = 0;
     int shake_hits = 0;
@@ -56,6 +74,15 @@ static void imu_task(void *arg)
                     send_face(f);
                     ui_wake();
                 }
+            }
+            // giro para a direita em pé (Pomodoro) e regresso: a nova posição parada durante 800 ms
+            float gyro = fabsf(d.gyroX) + fabsf(d.gyroY) + fabsf(d.gyroZ);
+            int o = upright_pose(d.accelX, d.accelY, d.accelZ, g, gyro);
+            if (o != ori_cand) { ori_cand = o; ori_t = now; }
+            else if (o != ORI_NONE && o != ori && now - ori_t > 800) {
+                bool turn = (ori == ORI_UP && o == ORI_RIGHT) || o == ORI_UP;   // só o giro a partir de em pé abre
+                if (turn && (o == ORI_RIGHT || ori == ORI_RIGHT)) ui_orient(o == ORI_RIGHT);
+                ori = o;
             }
             // agitar: 4 picos acima de 2,2 g em menos de 800 ms
             if (g > 2.2f * 9.81f) {

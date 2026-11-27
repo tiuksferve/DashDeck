@@ -27,8 +27,7 @@ Fontes: wiki `docs.waveshare.com/ESP32-S3-Touch-AMOLED-2.16`, BSP `waveshare/esp
 | `main.c` | NVS → `bsp_display_start` (também inicia o I2C) → ui → link → power → keys → imu → audio → net |
 | `link.c` | Fila única de mensagens dos dois transportes (Wi-Fi e USB), tratadas por ordem numa tarefa; logs pela USB como `# ...`; `hello` pela USB sem host |
 | `net.c` | Wi-Fi com até 8 redes (escolhe a de melhor sinal), SNTP, descoberta do deckd (fixo → mDNS → último → gateway), WebSocket com token e remontagem de mensagens grandes na PSRAM; configuração `wifi`/`token`/`host`/`cfg?` |
-| `ui.c` | Cabeçalho (←, título, páginas, hora, Wi-Fi, ponto da ligação, bateria), templates, confirmações, toasts, avisos em voxels, progresso da OTA, escurecer/apagar com painel de acordar, ecrã de arranque com o estado da ligação |
-| `voxel.c` | Motor de voxels: projeção ortográfica com rotação, faces visíveis sem as interiores, ordenação por profundidade, luz fixa na câmara, bisel e textura por voxel; modelos embutidos (mapa de alturas) e definidos pelo host |
+| `ui.c` | Cabeçalho (←, título, páginas, hora, Wi-Fi, ponto da ligação, bateria), templates, confirmações, toasts, avisos em pixel art, progresso da OTA, escurecer/apagar com painel de acordar, ecrã de arranque com o estado da ligação |
 | `power.c` | AXP2101: bateria (%, mV), carga, USB, interrupções do PWR (lidas a cada 100 ms). Só lê: não mexe nas tensões |
 | `keys.c` | BOOT e IO18: curto, longo (600 ms), duplo (280 ms) |
 | `imu.c` | QMI8658 a 50 Hz: face estável para cima, agitar, stream |
@@ -44,17 +43,17 @@ mensagens) vão para a PSRAM. Não há a ginástica de memória do DashDeck (o C
 
 ## Daemon (`host/`)
 
-O motor e os providers **vieram do DashDeck** (mesmo autor, MIT) e são agora código do Deck³: não é preciso
+O motor e os providers **vieram do DashDeck** (mesmo autor, MIT) e são agora código do DashDeck³: não é preciso
 ter o DashDeck instalado. Se os dois estiverem no mesmo uConsole, cada um guarda o seu estado e as suas caches
 (`~/.config/deck3`, `~/.cache/deck3`; o DashDeck usa `dashd`). Os recursos físicos (o RTL-SDR, a AIO, o GPS)
 são os mesmos: com o ADS-B ligado num, o outro não tem o SDR.
 
 | Ficheiro | Papel |
 |---|---|
-| `deckd.py` | `DeckApp(engine.App)`: transporte WebSocket (`WsLink`), hora com a regra POSIX do fuso, área dos plots (444x372), botões físicos (`[keys]`), mensagens do Deck³ (bateria, sliders, eventos de fora de casa, SD, OTA), `/ctl` local e `/fw/` |
+| `deckd.py` | `DeckApp(engine.App)`: transporte WebSocket (`WsLink`), hora com a regra POSIX do fuso, área dos plots (444x372), botões físicos (`[keys]`), mensagens do DashDeck³ (bateria, sliders, eventos de fora de casa, SD, OTA), `/ctl` local e `/fw/` |
 | `engine.py` | O motor (veio do `dashd.py`): pilha de telas, detalhes dinâmicos, páginas, serviços systemd, lançadores, avisos do Meshtastic, squawks do ADS-B, relógio |
 | `providers.py` | Sistema, GPS, ADS-B, AIS, Sondas, Meshtastic, SDR, Câmara, Stocks, Rede, Partilhas, AIO, Consola, Janelas, Relógio |
-| `deckproviders.py` | Providers só do Deck³ (Config, estado do aparelho) |
+| `deckproviders.py` | Providers só do DashDeck³ (Config, estado do aparelho) |
 | `maptiles.py`, `routes.py`, `meshbridge.py`, `stocks.py`, `camclient.py`, `clockscene.py`, `xdgapps.py`, `icons.py`, `emojis.py`, `wltop.py` | Apoio dos providers (tiles dos mapas, rotas dos voos, API do MeshDeckWeb, cotações, CamDeck, tempo, aplicações, ícones, emojis, janelas) |
 | `sonderx.py` + `deck3-sonde.service` | Receptor de radiossondas sem janela (ligado pelo deckd) |
 | `ws.py` | WebSocket RFC 6455 mínimo |
@@ -64,7 +63,7 @@ Dependências: `python3-serial`, `python3-pil`, `python3-gi` (o `setup/install.s
 opcionais, só para as boxes respetivas: MeshDeckWeb (Meshtastic), readsb (ADS-B), AIS-catcher (AIS),
 CamDeck (Câmara), os descodificadores do SondeDeck (Sondas), o aiov2_ctl (AIO).
 
-Opções úteis no `config.toml`: `mark_read = false` no Meshtastic (ler no Deck³ não marca a conversa como lida
+Opções úteis no `config.toml`: `mark_read = false` no Meshtastic (ler no DashDeck³ não marca a conversa como lida
 no MeshDeckWeb) e `tty = ""` no GPS (lê só pelo gpsmux, nunca abre o tty).
 
 Ainda por portar no firmware (fase 2 e 3): fundos dos mapas (`bg`), JPEG da câmara (`jpg`), ícones das

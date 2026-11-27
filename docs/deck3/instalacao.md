@@ -20,7 +20,7 @@
    udevadm info -a /dev/ttyACM1 | grep '{serial}' | head -1
    ```
    Dê-o ao instalador (`DECK3_SERIAL=..`). Com o DashDeck também ligado, dê também o da placa C6
-   (`DASHDECK_SERIAL=..`), para o `/dev/esp-dash` nunca ser a porta do Deck³.
+   (`DASHDECK_SERIAL=..`), para o `/dev/esp-dash` nunca ser a porta do DashDeck³.
 3. **Instalar o lado do uConsole** (serviço, mDNS, udev):
    ```bash
    DECK3_SERIAL=.. setup/install.sh --deck3          # ou --dashdeck --deck3, com os dois
@@ -45,12 +45,12 @@
 |---|---|---|
 | Ecrã e toque | Menu aparece; tocar nas boxes | Ver `touch_flags` em `bsp_display_start` (o BSP troca X/Y) |
 | Brilho | Botão PWR alterna 20/50/80/100 | O brilho do CO5300 é o comando 0x51 (BSP) |
-| Botões BOOT/IO18 | Deck³ › página 1 › "Botões" | GPIO0 / GPIO18 em `keys.c` |
+| Botões BOOT/IO18 | DashDeck³ › página 1 › "Botões" | GPIO0 / GPIO18 em `keys.c` |
 | PWR | Toque curto = brilho | Registos 0x41/0x49 do AXP2101 em `power.c` |
-| Bateria | Cabeçalho e Deck³ › Bateria | `REG_BAT_PCT` 0xA4; sem bateria mostra "sem bateria" |
-| Som | Deck³ › Bip / Aviso | Volume, PA no GPIO46, `audio.c` |
-| Microfone | Deck³ › página 2 › Mic on | Ganho (`esp_codec_dev_set_in_gain`) |
-| IMU | Deck³ › página 2 › IMU on; rodar o cubo | Endereço 0x6B/0x6A; mapear os eixos para "ecrã para cima" |
+| Bateria | Cabeçalho e DashDeck³ › Bateria | `REG_BAT_PCT` 0xA4; sem bateria mostra "sem bateria" |
+| Som | DashDeck³ › Bip / Aviso | Volume, PA no GPIO46, `audio.c` |
+| Microfone | DashDeck³ › página 2 › Mic on | Ganho (`esp_codec_dev_set_in_gain`) |
+| IMU | DashDeck³ › página 2 › IMU on; rodar o cubo | Endereço 0x6B/0x6A; mapear os eixos para "ecrã para cima" |
 | Agitar | Agitar com o ecrã apagado | Limiar 2,2 g em `imu.c` |
 | Wi-Fi e mDNS | Liga-se sem `--host` | `avahi-browse -r _deck3._tcp` no uConsole; senão `provision.py --host IP:8765`. Se ficar em "fora de casa" com o Wi-Fi verde mas sem chegar a nada, `{"t":"reboot"}` pela USB (ver `firmware/deck3-s3/CLAUDE.md`) |
 | OTA | `firmware/deck3-s3/flash.sh ota` | Firewall na porta 8765 |

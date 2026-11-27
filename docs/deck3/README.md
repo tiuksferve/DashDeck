@@ -1,18 +1,18 @@
-# Deck³
+# DashDeck³
 
-**O DashDeck elevado ao cubo.** Um painel portátil para o ClockworkPi uConsole, numa
+Um painel portátil para o ClockworkPi uConsole, numa
 **Waveshare ESP32-S3-Touch-AMOLED-2.16** (cubo com ecrã AMOLED 480×480 tátil, bateria, altifalante,
 dois microfones, IMU e três botões), ligado **por Wi-Fi** em vez de USB.
 
-![Arranque, menu inicial e aviso](docs/preview.png)
+![Arranque, menu inicial e aviso](preview.png)
 
-*(pré-visualização gerada no uConsole com o renderizador de voxels do firmware; ainda não é uma foto)*
+*(capturas do ecrã do cubo: arranque em pixel art de 8 bits, menu inicial e aviso)*
 
 ```
- uConsole                                            Deck³ (ESP32-S3, LVGL 9)
+ uConsole                                            DashDeck³ (ESP32-S3, LVGL 9)
  ┌───────────────────────────────┐   WebSocket     ┌─────────────────────────────────┐
  │ deckd (Python, systemd user)  │ ◀════ Wi-Fi ═══▶│ só desenha telas genéricas      │
- │  config.toml → menus, ações   │   JSON + token  │ boxes com ícones em voxels      │
+ │  config.toml → menus, ações   │   JSON + token  │ boxes com ícones · pixel art    │
  │  providers → dados ao vivo    │                 │ toque · botões · IMU · som · mic│
  │  avahi: _deck3._tcp (mDNS)    │ ◀─ USB (reserva │ bateria (AXP2101) · OTA         │
  └───────────────────────────────┘    e configurar)└─────────────────────────────────┘
@@ -30,10 +30,10 @@ aparelho simulado. Nada foi ainda corrido no hardware: ver a lista de verificaç
 | Parte | Estado |
 |---|---|
 | Firmware: ecrã, toque, telas `menu` `list` `kv` `text`, botões, confirmações, avisos | compila |
-| Motor de voxels (ícones, arranque animado, avisos) | testado no uConsole (imagens) |
+| Pixel art de 8 bits (arranque, avisos, "Sobre", fora de casa) | a funcionar no cubo |
 | Wi-Fi (8 redes), mDNS, WebSocket com token, USB de reserva | compila |
-| Bateria/PWR (AXP2101), botões BOOT/IO18, IMU (face, agitar), som, microfone, OTA | compila |
-| deckd: navegação, providers Sistema e Deck³, botões configuráveis, OTA, deckctl | testado com o fakedeck |
+| Bateria/PWR (AXP2101), botões BOOT/IO18, IMU (face, agitar; girado à direita em pé abre o Pomodoro), som, microfone, OTA | compila |
+| deckd: navegação, providers Sistema e DashDeck³, botões configuráveis, OTA, deckctl | testado com o fakedeck |
 | Templates `plot`, `log`, emojis; módulos do DashDeck (Meshtastic, ADS-B, ...) | por portar |
 
 ## Arranque rápido

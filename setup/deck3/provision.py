@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""provision — configura o Deck³ pela USB: token do deckd e redes Wi-Fi (guardadas na NVS do aparelho).
+"""provision — configura o DashDeck³ pela USB: token do deckd e redes Wi-Fi (guardadas na NVS do aparelho).
 
   setup/deck3/provision.py --current                 a rede Wi-Fi a que o uConsole está ligado (do NetworkManager)
   setup/deck3/provision.py --nm "Casa" --nm "Hotspot uConsole"   redes guardadas no NetworkManager
@@ -9,7 +9,7 @@
   setup/deck3/provision.py --clear                   apaga as redes guardadas
 
 O token vem de ~/.config/dashd/deck3-token (criado pelo dashd ou aqui). Só a USB aceita token e host.
-O Deck³ é encontrado pelo hello ("dev":"deck3"); a porta do DashDeck (/dev/esp-dash, mesmo VID:PID) é
+O DashDeck³ é encontrado pelo hello ("dev":"deck3"); a porta do DashDeck (/dev/esp-dash, mesmo VID:PID) é
 ignorada enquanto o dashd a estiver a usar.
 """
 import argparse
@@ -103,14 +103,14 @@ def find_deck(explicit: str | None) -> serial.Serial:
         send(p, {"t": "hello?"})
         h = read_json(p, "hello", 2.0)
         if h and h.get("dev") == "deck3":
-            print(f"Deck³ em {dev}: firmware {h.get('fw')}, id {h.get('id')}")
+            print(f"DashDeck³ em {dev}: firmware {h.get('fw')}, id {h.get('id')}")
             return p
         p.close()
-    sys.exit("Deck³ não encontrado pela USB (ligado? firmware gravado? use --port /dev/ttyACMx)")
+    sys.exit("DashDeck³ não encontrado pela USB (ligado? firmware gravado? use --port /dev/ttyACMx)")
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Configura o Deck³ pela USB")
+    ap = argparse.ArgumentParser(description="Configura o DashDeck³ pela USB")
     ap.add_argument("--port")
     ap.add_argument("--current", action="store_true", help="a rede Wi-Fi atual do uConsole")
     ap.add_argument("--nm", action="append", default=[], help="ligação do NetworkManager (pode repetir)")

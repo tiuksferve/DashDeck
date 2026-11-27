@@ -1,4 +1,4 @@
-# Nome fixo /dev/deck3 para o Deck³ pela USB (ESP32-S3 em USB-Serial-JTAG nativo, 303a:1001).
+# Nome fixo /dev/deck3 para o DashDeck³ pela USB (ESP32-S3 em USB-Serial-JTAG nativo, 303a:1001).
 # O DashDeck (ESP32-C6) tem o MESMO VID:PID: sem o número de série, os dois ficariam em /dev/esp-dash.
 # Quando a placa chegar: udevadm info -a /dev/ttyACMx | grep '{serial}'  e troque SERIAL_DO_DECK3.
 # (A regra do DashDeck deve também ganhar o ATTRS{serial} da placa C6.)

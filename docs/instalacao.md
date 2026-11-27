@@ -3,8 +3,8 @@
 Este guia monta o DashDeck do zero num uConsole com Pi OS (Bookworm, Wayland/labwc). No uConsole
 atual tudo isto já está feito. Fica aqui para reinstalar ou para montar noutra máquina.
 
-O mesmo serviço (`dashd`) serve o **DashDeck** (ESP32-C6 pela USB) e o **Deck³** (ESP32-S3 em cubo, por
-Wi-Fi); pode ter um, o outro ou os dois. O Deck³ tem o seu guia de primeiro arranque em
+O mesmo serviço (`dashd`) serve o **DashDeck** (ESP32-C6 pela USB) e o **DashDeck³** (ESP32-S3 em cubo, por
+Wi-Fi); pode ter um, o outro ou os dois. O DashDeck³ tem o seu guia de primeiro arranque em
 [deck3/instalacao.md](deck3/instalacao.md) (firmware, Wi-Fi e token pela USB).
 
 ## 1. Hardware
@@ -25,7 +25,7 @@ O daemon usa o Python do sistema (`/usr/bin/python3`, 3.11) e só bibliotecas do
 | `grim` | botão Captura do dock (opcional) |
 | `fonts-noto-color-emoji` | ícones ✈ e 🚢 (opcional) |
 
-Instalação automática (dependências, regras udev, grupo `dialout`, anúncio mDNS do Deck³ e serviço):
+Instalação automática (dependências, regras udev, grupo `dialout`, anúncio mDNS do DashDeck³ e serviço):
 
 ```bash
 cd ~/PycharmProjects/DashDeck
@@ -37,8 +37,8 @@ setup/install.sh --dashdeck --deck3   # ou diz-se logo (um ou os dois)
   `DASHDECK_SERIAL=.. DECK3_SERIAL=.. setup/install.sh --dashdeck --deck3`
   (`udevadm info -q property /dev/ttyACMx | grep SERIAL_SHORT`). Os números de série não vão para o git.
 - Os aparelhos escolhidos ficam em `~/.config/systemd/user/dashd.service.d/aparelhos.conf`
-  (`--no-serial` sem DashDeck, `--no-deck` sem Deck³).
-- Se o serviço antigo do Deck³ (`deckd`) estiver instalado, é desligado e removido; o estado dele
+  (`--no-serial` sem DashDeck, `--no-deck` sem DashDeck³).
+- Se o serviço antigo do DashDeck³ (`deckd`) estiver instalado, é desligado e removido; o estado dele
   (`~/.config/deck3`: token, escurecer/apagar; `~/.local/state/deck3`: bateria e eventos) é copiado para
   `~/.config/dashd` e `~/.local/state/dashd`. O dashd faz a mesma cópia no arranque, só do que falta.
 

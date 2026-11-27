@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""fakedeck — um Deck³ falso no terminal, para testar o deckd e os providers sem a placa.
+"""fakedeck — um DashDeck³ falso no terminal, para testar o deckd e os providers sem a placa.
 
 Liga-se ao deckd como o aparelho (WebSocket + token), envia o hello e mostra cada tela em texto.
 Comandos (interativo, ou em --run "tap deck; btn beep; back"):
@@ -29,7 +29,7 @@ def show(msg: dict) -> None:
             print(f"  ← {json.dumps(msg, ensure_ascii=False)}")
         return
     for it in msg.get("items", []):
-        extra = " ".join(f"{k}={it[k]}" for k in ("sub", "vox", "badge", "right") if k in it)
+        extra = " ".join(f"{k}={it[k]}" for k in ("sub", "img", "badge", "right") if k in it)
         print(f"┃ [{it.get('id')}] {it.get('label')}  {extra}")
     for r in msg.get("rows", []):
         print(f"┃ {r[0]:<14} {r[1]}" + (f"  ({r[2]})" if len(r) > 2 else ""))
@@ -44,7 +44,7 @@ async def run(host: str, port: int, script: str | None) -> None:
     sock = await ws.connect(host, port, f"/deck?id=fakedeck0001&token={token}&fw=fake")
     hello = {"t": "hello", "dev": "deck3", "fw": "fake", "id": "fakedeck0001", "w": 480, "h": 480, "via": "wifi",
              "heap": 200000, "psram": 7000000, "bat": 87, "chg": False, "rssi": -55, "ip": "127.0.0.1",
-             "caps": ["vox", "notify", "audio", "mic", "imu", "keys", "ota", "confirm"]}
+             "caps": ["notify", "audio", "mic", "imu", "keys", "ota", "confirm"]}
     await sock.send(json.dumps(hello))
     screen = {"id": ""}
 
@@ -103,7 +103,7 @@ async def run(host: str, port: int, script: str | None) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Deck³ falso")
+    ap = argparse.ArgumentParser(description="DashDeck³ falso")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--run", help='comandos separados por ";"')

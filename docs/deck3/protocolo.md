@@ -1,7 +1,7 @@
 # Protocolo
 
-O Deck³ fala o protocolo do DashDeck (um objeto JSON por mensagem, campo `t`), com extensões.
-Os providers do DashDeck geram telas que o Deck³ já entende (`menu`, `list`, `kv`, `text`, `buttons`).
+O DashDeck³ fala o protocolo do DashDeck (um objeto JSON por mensagem, campo `t`), com extensões.
+Os providers do DashDeck geram telas que o DashDeck³ já entende (`menu`, `list`, `kv`, `text`, `buttons`).
 
 ## Transportes
 
@@ -26,10 +26,14 @@ funcionou → gateway da rede na porta 8765 (o uConsole em modo hotspot).
 |---|---|---|
 | `screen` | `id`, `tpl`, `title`, `back`, `pages`, `page`, dados do template, `buttons` | Nova tela |
 | `update` | `id` + os campos que mudaram | Junta à tela aberta (se o `id` for o mesmo) e redesenha mantendo o scroll |
-| `toast` | `text`, `level` (`ok` `warn` `err` `info`) | Aviso de 2,5 s |
+| `toast` | `text`, `level` (`ok` `warn` `err` `info`) | Aviso em fila, um de cada vez (2,5 a 7 s, conforme o tamanho do texto); repetidos são ignorados e esperam enquanto houver uma notificação |
+| `bg` | `key`, `off`, `d` (base64); no 1.º pedaço `w`, `h`, `pal` (16 ou 256 cores), `bpp` (8; senão 4); no último `last` | Imagem de fundo, como no DashDeck: os tiles dos mapas (4 bpp, usados pelo `plot` com o mesmo `bg`) e a paisagem do relógio (8 bpp, 240×240). Cada pedaço é confirmado com `{"t":"bgack","off":n,"ok":bool}`; fica na PSRAM (uma por profundidade) |
+| `clkface` | `v` | Muda a face do relógio (testes e capturas; normalmente é o swipe) |
+| `bootanim` | — | Repete a sequência de arranque e volta à tela atual (testes e capturas) |
+| `pomo` | `show` (true/false), `z` (1 iniciar/pausar, 2 reiniciar, 3 pular), `left` (s) | Ecrã do Pomodoro sem girar o cubo (testes) |
+| `clkzone` | `v` (zona `CZ_*` de `anim.h`) | Simula um toque no temporizador ou no alarme do cubo (testes) |
 | `shot` | | Captura do ecrã: o aparelho redesenha tudo e responde com `shotpx` (`x`, `y`, `w`, `h`, `d` = RGB565 em base64, por faixas) e `shotend` (`w`, `h`); o dashd monta o PNG (`deckctl.py shot [ficheiro]`) |
-| `notify` | `from`, `text`; `title`, `kind` (`alarm`, `squawk`), `vox` (modelo), `dur` (s, 8), `sound` (false = sem som) | Aviso por cima de tudo: modelo de voxels a montar-se e a balançar, som. Um toque responde `{"t":"notify","act":"open"}` |
-| `vox` | `save` (true = guarda no cartão em `deck3/vox/<id>.json`), `id`, `size` `[nx,ny,nz]` (até 12), `pal` (até 15 `#rrggbb`), `layers` (de baixo para cima; cada linha com `nx` caracteres: `.` vazio, `1`-`9` `a`-`f` = cor) | Define um modelo de voxels para usar em `vox` |
+| `notify` | `from`, `text`; `title`, `kind` (`alarm`, `squawk`), `sprite` (`mail` `clock` `plane`; sem ele, o do tipo), `dur` (s; sem ele, 6 a 20 s conforme o texto), `sound` (false = sem som) | Aviso por cima de tudo: sprite de 8 bits que cai e assenta e depois balança, abana ou pisca; som. Em fila: a seguinte só aparece quando a atual fecha. Um toque responde `{"t":"notify","act":"open"}` |
 | `time` | `epoch` (UTC), `tz` (regra POSIX, ex.: `WET0WEST,M3.5.0/1,M10.5.0`) | Acerta o relógio (há também SNTP quando há Internet) |
 | `bl` | `v` 2..100 | Brilho (fica guardado no aparelho) |
 | `idle` | `dim`, `off` (s; 0 = nunca) | Escurece e depois apaga sem toques. Um toque, um botão ou agitar acorda (esse toque não abre nada) |
@@ -42,7 +46,7 @@ funcionou → gateway da rede na porta 8765 (o uConsole em modo hotspot).
 | `bt` | `on` (bool) | Liga/desliga o Bluetooth LE (guardado). Responde `bt` |
 | `bt?` | — | Pede `bt` |
 | `reboot` | — | Reinicia o aparelho |
-| `about` | `lines` (créditos), `show` (abre já) | Linhas da cena "Sobre o Deck³" (toque no título da tela inicial). O deckd envia-as no `hello` a partir de `[about]` |
+| `about` | `lines` (créditos), `show` (abre já) | Linhas da cena "Sobre o DashDeck³" (toque no título da tela inicial). O deckd envia-as no `hello` a partir de `[about]` |
 | `sd?` | — | Pede `sd` |
 | `ls` | `path` (relativo a `deck3/`) | Lista uma pasta do cartão; responde `ls` |
 | `file` | `path`, `data` (base64), `append` | Escreve no cartão (`deckctl.py put` parte os ficheiros em pedaços de 3 KB); responde `file` |
@@ -71,13 +75,13 @@ Resposta: `{"t":"cfg","ok":true,"nets":[...],"state":"...","ssid","ip","host","t
 
 | `tpl` | Dados |
 |---|---|
-| `menu` | `items`: `id`, `label`, `sub`, `vox` (modelo), `img` (ícone do cartão: `icons/<id>.bin`, imagem do LVGL ARGB8888 84×84 que o dashd envia uma vez com `file` e o aparelho guarda na PSRAM; ou um PNG/JPG posto à mão; se o ficheiro não existir, usa o modelo), `icon` (nome do DashDeck → modelo), `color` (tinge a cor 1 do modelo), `badge`, `value`, `value_color`, `sub_color`, `dot`, `bg`, `confirm`. Boxes 140×164 em 3 colunas |
+| `menu` | `items`: `id`, `label`, `sub`, `color` (da placa de reserva), `img` (ícone do cartão: `icons/<id>.bin`, imagem do LVGL ARGB8888 84×84 que o dashd envia uma vez com `file` e o aparelho guarda na PSRAM; ou um PNG/JPG posto à mão; se o ficheiro não existir, usa o modelo), `icon` (nome do DashDeck → modelo), `color` (tinge a cor 1 do modelo), `badge`, `value`, `value_color`, `sub_color`, `dot`, `bg`, `confirm`. Boxes 140×164 em 3 colunas |
 | `list` | `items`: `id`, `label`, `sub`, `right`, `color`, `bg`, `confirm`; `empty` |
 | `kv` | `rows`: `[chave, valor, cor?]` (cor `#rrggbb`, `ok`, `warn`, `err`, `sub`, `accent`) |
 | `text` | `text` |
+| `clock` | `clock`: o do DashDeck (`wx`, `icon`, `bg`, `anim`, `night`, `pet`). Ecrã inteiro com as faces do cubo: paisagem (a cena `bg` com chuva/neve e o cão), aurora boreal, o cubo, temporizador e alarme. Swipe troca a face (fica no cubo); um toque volta, menos nas zonas do temporizador e alarme. O temporizador e o alarme são só do cubo (guardados na NVS, contados mesmo sem uConsole e tocados na coluna do cubo); os do DashDeck tocam só no C6 e no uConsole |
 | `panel` | só os extras abaixo |
 | `image` | `src` (ficheiro do cartão, PNG ou JPG, ex. `scenes/praia.jpg`), `h` (altura, 320), `caption` |
-| `vox` | `model` (cena em voxels até 24³, ex. do cartão `deck3/vox/<nome>.json`), `caption`, `spin` (false = parada). Monta-se voxel a voxel e roda devagar; o IMU inclina-a |
 | todos | `bg_img`: imagem de fundo do cartão (cobre o corpo da tela). `title` com " · " mostra a parte de depois mais pequena e a cinzento ("Config · Ecrã e som") |
 | todos | `buttons`: `id`, `label`, `color`, `confirm` |
 | todos | `sliders`: `id`, `label`, `v`, `min`, `max`, `step`, `unit`, `color`, `live` (`"bl"` = aplica o brilho enquanto se arrasta). Ao largar: `slider` |
@@ -87,20 +91,16 @@ Ordem no ecrã: sliders → gráficos → corpo do template → botões.
 
 Ainda não portados do DashDeck: `plot` (mapas, céu do GPS, gráficos), `log`, `clock`, `jpg`, `bg`, `icon`, `emoji`, `dock`.
 
-**Cartão SD:** montado em `/sdcard`; os ficheiros do Deck³ ficam em `deck3/`. Um modelo de voxels que não
-exista na memória é procurado em `deck3/vox/<nome>.json` (o mesmo JSON do `vox`, sem `t`), por isso basta
-copiá-lo para lá: `host/deckctl.py put modelo.json vox/nome.json`.
+**Cartão SD:** montado em `/sdcard`; os ficheiros do DashDeck³ ficam em `deck3/`. Enviar um ficheiro:
+`host/deckctl.py put <local> <caminho em deck3/>`.
 
-**Pastas do cartão:** `vox/` (modelos e cenas), `icons/`, `scenes/` (imagens), `log/bat.bin` (bateria: 8 bytes por
+**Pastas do cartão:** `icons/`, `scenes/` (imagens), `log/bat.bin` (bateria: 8 bytes por
 minuto, `epoch` u32, `mV` u16, `%` i8, flags u8; os últimos 720 voltam a carregar no arranque),
 `log/pendentes.jsonl` (eventos ainda por entregar).
 
 **Fora de casa:** sem o deckd há 15 s (ou 30 s no arranque), o cubo mostra um relógio em pixel art com a data, a
 bateria em blocos e os eventos guardados (a posição desloca-se a cada minuto). Os eventos `key`, `imu` (face e
 agitar) e `bat_low` que não tenham quem os ouça ficam no cartão e seguem no `offline_log` quando voltar.
-
-**Modelos de voxels embutidos:** `deck3` (o cubo 3×3×3) `block` `chart` `plane` `ship` `radio` `gps`
-`wifi` `gear` `clock` `apps` `cam` `power` `mail` `chip` `audio` `home`.
 
 ## Aparelho → host
 

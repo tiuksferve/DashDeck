@@ -1,7 +1,7 @@
 #pragma once
 // Bluetooth LE (NimBLE). Desligado de origem; o estado fica na NVS ("bt").
-// Ligado, o cubo anuncia-se como "Deck³ xxxx" e expõe o serviço de bateria (0x180F) e o de
-// informação do aparelho: telemóveis e PCs mostram a bateria do Deck³. Base para HID/provisioning.
+// Ligado, o cubo anuncia-se como "DashDeck³ xxxx" e expõe o serviço de bateria (0x180F) e o de
+// informação do aparelho: telemóveis e PCs mostram a bateria do DashDeck³. Base para HID/provisioning.
 #include <stdbool.h>
 
 #include "cJSON.h"

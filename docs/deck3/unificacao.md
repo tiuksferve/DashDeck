@@ -1,12 +1,12 @@
-# Unificação DashDeck + Deck³
+# Unificação DashDeck + DashDeck³
 
 Documento de passagem para a sessão do DashDeck, que vai conduzir a união. Escrito na sessão do
-Deck³ a 26/11/2026. Lê-se de uma vez antes de mexer em código.
+DashDeck³ a 26/11/2026. Lê-se de uma vez antes de mexer em código.
 
 ## Decisões já tomadas pelo dono
 
 1. **Um só projeto, um só serviço no uConsole** a servir os dois ecrãs: o DashDeck pela USB e o
-   Deck³ por Wi-Fi (no futuro também pela internet). Não é uma biblioteca partilhada que um projeto
+   DashDeck³ por Wi-Fi (no futuro também pela internet). Não é uma biblioteca partilhada que um projeto
    instala do outro.
 2. **A base é o repositório do DashDeck** (`github.com/tiuksferve/DashDeck`), que mantém o histórico e o URL.
 3. **Golden version:** a tag `v1.0` no estado atual do `main` e o ramo `1.x` para correções.
@@ -24,7 +24,7 @@ Ainda por fazer (pedir confirmação ao dono antes de cada passo):
 
 ## Estado de partida
 
-| | DashDeck | Deck³ |
+| | DashDeck | DashDeck³ |
 |---|---|---|
 | Repositório | `~/PycharmProjects/DashDeck`, 23 commits, `main` limpo e igual ao remoto, sem tags | `~/PycharmProjects/Deck3`, **sem commits** (tudo por versionar) |
 | Ecrã | ESP32-C6, 320×172, LVGL 9.2, USB | ESP32-S3, AMOLED 480×480, LVGL 9.6, Wi-Fi |
@@ -32,25 +32,25 @@ Ainda por fazer (pedir confirmação ao dono antes de cada passo):
 | Serviço | `dashd` (`host/dashd.py`), `dashd-sonde` | `deckd` (`host/deckd.py`), `deck3-sonde` |
 | Estado | `~/.config/dashd`, `~/.cache/dashd` | `~/.config/deck3`, `~/.cache/deck3`, `~/.local/state/deck3` |
 
-**O Deck³ é hoje um fork do host do DashDeck.** Os ficheiros `engine.py`, `providers.py` e os
+**O DashDeck³ é hoje um fork do host do DashDeck.** Os ficheiros `engine.py`, `providers.py` e os
 módulos de apoio foram copiados do DashDeck a 26/11, e as diferenças são poucas e estão listadas
 abaixo. Unir é, no essencial, voltar a ter um só motor e juntar-lhe o transporte WebSocket e as
 partes próprias do cubo.
 
-## O host do Deck³, ficheiro a ficheiro (`Deck3/host/`)
+## O host do DashDeck³, ficheiro a ficheiro (`Deck3/host/`)
 
 | Ficheiro | Origem | O que fazer na união |
 |---|---|---|
 | `engine.py` | `dashd.py` sem a classe `Link` (serial) nem `main()`; tem o gancho `make_link()` e lê `cfg["engine"]` | **Não copiar.** Aplicar ao `dashd.py` só o gancho `make_link()` (ver diferenças) |
 | `providers.py` | cópia do DashDeck | **Não copiar.** Levar só as duas opções novas (ver diferenças) |
 | `camclient`, `clockscene`, `emojis`, `icons`, `maptiles`, `meshbridge`, `routes`, `stocks`, `wltop`, `xdgapps`, `sonderx` | cópias; só caminhos e nomes mudados | Não copiar |
-| `deckd.py` | do Deck³ | **Levar.** Tem `WsLink`, `Dev`, `DeckApp` (subclasse de `App`) e `Server` (WebSocket, `/fw/`, `/ctl`) |
-| `ws.py` | do Deck³, WebSocket em Python puro (sem dependências) | Levar |
-| `deckproviders.py` | do Deck³: box **Config** (Ecrã e som, Bateria, Wi-Fi, Bluetooth, Aparelho, Sensores) | Levar. Os providers usam `self.session` (o aparelho) |
-| `deckctl.py` | do Deck³: controlo local por `POST /ctl` (`status`, `last`, `notify`, `send`, `ota`, `put`, `ls`, `rm`, `tap`, `swipe`, `back`, `home`) | Levar. Útil para testar telas sem tocar no ecrã, também no DashDeck |
-| `fakedeck.py` | do Deck³: aparelho falso por WebSocket, para testes | Levar |
+| `deckd.py` | do DashDeck³ | **Levar.** Tem `WsLink`, `Dev`, `DeckApp` (subclasse de `App`) e `Server` (WebSocket, `/fw/`, `/ctl`) |
+| `ws.py` | do DashDeck³, WebSocket em Python puro (sem dependências) | Levar |
+| `deckproviders.py` | do DashDeck³: box **Config** (Ecrã e som, Bateria, Wi-Fi, Bluetooth, Aparelho, Sensores) | Levar. Os providers usam `self.session` (o aparelho) |
+| `deckctl.py` | do DashDeck³: controlo local por `POST /ctl` (`status`, `last`, `notify`, `send`, `ota`, `put`, `ls`, `rm`, `tap`, `swipe`, `back`, `home`) | Levar. Útil para testar telas sem tocar no ecrã, também no DashDeck |
+| `fakedeck.py` | do DashDeck³: aparelho falso por WebSocket, para testes | Levar |
 | `config.toml` | `[deckd]`, `[keys]`, `[about]` + o menu do DashDeck copiado | Juntar as secções novas ao config do DashDeck |
-| `deck3-sonde.service`, `deckd.service` | do Deck³ | Passam a desnecessárias (um serviço, uma sonda) |
+| `deck3-sonde.service`, `deckd.service` | do DashDeck³ | Passam a desnecessárias (um serviço, uma sonda) |
 
 Ficheiros de `Deck3/setup/`: `install.sh` (dependências `python3-serial`, `python3-pil`, `python3-gi`;
 regra udev com `DECK3_SERIAL`), `provision.py` (grava Wi-Fi e token no cubo pela USB), `deck3.service.xml`
@@ -70,10 +70,10 @@ comportamento por aparelho.
    nunca abre a porta série.
 4. **Meshtastic, `mark_read`** (opção do nó, por omissão `true`): com `false`, abrir uma conversa
    não a marca como lida no MeshDeckWeb.
-5. **Sistema** (`SystemProvider`): o Deck³ tirou a página 2 (rotação do DashDeck), porque o estado
+5. **Sistema** (`SystemProvider`): o DashDeck³ tirou a página 2 (rotação do DashDeck), porque o estado
    do cubo está em Config › Aparelho. No motor único, a página da rotação só aparece no aparelho que
    tem rotação, ou seja, o C6.
-6. **Caminhos e textos:** `dashd`/`DashDeck` passaram a `deck3`/`Deck³` (logs, `~/.config`, capturas
+6. **Caminhos e textos:** `dashd`/`DashDeck` passaram a `deck3`/`DashDeck³` (logs, `~/.config`, capturas
    `deck3-*.png`, unidade `deck3-sonde`). No motor único volta a haver um só conjunto de caminhos.
 
 ## O que o `DeckApp` acrescenta ao motor (`Deck3/host/deckd.py`)
@@ -86,7 +86,7 @@ Isto é o que hoje é "do cubo" e tem de passar a ser **por aparelho**:
 - **Hora:** `send_time()` envia `epoch` + `tz` (regra POSIX de `/etc/localtime`); o ESP trata
   sozinho da mudança de hora.
 - **Ainda não implementado no cubo** (desligado): `send_icons`, `send_emojis`, `send_bg`, `send_dock`,
-  `send_header` estão vazios no `DeckApp`. É a "fase 2" do Deck³: fundos dos mapas, JPEG da câmara,
+  `send_header` estão vazios no `DeckApp`. É a "fase 2" do DashDeck³: fundos dos mapas, JPEG da câmara,
   ícones e emojis, dock. No motor único decide-se pelas `caps` do `hello`.
 - **Botões físicos:** a secção `[keys]` (`boot_short = back`, `boot_long = home`,
   `user_short = open:config`, `pwr_short = bl`; também `shell:` e `launch:`).
@@ -101,7 +101,7 @@ Isto é o que hoje é "do cubo" e tem de passar a ser **por aparelho**:
   - `eventos-<id>.jsonl`: eventos de fora de casa, entregues em lotes com `last`;
   - em ambos os casos, `notify-send` com bateria fraca.
 - **`control()`:** `status`, `last`, `inject` (simula toques), `send`, `ota` (serve o `.bin` em `/fw/`).
-- **Compatibilidade com os providers do Deck³:**
+- **Compatibilidade com os providers do DashDeck³:**
   - `bl`, `any_session()`, `provider()` (põe `session`);
   - `handle_result()` aceita um texto como aviso;
   - `current_provider()`.
@@ -115,7 +115,7 @@ host/
   deckproviders.py    box Config (só aparece em aparelhos que a anunciem)
   transports/
     serial_link.py    Link atual (DashDeck, USB, acks bgack/iconack/emojiack/jpgack)
-    ws_link.py        WsLink + Server (Deck³, Wi-Fi; mais tarde internet com TLS ou VPN)
+    ws_link.py        WsLink + Server (DashDeck³, Wi-Fi; mais tarde internet com TLS ou VPN)
 firmware/
   (atual do C6)       ou firmware/dashdeck-c6/
   deck3-s3/           Deck3/firmware/ inteiro (BSP local incluído)
@@ -143,7 +143,7 @@ O `App` guarda hoje **um** estado de navegação: `stack`, tela aberta, página,
 - **Ordem sugerida:** primeiro refatorar o `App` para "uma sessão" explícita sem mudar
   comportamento (o DashDeck tem de continuar igual); depois permitir várias.
 
-### `hello` do Deck³ (o que anuncia)
+### `hello` do DashDeck³ (o que anuncia)
 
 `dev: "deck3"`, `fw`, `w`/`h` (480×480), `bl`, `vol`, `sd`, e `caps` com: `vox`, `notify`, `audio`,
 `mic`, `imu`, `keys`, `ota`, `confirm`, `slider`, `chart`, `bat`, `wifi_scan`, `about`, `sd`, `image`,
@@ -165,7 +165,7 @@ Estão todos em `Deck3/docs/protocolo.md`:
 
 | Fase | O que se faz | Feito quando |
 |---|---|---|
-| 0 | Tag `v1.0`, ramo `1.x`, ramo `unificado` (num `git worktree`, para não mexer na pasta em uso). Fazer o primeiro commit do Deck³ no repositório dele, para haver um ponto de partida | O dono confirma e faz o push |
+| 0 | Tag `v1.0`, ramo `1.x`, ramo `unificado` (num `git worktree`, para não mexer na pasta em uso). Fazer o primeiro commit do DashDeck³ no repositório dele, para haver um ponto de partida | O dono confirma e faz o push |
 | 1 | Trazer `Deck3/firmware`, `docs` e `setup` para o ramo `unificado` (só pastas, sem tocar no código do DashDeck) | O firmware do S3 compila a partir do novo sítio (`flash.sh build`) |
 | 2 | Refatorar o `App` para uma sessão explícita e o `Link` para um transporte trocável | O `dashd` do ramo, numa cópia do config, funciona no C6 exatamente como o `v1.0` |
 | 3 | Juntar o transporte WebSocket, o `DeckApp` e o `deckproviders` | O cubo funciona com o serviço unido (com o `deckd` parado). O `deckctl.py` e o `fakedeck.py` passam |
@@ -173,7 +173,7 @@ Estão todos em `Deck3/docs/protocolo.md`:
 | 5 | Instalador único (pergunta que aparelhos há), migração do estado (`~/.config/deck3` → novo sítio), um só serviço de sondas, docs | Instalação limpa num uConsole só com o cubo, e só com o C6 |
 | 6 | Desligar `dashd` e `deckd` antigos, juntar `unificado` ao `main` | O dono confirma |
 
-Depois da união continua a fase 2 do Deck³ (fundos, câmara, ícones, dock) e a fase 3 (relógio
+Depois da união continua a fase 2 do DashDeck³ (fundos, câmara, ícones, dock) e a fase 3 (relógio
 em pixel art com o `clockscene.py`), já no motor único.
 
 ## Cuidados
@@ -195,7 +195,7 @@ em pixel art com o `clockscene.py`), já no motor único.
     créditos do "Sobre", por decisão do dono;
   - commits em inglês, e o push é do dono;
   - documentação em português europeu.
-- **Sessões:** desde 26/11 já não há sessão do Deck³ nem código novo em `~/PycharmProjects/Deck3`;
+- **Sessões:** desde 26/11 já não há sessão do DashDeck³ nem código novo em `~/PycharmProjects/Deck3`;
   tudo, incluindo o firmware do cubo, faz-se neste repositório (ver "Uma só pasta" no fim).
 
 ## Progresso
@@ -205,7 +205,7 @@ A partir da fase 1 este documento vive no ramo `unificado`, em `docs/deck3/unifi
 | Fase | Estado |
 |---|---|
 | 0 | Feita a 26/11: tag `v1.0` e ramo `1.x` em `e34eaf3`; ramo `unificado` no worktree `~/PycharmProjects/DashDeck-unificado` |
-| 1 | Feita a 26/11: o commit `5e81354` do Deck³ entrou com o histórico (merge) e as pastas mudaram de sítio: `firmware/` → `firmware/deck3-s3/`, `docs/` → `docs/deck3/` (com o `README.md`), `setup/` → `setup/deck3/`. O `host/` do Deck³ fica para a fase 3. O S3 compila com `firmware/deck3-s3/flash.sh build` |
+| 1 | Feita a 26/11: o commit `5e81354` do DashDeck³ entrou com o histórico (merge) e as pastas mudaram de sítio: `firmware/` → `firmware/deck3-s3/`, `docs/` → `docs/deck3/` (com o `README.md`), `setup/` → `setup/deck3/`. O `host/` do DashDeck³ fica para a fase 3. O S3 compila com `firmware/deck3-s3/flash.sh build` |
 
 | 2 | Feita a 26/11: `Link` → `SerialLink` em `host/transports/serial_link.py` (o texto adaptado às fontes entra por `prepare`); `App.make_link()`; estado do ecrã numa `Session` (`host/session.py`), exposto pelo `App` com os nomes antigos. Verificado com um transporte falso: a mesma navegação no `v1.0` e no ramo envia as mesmas mensagens (só mudam valores ao vivo e a versão do host). No C6 real, o motor do ramo ligou-se, fez o `hello` e mostrou o início, o Sistema e o relógio (com o fundo transferido pelo `SerialLink`, com as confirmações) |
 | 3 | Feita a 26/11: `host/deckd.py` (WebSocket, `DeckApp` sobre o `dashd.App`, servidor `/deck`, `/fw/`, `/ctl`), `ws.py`, `deckproviders.py` (box Config), `deckctl.py` (com `--port`), `fakedeck.py`, `deck3.toml` (o config do cubo) e os serviços `deckd.service`/`deck3-sonde.service` (já com os caminhos de `~/PycharmProjects/DashDeck`). Estado e caches do cubo continuam em `~/.config/deck3` e `~/.cache/deck3` (`host/paths.py`, variável `DASHDECK_STATE`). Nos providers: GPS com `tty = ""`, Meshtastic `mark_read` e a página da rotação só em ecrãs que rodam (`App.has_rotation`). Verificado: a mesma sequência no `fakedeck` dá as mesmas telas no `deckd` antigo e no do ramo; com o cubo real (o `deckd` antigo parado), ligou-se em 4 s, abriu o Sistema e a Config, e o `deckctl` (`status`, `tap`, `home`, `send`/`last stats`: heap 54 KB, maior bloco 28 KB) funcionou. Os serviços instalados ainda apontam para a pasta antiga: a troca faz-se na fase 6 |
@@ -213,17 +213,17 @@ A partir da fase 1 este documento vive no ramo `unificado`, em `docs/deck3/unifi
 | 5 | Feita a 27/11: um só conjunto de pastas (`host/paths.py`): o token do cubo passa a `~/.config/dashd/deck3-token`, o escurecer/apagar a `~/.config/dashd/deck3.json`, a bateria e os eventos a `~/.local/state/dashd`; `paths.migrate_deck3()` copia (sem apagar) do `~/.config/deck3` e `~/.local/state/deck3` o que falta, no arranque e no instalador. Uma só sonda (`dashd-sonde`); saíram `deckd.service` e `deck3-sonde.service`. Instalador único `setup/install.sh` (`--dashdeck`, `--deck3` ou pergunta; números de série por `DASHDECK_SERIAL`/`DECK3_SERIAL`; os aparelhos ficam num drop-in do `dashd.service` como `DASHD_ARGS`; desliga o `deckd` antigo). Verificado: instalador numa sandbox (só C6, só cubo, os dois) com as ações certas; migração numa pasta temporária (copia uma vez, depois nada); os dois aparelhos reais ligados ao serviço do ramo, o cubo com o token migrado. A instalação limpa num uConsole novo fica para quando houver um |
 | 6 | Feita a 27/11: o `unificado` entrou no `main` (fast-forward) e `setup/install.sh --dashdeck --deck3` desligou e removeu o `deckd` antigo; o `dashd` da pasta `~/PycharmProjects/DashDeck` serve os dois ecrãs (C6 pela USB, cubo por Wi-Fi). Volta atrás, se for preciso: `main` na tag `v1.0` e o `deckd` de `~/PycharmProjects/Deck3` |
 
-A união está terminada. Daqui em diante, o trabalho no Deck³ continua no `main` deste repositório:
-fundos dos mapas, JPEG da câmara, ícones, emojis e dock no cubo (o que era a "fase 2" do Deck³), e o
+A união está terminada. Daqui em diante, o trabalho no DashDeck³ continua no `main` deste repositório:
+fundos dos mapas, JPEG da câmara, ícones, emojis e dock no cubo (o que era a "fase 2" do DashDeck³), e o
 relógio em pixel art com o `clockscene.py`.
 
 ### Uma só pasta (decisão de 26/11)
 
 O dono decidiu, a 26/11, que tudo passa a ser gerido neste repositório: o `~/PycharmProjects/Deck3`
-deixa de ser usado para desenvolver e não há sessão própria do Deck³. O firmware do cubo trabalha-se
+deixa de ser usado para desenvolver e não há sessão própria do DashDeck³. O firmware do cubo trabalha-se
 diretamente em `firmware/deck3-s3/` (notas em `firmware/deck3-s3/CLAUDE.md`), com
 `firmware/deck3-s3/flash.sh` e o build em `/dev/shm/deck3-s3-build`.
 
 A pasta antiga só se mantém enquanto o `deckd` que está a correr vier de lá (`Deck3/host/deckd.py`),
-ou seja, até a fase 3 o substituir. O código do host do Deck³ que falta trazer está no histórico
+ou seja, até a fase 3 o substituir. O código do host do DashDeck³ que falta trazer está no histórico
 (commit `5e81354`), por isso a pasta pode apagar-se depois disso.

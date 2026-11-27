@@ -18,6 +18,7 @@ static const char *ENAME[] = {"short", "long", "double"};
 void keys_emit(key_id_t k, key_ev_t ev)
 {
     ui_wake();
+    if (ui_pomo_key(k, ev)) return;   // BOOT curto no Pomodoro: iniciar / pausar
     if (!link_host_alive() && k == KEY_BOOT && ev == KEY_EV_SHORT) {
         ui_local_back();
         return;

@@ -1,6 +1,6 @@
 # DashDeck: tela auxiliar do uConsole
 
-> Também serve o **Deck³**, um ecrã AMOLED 480×480 em cubo (ESP32-S3) ligado por Wi-Fi: o mesmo serviço e
+> Também serve o **DashDeck³**, um ecrã AMOLED 480×480 em cubo (ESP32-S3) ligado por Wi-Fi: o mesmo serviço e
 > os mesmos módulos, nos dois ecrãs ao mesmo tempo. Ver [docs/deck3/](docs/deck3/README.md).
 
 Apresentação curta com capturas: [English](docs/presentation.md) · [Português](docs/apresentacao.md)
@@ -90,7 +90,7 @@ O que falta e as limitações conhecidas estão em **[docs/pendencias.md](docs/p
 | [docs/configuracao.md](docs/configuracao.md) | Referência do `host/config.toml`: tipos de item, providers e dock |
 | [docs/arquitetura.md](docs/arquitetura.md) | Como funciona: firmware, daemon, protocolo serial e a ponte Meshtastic |
 | [docs/pendencias.md](docs/pendencias.md) | O que falta, ideias e limitações conhecidas |
-| [docs/deck3/](docs/deck3/README.md) | O Deck³: primeiro arranque, protocolo, arquitetura e a união com o DashDeck |
+| [docs/deck3/](docs/deck3/README.md) | O DashDeck³: primeiro arranque, protocolo, arquitetura e a união com o DashDeck |
 
 ## Estrutura
 
@@ -99,8 +99,8 @@ host/                 lado do uConsole (Python 3.11, /usr/bin/python3)
   dashd.py            serviço: navegação, ações, envio de ícones e mapas; uma sessão por ecrã
   session.py          estado de cada ecrã (sessão)
   transports/         serial_link.py: o DashDeck pela USB
-  deck.py             o Deck³: WebSocket, servidor (/deck, /fw/, /ctl), botões, bateria, OTA
-  deckproviders.py    box Config do Deck³; deckctl.py (controlo local) e fakedeck.py (cubo falso)
+  deck.py             o DashDeck³: WebSocket, servidor (/deck, /fw/, /ctl), botões, bateria, OTA
+  deckproviders.py    box Config do DashDeck³; deckctl.py (controlo local) e fakedeck.py (cubo falso)
   paths.py            pastas de estado, cache e registos (~/.config/dashd, ...)
   providers.py        dados ao vivo: system, gps, adsb, ais, mesh, clock, aio, sdr; trajetos e uso do SDR
   clockscene.py       relógio: previsão (Open-Meteo), cenas (lago, costa, cidade; 8 bpp) e ícones do tempo
@@ -121,9 +121,9 @@ firmware/             ESP-IDF 5.5 + LVGL 9.2 (ESP32-C6)
   components/         drivers do display e do toque (do demo Waveshare, corrigidos)
   tools/gen_fonts.py  gera main/fonts a partir de tools/fonts/Montserrat-Medium.ttf
   flash.sh            compila e grava (build em /dev/shm)
-firmware/deck3-s3/    firmware do Deck³ (ESP-IDF 5.5 + LVGL 9.6, ESP32-S3; notas em CLAUDE.md)
+firmware/deck3-s3/    firmware do DashDeck³ (ESP-IDF 5.5 + LVGL 9.6, ESP32-S3; notas em CLAUDE.md)
 setup/                regras udev, ativação do IDF e install.sh (pergunta que aparelhos há)
-setup/deck3/          Deck³: provision.py (Wi-Fi e token pela USB), mDNS, udev, IDF do S3
+setup/deck3/          DashDeck³: provision.py (Wi-Fi e token pela USB), mDNS, udev, IDF do S3
 docs/                 esta documentação
 ```
 

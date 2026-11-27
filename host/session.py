@@ -1,4 +1,4 @@
-"""Estado de um ecrã ligado ao serviço (uma "sessão"): o DashDeck pela USB e o Deck³ por Wi-Fi.
+"""Estado de um ecrã ligado ao serviço (uma "sessão"): o DashDeck pela USB e o DashDeck³ por Wi-Fi.
 
 O motor (`dashd.App`) guarda aqui tudo o que é de um aparelho: o tipo, o transporte, a navegação (raiz do
 menu, pilha de telas e páginas), o tamanho e a rotação, e o que já lhe foi enviado (fundos, ícones,
@@ -21,7 +21,7 @@ class Session:
     screen_off: int = 0                 # s sem toques na tela inicial até apagar (0 = nunca)
     refresh: float = 2.0                # s entre atualizações da tela aberta
     emojis: bool = True                 # o ecrã recebe imagens de emojis
-    dev: object = None                  # o aparelho, visto pelos providers do Deck³ (deck.Dev)
+    dev: object = None                  # o aparelho, visto pelos providers do DashDeck³ (deck.Dev)
     last_ping: float = 0.0
     last_refresh: float = 0.0
     stack: list = field(default_factory=list)   # navegação: [raiz, ..., tela aberta]

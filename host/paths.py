@@ -1,7 +1,7 @@
 """Pastas do serviço: estado (~/.config/dashd), cache (~/.cache/dashd) e registos (~/.local/state/dashd).
 
-O DashDeck e o Deck³ partilham estas pastas desde a união (docs/deck3/unificacao.md, fase 5); o que era do
-Deck³ em ~/.config/deck3 e ~/.local/state/deck3 é copiado para cá no arranque (migrate_deck3), sem apagar
+O DashDeck e o DashDeck³ partilham estas pastas desde a união (docs/deck3/unificacao.md, fase 5); o que era do
+DashDeck³ em ~/.config/deck3 e ~/.local/state/deck3 é copiado para cá no arranque (migrate_deck3), sem apagar
 o original. A variável DASHDECK_STATE muda o nome das pastas (testes).
 """
 from __future__ import annotations
@@ -16,7 +16,7 @@ log = logging.getLogger("dashd")
 NAME = os.environ.get("DASHDECK_STATE", "dashd")
 CONFIG = Path.home() / ".config" / NAME
 CACHE = Path.home() / ".cache" / NAME
-STATE = Path.home() / ".local" / "state" / NAME   # registos: bateria e eventos de fora de casa do Deck³
+STATE = Path.home() / ".local" / "state" / NAME   # registos: bateria e eventos de fora de casa do DashDeck³
 
 DECK3_TOKEN = CONFIG / "deck3-token"   # token partilhado com o cubo (gravado nele pelo setup/deck3/provision.py)
 DECK3_STATE = CONFIG / "deck3.json"    # escurecer/apagar de cada cubo (box Config)
@@ -26,7 +26,7 @@ OLD_DECK3_STATE = Path.home() / ".local" / "state" / "deck3"
 
 
 def migrate_deck3() -> list[str]:
-    """Copia o estado do Deck³ das pastas antigas para as do serviço, só o que ainda não existe.
+    """Copia o estado do DashDeck³ das pastas antigas para as do serviço, só o que ainda não existe.
     Devolve o que copiou. Pode chamar-se sempre (no arranque e no setup/install.sh)."""
     done = []
     pairs = [(OLD_DECK3_CONFIG / "token", DECK3_TOKEN), (OLD_DECK3_CONFIG / "state.json", DECK3_STATE)]
@@ -42,7 +42,7 @@ def migrate_deck3() -> list[str]:
                 dst.chmod(0o600)
             done.append(f"{src} -> {dst}")
         except OSError as e:
-            log.warning("migração do Deck³: %s: %s", src, e)
+            log.warning("migração do DashDeck³: %s: %s", src, e)
     for d in done:
-        log.info("migração do Deck³: %s", d)
+        log.info("migração do DashDeck³: %s", d)
     return done

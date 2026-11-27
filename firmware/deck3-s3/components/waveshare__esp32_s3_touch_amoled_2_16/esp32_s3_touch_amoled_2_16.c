@@ -437,7 +437,7 @@ esp_err_t bsp_display_new(const bsp_display_config_t *config, esp_lcd_panel_hand
 
     esp_lcd_panel_io_spi_config_t io_config = CO5300_PANEL_IO_QSPI_CONFIG(BSP_LCD_CS, NULL, NULL);
     io_config.trans_queue_depth = 3;
-    // Deck³: DMA direto da PSRAM (os buffers do LVGL estão lá). Sem isto o driver SPI copia cada
+    // DashDeck³: DMA direto da PSRAM (os buffers do LVGL estão lá). Sem isto o driver SPI copia cada
     // faixa (48 KB) para RAM interna a cada flush, e a RAM interna não chega com Wi-Fi + BLE.
     // io_config.flags.psram_dma_direct = 1;   // testado: as transações SPI falham ("recycle spi transactions failed")
     co5300_vendor_config_t vendor_config = {
@@ -517,8 +517,8 @@ static lv_display_t *bsp_display_lcd_init(const bsp_display_cfg_t *cfg)
             .rotation = cfg->rotation,
             .hor_res = BSP_LCD_H_RES,
             .ver_res = BSP_LCD_V_RES,
-            .buffer_height = 12,   // Deck³: buffers internos com DMA (2 x 11,5 KB), sem cópia por flush
-            .use_psram = false,    // Deck³: na RAM interna (a cópia PSRAM->DMA falhava com a RAM fragmentada)
+            .buffer_height = 12,   // DashDeck³: buffers internos com DMA (2 x 11,5 KB), sem cópia por flush
+            .use_psram = false,    // DashDeck³: na RAM interna (a cópia PSRAM->DMA falhava com a RAM fragmentada)
             .enable_ppa_accel = false,
             .require_double_buffer = true,
         },
@@ -637,7 +637,7 @@ esp_err_t bsp_display_rotation_set(bsp_display_rotation_t rotation)
 
 bool bsp_display_lock(uint32_t timeout_ms)
 {
-    // Deck³: o original devolvia o esp_err_t como bool (ESP_OK = 0 = false), invertendo o resultado.
+    // DashDeck³: o original devolvia o esp_err_t como bool (ESP_OK = 0 = false), invertendo o resultado.
     // 0 = esperar para sempre, como no esp_lvgl_port.
     return esp_lv_adapter_lock(timeout_ms == 0 ? -1 : (int32_t)timeout_ms) == ESP_OK;
 }

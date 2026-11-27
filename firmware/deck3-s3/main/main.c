@@ -1,9 +1,8 @@
-// Deck³ — painel portátil em cubo para o uConsole, por Wi-Fi (Waveshare ESP32-S3-Touch-AMOLED-2.16)
+// DashDeck³ — painel portátil em cubo para o uConsole, por Wi-Fi (Waveshare ESP32-S3-Touch-AMOLED-2.16)
 #include <string.h>
 
 #include "audio.h"
 #include "sd.h"
-#include "voxel.h"
 #include "bsp/esp-bsp.h"
 #include "deck.h"
 #include "esp_log.h"
@@ -24,10 +23,7 @@ static void on_msg(const cJSON *msg, link_via_t via)
     if (net_handle_cfg(msg, via)) return;   // wifi, token, host, cfg?
     if (ota_handle(msg)) return;
     if (power_handle(msg, via)) return;     // bat?
-    if (sd_handle(msg, via)) {               // sd?, ls, file, rm
-        vox_forget_missing();                // um ficheiro novo pode ser um modelo procurado antes
-        return;
-    }
+    if (sd_handle(msg, via)) return;         // sd?, ls, file, rm
     ui_handle(msg, via);
 }
 
@@ -44,7 +40,7 @@ void app_main(void)
     if (!disp) {
         ESP_LOGE(TAG, "o display não arrancou");
     }
-    sd_init();                                  // antes da ui: os modelos de voxels podem vir do cartão
+    sd_init();                                  // antes da ui: os ícones das boxes vêm do cartão
     ui_init(disp);
     link_init(on_msg, ui_send_hello);
     power_init();
@@ -52,7 +48,7 @@ void app_main(void)
     imu_init();
     audio_init();
     net_init();
-    ESP_LOGI(TAG, "Deck³ %s pronto: interna %u livre (maior %u), psram %u", DECK3_FW_VERSION,
+    ESP_LOGI(TAG, "DashDeck³ %s pronto: interna %u livre (maior %u), psram %u", DECK3_FW_VERSION,
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));

@@ -139,7 +139,7 @@ class SystemProvider(Provider):
         return f"{t:.0f}°C · RAM {100 * used / total:.0f}%" if t else ""
 
     # ---- página DashDeck: o próprio ecrã (firmware, rotação). Só em ecrãs que rodam (o C6); o estado do
-    # Deck³ está na box Config › Aparelho
+    # DashDeck³ está na box Config › Aparelho
     ROT_NAMES = {0: "vertical", 1: "horizontal", 2: "vertical invertida", 3: "horizontal invertida"}
 
     def pages(self) -> int:
@@ -2682,8 +2682,9 @@ class ClockProvider(Provider):
 
     O ESP conta a hora sozinho (acertada com {"t":"time"}); este provider envia a previsão, o ícone e,
     nas cenas, o fundo desenhado em clockscene.py (refeito a cada 5 min ou quando o tempo muda).
-    O temporizador e o alarme vivem aqui (tick() a cada segundo, mesmo fora do relógio): quando tocam, o
-    ESP mostra o aviso animado e o uConsole toca um som até um toque no aviso (ou 60 s).
+    O temporizador e o alarme do DashDeck vivem aqui (tick() a cada segundo, mesmo fora do relógio): quando
+    tocam, o C6 mostra o aviso animado e o uConsole toca um som até um toque no aviso (ou 60 s). O DashDeck³ tem
+    os seus, independentes, no firmware do cubo (contados e tocados lá).
     O mostrador, o brilho, a cor do LCD, o temporizador e o alarme ficam em ~/.config/dashd/clock.json.
     """
     STATE = paths.CONFIG / "clock.json"
@@ -2720,6 +2721,7 @@ class ClockProvider(Provider):
         self.ringing: str = ""      # "alarm" ou "timer" enquanto toca
         self._ring_stop = threading.Event()
         self._scene: tuple | None = None
+        self._scene_deck: tuple | None = None   # a do DashDeck³ (240x240)
         # a posição do GPS (modo tty) só existe com o provider GPS criado
         gps = next((n for n in app.cfg.get("menu", []) if n.get("provider") == "gps"), None)
         if gps:
@@ -2896,21 +2898,30 @@ class ClockProvider(Provider):
                     icons.append({k: v for k, v in self.cs.weather_icon(hk, not is_day).items() if k != "role"})
                 hours.append([-1 if i == 0 else int(tm[11:13]), keys.index(ik), temp, rain])
             clock["hours"], clock["hicons"] = hours, icons
-        # fundo da cena só para o DashDeck: o Deck³ desenha as faces dele (e uma cena a 480x480 para a outra
-        # sessão estragava a cache da cena do DashDeck, que só guarda uma)
-        scene = self.SCENES.get(self.face) if getattr(self.app, "session", None) is None \
-            or self.app.session.kind != "deck3" else None
+        # DashDeck³: o temporizador e o alarme são do próprio cubo (guardados e tocados lá); estes são os do DashDeck
+        if getattr(getattr(self.app, "session", None), "kind", "") == "deck3":
+            clock.pop("timer", None)
+            clock.pop("alarm", None)
+        # DashDeck³: as faces são do cubo; só a paisagem do lago vem daqui, a 240x240 (o cubo amplia-a 2x), com a
+        # sua própria cache (a do DashDeck guarda uma cena e as duas iam-se substituindo)
+        deck = getattr(getattr(self.app, "session", None), "kind", "") == "deck3"
+        scene = "lago" if deck else self.SCENES.get(self.face)
         if scene:
             winter = bool(self.node.get("winter_snow", True)) and now.tm_mon in (12, 1, 2)
-            w, h = self.app.esp_w, self.app.esp_h
+            w, h = (240, 240) if deck else (self.app.esp_w, self.app.esp_h)
             key = f"clk{w}{scene[:2]}{'w' if winter else ''}{kind[:3]}{time.strftime('%d%H')}{minute % 60 // 5}"
-            if not self._scene or self._scene[0] != key:
+            cached = self._scene_deck if deck else self._scene
+            if not cached or cached[0] != key:
                 t0 = time.monotonic()
                 img = self.cs.render_scene(w, h, minute, kind, sr, ss, time.time(), scene=scene, winter=winter)
-                self._scene = self.cs.scene_bg(key, img)
+                cached = self.cs.scene_bg(key, img)
+                if deck:
+                    self._scene_deck = cached
+                else:
+                    self._scene = cached
                 log.debug("relógio: cena %s em %.2f s", key, time.monotonic() - t0)
             clock["bg"] = key
-            scr["_bg"] = self._scene
+            scr["_bg"] = cached
             if scene == "lago":   # o cão junto à casa: brinca de dia com tempo seco, senão dorme
                 hx, base = self.cs.house_spot(w, h)
                 play = not night and kind in ("limpo", "parcial", "nublado")
