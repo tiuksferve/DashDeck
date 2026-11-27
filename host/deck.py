@@ -25,19 +25,19 @@ import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+import paths
 import ws
 from session import Session, SessionEvents
 
 log = logging.getLogger("deckd")
-# o token e o estado do cubo continuam nas pastas do Deck³ até à fase 5 da união (docs/deck3/unificacao.md)
-CONF_DIR = Path.home() / ".config" / "deck3"
-STATE_DIR = Path.home() / ".local" / "state" / "deck3"
-TOKEN_FILE = CONF_DIR / "token"
+# token em ~/.config/dashd/deck3-token; bateria e eventos de fora de casa em ~/.local/state/dashd
+STATE_DIR = paths.STATE
+TOKEN_FILE = paths.DECK3_TOKEN
 
 
 def load_token() -> str:
     """Token partilhado com o aparelho (gravado nele pelo setup/provision.py)."""
-    CONF_DIR.mkdir(parents=True, exist_ok=True)
+    TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
     if not TOKEN_FILE.exists():
         TOKEN_FILE.write_text(secrets.token_hex(16) + "\n")
         TOKEN_FILE.chmod(0o600)
@@ -120,6 +120,7 @@ class DeckMixin:
         import deckproviders
         import providers
         from dashd import lcd_safe
+        paths.migrate_deck3()   # token e estado que estavam em ~/.config/deck3 (cópia, só o que falta)
         # menu do cubo: o mesmo (os itens com devices = [...] escolhem o ecrã), mais os do dock do DashDeck,
         # que o cubo não tem (menos o Início e o brilho, que estão nos botões físicos)
         menu = cfg.get("menu", [])
@@ -336,7 +337,7 @@ class DeckMixin:
             self.toast(f"{n} evento{'s' if n != 1 else ''} de quando esteve fora", "info")
 
     def log_battery(self, b: dict) -> None:
-        """~/.local/state/deck3/bateria-<id>.csv, uma linha por minuto."""
+        """~/.local/state/dashd/bateria-<id>.csv, uma linha por minuto."""
         dev = self.session.dev
         if b.get("pct", -1) < 0:
             return

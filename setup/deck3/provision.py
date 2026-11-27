@@ -8,7 +8,7 @@
   setup/deck3/provision.py --show                    só mostra o que o aparelho tem
   setup/deck3/provision.py --clear                   apaga as redes guardadas
 
-O token vem de ~/.config/deck3/token (criado pelo deckd ou aqui). Só a USB aceita token e host.
+O token vem de ~/.config/dashd/deck3-token (criado pelo dashd ou aqui). Só a USB aceita token e host.
 O Deck³ é encontrado pelo hello ("dev":"deck3"); a porta do DashDeck (/dev/esp-dash, mesmo VID:PID) é
 ignorada enquanto o dashd a estiver a usar.
 """
@@ -24,10 +24,15 @@ from pathlib import Path
 
 import serial  # pyserial (python3-serial)
 
-TOKEN = Path.home() / ".config" / "deck3" / "token"
+TOKEN = Path.home() / ".config" / "dashd" / "deck3-token"
+OLD_TOKEN = Path.home() / ".config" / "deck3" / "token"   # antes da união com o DashDeck
 
 
 def token() -> str:
+    if not TOKEN.exists() and OLD_TOKEN.exists():   # o mesmo que o dashd copia no arranque
+        TOKEN.parent.mkdir(parents=True, exist_ok=True)
+        TOKEN.write_text(OLD_TOKEN.read_text())
+        TOKEN.chmod(0o600)
     if not TOKEN.exists():
         TOKEN.parent.mkdir(parents=True, exist_ok=True)
         TOKEN.write_text(secrets.token_hex(16) + "\n")

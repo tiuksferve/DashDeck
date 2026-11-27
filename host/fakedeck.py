@@ -14,7 +14,7 @@ from pathlib import Path
 
 import ws
 
-TOKEN = Path.home() / ".config" / "deck3" / "token"
+TOKEN = Path.home() / ".config" / "dashd" / "deck3-token"
 
 
 def show(msg: dict) -> None:

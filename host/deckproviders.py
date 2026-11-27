@@ -17,6 +17,8 @@ import subprocess
 import time
 from pathlib import Path
 
+import paths
+
 
 class Provider:
     def __init__(self, node: dict, app):
@@ -221,7 +223,7 @@ class DeckProvider(Provider):
 
 # ------------------------------------------------------------------------------- Config do Deck³
 
-STATE_FILE = Path.home() / ".config" / "deck3" / "state.json"
+STATE_FILE = paths.DECK3_STATE
 
 
 def load_state() -> dict:
@@ -277,7 +279,7 @@ class ConfigProvider(DeckProvider):
     """Box Config: ecrã e som, bateria, Wi-Fi, Bluetooth e o aparelho (estado + testes do hardware).
 
     As definições do cubo (brilho, volume, Bluetooth, redes) ficam guardadas no próprio aparelho;
-    escurecer/apagar ficam no deckd (~/.config/deck3/state.json), por aparelho.
+    escurecer/apagar ficam no dashd (~/.config/dashd/deck3.json), por aparelho.
     """
 
     PAGES = ["Ecrã e som", "Bateria", "Wi-Fi", "Bluetooth", "Aparelho", "Sensores"]
