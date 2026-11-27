@@ -40,7 +40,12 @@ tudo se faz aqui. A união com o DashDeck segue `docs/deck3/unificacao.md`.
   eventos de fora de casa (`log/pendentes.jsonl`). As escritas passam pela tarefa `sdw` (`sd_append`), com stack
   interno: tarefas com stack na PSRAM não escrevem no cartão diretamente. Enviar ficheiros:
   `deckctl.py put <local> <caminho>`; exemplos: `setup/deck3/sd_exemplos.py`.
-- Abrir a porta USB (monitor) reinicia o chip.
+- Abrir a porta USB (monitor) reinicia o chip, mas nem sempre (a 27/11 não reiniciou). Pela USB o cubo também
+  aceita mensagens JSON (manda `hello` com `"via":"usb"`); `{"t":"reboot"}` reinicia-o.
+- **Wi-Fi "zombie" (27/11):** o cubo ficou associado ao router (sinal verde, −50 dBm) mas sem tráfego: ligações
+  ao uConsole e ao gateway davam timeout e não respondia a ping; ficou em "fora de casa" a tentar a cada 4 s.
+  Resolveu-se com `{"t":"reboot"}` pela USB. A rever no `net.c`: depois de várias falhas seguidas por timeout
+  (incluindo o gateway), desligar e voltar a ligar o Wi-Fi em vez de só repetir o WebSocket.
 
 ## Cuidados
 - **USB:** o S3 tem o mesmo VID:PID (303a:1001) que o C6 do DashDeck: a regra udev do DashDeck também apanha
