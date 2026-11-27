@@ -1,10 +1,10 @@
-"""Estado de um ecrã ligado ao serviço (uma "sessão").
+"""Estado de um ecrã ligado ao serviço (uma "sessão"): o DashDeck pela USB e o Deck³ por Wi-Fi.
 
-Hoje há uma só (o DashDeck pela USB). O motor (`dashd.App`) guarda aqui tudo o que é de um aparelho:
-o transporte, a navegação (pilha de telas e páginas), o tamanho e a rotação, e o que já lhe foi enviado
-(fundos, ícones, cabeçalho). Os providers são partilhados e ficam no `App`.
-Durante a união com o Deck³ (docs/deck3/unificacao.md, fase 2) o `App` continua a expor estes campos como
-atributos seus (`app.stack`, `app.esp_w`, ...), para o comportamento e os providers não mudarem.
+O motor (`dashd.App`) guarda aqui tudo o que é de um aparelho: o tipo, o transporte, a navegação (raiz do
+menu, pilha de telas e páginas), o tamanho e a rotação, e o que já lhe foi enviado (fundos, ícones,
+cabeçalho). Os providers são partilhados e ficam no `App`: dois ecrãs no ADS-B mostram o mesmo readsb.
+O `App` expõe os campos da sessão atual como atributos seus (`app.stack`, `app.esp_w`, ...); cada evento
+traz a sessão de onde veio e o motor muda `app.session` antes de o tratar.
 """
 from __future__ import annotations
 
@@ -13,7 +13,17 @@ from dataclasses import dataclass, field, fields
 
 @dataclass
 class Session:
+    kind: str = "dashdeck"              # "dashdeck" (C6, USB) ou "deck3" (S3, Wi-Fi)
     link: object = None                 # transporte: send(msg, raw=False), acks, jpg_acks
+    root: dict = field(default_factory=dict)     # menu inicial deste ecrã
+    layout: str = "grid"                # menus em "grid" (boxes) ou "cards"
+    dock_screens: set = field(default_factory=set)   # telas que mostram o dock (só no DashDeck)
+    screen_off: int = 0                 # s sem toques na tela inicial até apagar (0 = nunca)
+    refresh: float = 2.0                # s entre atualizações da tela aberta
+    emojis: bool = True                 # o ecrã recebe imagens de emojis
+    dev: object = None                  # o aparelho, visto pelos providers do Deck³ (deck.Dev)
+    last_ping: float = 0.0
+    last_refresh: float = 0.0
     stack: list = field(default_factory=list)   # navegação: [raiz, ..., tela aberta]
     page: dict = field(default_factory=dict)     # página atual de cada tela com várias páginas (swipe)
     backlight: int = 80
@@ -48,3 +58,26 @@ def delegate_to_session(cls):
         setattr(cls, name, property(lambda self, n=name: getattr(self.session, n),
                                     lambda self, v, n=name: setattr(self.session, n, v)))
     return cls
+
+
+class SessionEvents:
+    """A fila de eventos do motor vista por um transporte: cada evento sai marcado com a sessão."""
+
+    def __init__(self, q, session: Session):
+        self.q = q
+        self.session = session
+
+    def put(self, item) -> None:
+        self.q.put((item[0], item[1], self.session))
+
+
+class NullLink:
+    """Transporte de uma sessão desligada (ex.: dashd sem o DashDeck): não envia nada."""
+
+    def __init__(self):
+        import queue
+        self.acks = queue.Queue()
+        self.jpg_acks = queue.Queue()
+
+    def send(self, msg: dict, raw: bool = False) -> None:
+        pass

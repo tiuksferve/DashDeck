@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""dashd — daemon do uConsole que controla a tela DashDeck (ESP32-C6) pela USB.
+"""dashd — serviço do uConsole que controla o DashDeck (ESP32-C6, USB) e o Deck³ (ESP32-S3, Wi-Fi).
 
-O ESP é só um renderizador: este daemon decide o menu, as telas e as ações.
-Protocolo: uma mensagem JSON por linha (ver firmware/main/ui.c).
+Os aparelhos são só renderizadores: este serviço decide o menu, as telas e as ações, com uma sessão por
+ecrã e os mesmos providers para os dois. Protocolo: uma mensagem JSON por linha no DashDeck
+(firmware/main/ui.c) e por frame de WebSocket no Deck³ (docs/deck3/protocolo.md; ver deck.py).
 """
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ import emojis
 import icons
 import providers
 import xdgapps
-from session import Session, delegate_to_session
+from session import NullLink, Session, SessionEvents, delegate_to_session
 from transports.serial_link import SerialLink
 import paths
 
@@ -184,16 +185,24 @@ STATE_PT = {"active": ("ativo", "ok"), "inactive": ("parado", "sub"), "failed": 
 
 
 @delegate_to_session
-class App:
+class Engine:
+    """O motor: menus, telas, detalhes, serviços, avisos e ações, para um ou mais ecrãs (sessões).
+
+    Os campos de session.Session (stack, esp_w, link, ...) são atributos da sessão atual (self.session); o
+    ciclo de eventos muda-a antes de tratar cada evento. O que é só do Deck³ está em deck.DeckMixin."""
+
     def __init__(self, cfg: dict):
-        # estado do ecrã ligado (hoje um só): os self.stack, self.esp_w, ... abaixo vivem na sessão
-        self.session = Session()
         self.cfg = cfg
         d = cfg.get("dashd", {})
+        self.events: queue.Queue = queue.Queue()
+        self.sessions: list[Session] = []   # ecrãs servidos (os eventos trazem a sessão de onde vêm)
+        # sessão do DashDeck (C6 pela USB): os self.stack, self.esp_w, ... abaixo vivem nela
+        self.session = self.serial_session = Session(kind="dashdeck")
         self.refresh = float(d.get("refresh", 2.0))
         self.backlight = int(d.get("backlight", 80))
-        self.events: queue.Queue = queue.Queue()
         self.link = self.make_link()
+        if not isinstance(self.link, NullLink):
+            self.sessions.append(self.session)
         self.root = {"id": "home", "type": "submenu", "label": d.get("title", "DashDeck"),
                      "items": cfg.get("menu", [])}
         self.stack: list[dict] = [self.root]
@@ -226,15 +235,54 @@ class App:
         self.last_tpl = ""
         self.dock_lost = False   # o ESP libertou os ícones e o dock (para caber o relógio)
         self.layout = d.get("layout", "grid")      # menus em "grid" (boxes) ou "cards"
-        self.dock = cfg.get("dock", [])
+        self.dock = cfg.get("dock", [])            # só o DashDeck tem dock
         self.dock_screens = set(d.get("dock_screens", ["home"]))   # telas que mostram o dock
         self.screen_off = int(d.get("screen_off", 0))                 # s sem toques na tela inicial
         self.icons_sent: set[str] = set()
         self._icon_src: dict[str, str] = {}
 
     def make_link(self):
-        """Transporte do ecrã: por omissão o DashDeck pela USB (o Deck³ terá o seu, por WebSocket)."""
-        return SerialLink(self.cfg.get("dashd", {}).get("port", "/dev/esp-dash"), self.events, prepare=lcd_safe)
+        """Transporte do DashDeck pela USB ([dashd] port; serial = false desliga-o). O do Deck³ está em deck.py."""
+        d = self.cfg.get("dashd", {})
+        if not d.get("serial", True):
+            return NullLink()
+        return SerialLink(d.get("port", "/dev/esp-dash"), SessionEvents(self.events, self.session), prepare=lcd_safe)
+
+    # ---- várias sessões
+    def each_session(self, ready: bool = True):
+        """Percorre as sessões (por omissão só as que já responderam ao hello), com cada uma como a atual."""
+        cur = self.session
+        try:
+            for sess in list(self.sessions):
+                if ready and not sess.esp_ready:
+                    continue
+                self.session = sess
+                yield sess
+        finally:
+            self.session = cur
+
+    def any_ready(self) -> bool:
+        return any(s.esp_ready for s in self.sessions)
+
+    def notify_all(self, msg: dict, emoji_text: dict | None = None) -> None:
+        """Aviso para todos os ecrãs ligados (mensagens, squawks, alarme)."""
+        for _ in self.each_session():
+            if emoji_text:
+                self.send_emojis(emoji_text)
+            self.link.send(msg)
+
+    def toast_all(self, text: str, level: str = "info") -> None:
+        for _ in self.each_session():
+            self.toast(text, level)
+
+    def header_all(self) -> None:
+        for _ in self.each_session():
+            self.send_header()
+
+    def visible(self, it: dict) -> bool:
+        """Item do menu só para alguns ecrãs: devices = ["deck3"] ou ["dashdeck"]."""
+        devs = it.get("devices")
+        return not devs or self.session.kind in devs
 
     SHOT_PREFIX = "dashdeck"   # capturas em ~/Pictures/<prefixo>-<data>.png
     has_rotation = True        # o ecrã roda (página Sistema › DashDeck); o Deck³ não
@@ -405,7 +453,7 @@ class App:
 
     def menu_items(self, node: dict) -> list[dict]:
         """Itens de um submenu: os do config + (se xdg_category) as aplicações dos .desktop."""
-        items = list(node.get("items", []))
+        items = [it for it in node.get("items", []) if self.visible(it)]
         if node.get("xdg_category"):
             xdg = xdgapps.apps(node["xdg_category"], node.get("xdg_exclude", ["System", "Accessibility"]))
             have = {i["exec"] for i in xdg}
@@ -584,8 +632,10 @@ class App:
 
     def _check_left(self) -> None:
         """Avisa os providers cujas telas (incluindo os detalhes) saíram da pilha (ex.: liberta o SDR)."""
-        owners = {n["id"] for n in self.stack if n.get("type") == "provider"}
-        owners |= {n.get("owner") for n in self.stack if n.get("type") == "detail"}
+        # um provider só sai quando não está na pilha de nenhum ecrã (ex.: o ADS-B aberto no cubo segura o SDR)
+        stacks = [sess.stack for sess in self.sessions] or [self.stack]
+        owners = {n["id"] for st in stacks for n in st if n.get("type") == "provider"}
+        owners |= {n.get("owner") for st in stacks for n in st if n.get("type") == "detail"}
         for gone in self._owners - owners:
             prov = self.providers.get(gone)
             if prov and hasattr(prov, "on_leave"):
@@ -609,9 +659,8 @@ class App:
         for m in new[-1:]:   # várias de uma vez: avisa a mais recente
             name = mesh.sender_name(m)
             text = m.get("text", "")
-            self.send_emojis({"text": text, "from": name})
             log.info("mensagem direta de %s", name)
-            self.link.send({"t": "notify", "from": name, "text": text})
+            self.notify_all({"t": "notify", "from": name, "text": text}, {"text": text, "from": name})
             self.notified = (node, m)
             self.notified_sq = None
 
@@ -652,13 +701,13 @@ class App:
         a cada 30 min. Se o readsb parar (o SDR passou para outro programa), o monitor desliga-se."""
         node, prov = self.adsb()
         if not node or not getattr(prov, "monitor", False):
-            self.send_header()
+            self.header_all()
             return
         if time.monotonic() - prov.monitor_since > 30 and not prov.active():
             prov.set_monitor(False, f"{prov.unit} parado")
-            self.toast("Monitor de emergências desligado: o ADS-B parou", "warn")
+            self.toast_all("Monitor de emergências desligado: o ADS-B parou", "warn")
             return
-        self.send_header()
+        self.header_all()
         try:
             if not prov.load():
                 return
@@ -678,12 +727,12 @@ class App:
                      f"{a['r_dst']:.0f} nm" if isinstance(a.get("r_dst"), (int, float)) else ""]
             text = " · ".join(p for p in parts if p) or "toque para ver no ADS-B"
             log.warning("squawk %s (%s): %s %s", sq, self.SQUAWK[sq], t["name"], text)
-            self.link.send({"t": "notify", "kind": "squawk", "from": t["name"],
+            self.notify_all({"t": "notify", "kind": "squawk", "from": t["name"],
                             "title": f"Squawk {sq} · {self.SQUAWK[sq]} · {t['name']}", "text": text,
                             "dur": int(node.get("squawk_secs", 12))})
             self.notified_sq = (node, t["id"])
             self.notified = None
-            self.send_header()
+            self.header_all()
             break
 
     def clock_providers(self) -> list:
@@ -865,6 +914,28 @@ class App:
             self.stack.pop()
             self.show()
 
+    def dispatch(self, item: tuple) -> None:
+        """Um evento da fila: (tipo, dados, sessão) vem de um ecrã; (tipo, dados) vem de um provider ou do
+        sistema e vale para todos os ecrãs (ou para o DashDeck, nas capturas)."""
+        if len(item) == 3:
+            kind, data, sess = item
+            cur, self.session = self.session, sess
+            try:
+                self.handle(kind, data)
+            finally:
+                self.session = cur
+            return
+        kind, data = item
+        if kind == "shot":
+            sess = next((s for s in self.sessions if s.kind == "dashdeck"), None)
+            if sess:
+                self.dispatch((kind, data, sess))
+        elif kind in ("toast", "refresh", "notify"):
+            for _ in self.each_session(ready=False):
+                self.handle(kind, data)
+        else:
+            self.handle(kind, data)
+
     def handle(self, kind: str, data) -> None:
         if kind == "connected":
             self.esp_ready = False
@@ -901,7 +972,8 @@ class App:
                 self.esp_sd = data.get("sd", -1) >= 0   # cartão SD no ESP (ícones guardados entre arranques)
                 self.bg_sent = None
                 self.icons_sent.clear()
-                EMOJI.clear()
+                if self.session.emojis:
+                    EMOJI.clear()
                 self.esp_ready = True
                 self.link.send({"t": "bl", "v": self.backlight})
                 self.link.send({"t": "about", "host": host_version()})   # para o "Sobre o DashDeck"
@@ -991,43 +1063,58 @@ class App:
             # kill -USR2: captura do ecrã do ESP em ~/Pictures
             signal.signal(signal.SIGUSR2, lambda *_: self.events.put(("shot", None)))
         self.run_bg(self.monitor_restore)   # monitor de emergências que ficou ligado
-        last_ping = last_refresh = last_tick = 0.0
+        last_tick = 0.0
         while True:
             try:
-                kind, data = self.events.get(timeout=0.25)
-                self.handle(kind, data)
+                self.dispatch(self.events.get(timeout=0.25))
             except queue.Empty:
                 pass
             now = time.monotonic()
-            if self.esp_ready and now - last_ping >= 2:
-                self.link.send({"t": "ping"})
-                self.send_status()
-                last_ping = now
-                if now - self.last_time >= 600:   # o cristal do ESP desvia uns segundos por dia
-                    self.send_time()
+            for sess in self.each_session():   # cada ecrã ligado: ping, barra de estado, hora, tela aberta
+                if now - sess.last_ping >= 2:
+                    self.link.send({"t": "ping"})
+                    self.send_status()
+                    sess.last_ping = now
+                    if now - self.last_time >= 600:   # o cristal do ESP desvia uns segundos por dia
+                        self.send_time()
+                if now - sess.last_refresh >= self.refresh:
+                    self.show(full=False)
+                    sess.last_refresh = now
             if now - last_tick >= 1:
                 last_tick = now
                 self.clock_tick()
-            if self.esp_ready and now - self.last_dm_check >= 3:
+            if self.any_ready() and now - self.last_dm_check >= 3:
                 self.last_dm_check = now
                 self.check_direct()
-            if self.esp_ready and now - self.last_sq_check >= 3:
+            if self.any_ready() and now - self.last_sq_check >= 3:
                 self.last_sq_check = now
                 self.check_squawk()
-            if self.esp_ready and now - last_refresh >= self.refresh:
-                self.show(full=False)
-                last_refresh = now
+
+from deck import DeckMixin  # noqa: E402  (o deck importa daqui só dentro das funções)
 
 
-def main() -> None:
+class App(DeckMixin, Engine):
+    """O serviço: o motor com o DashDeck (USB) e o Deck³ (Wi-Fi), cada um na sua sessão."""
+
+
+def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("-c", "--config", default=str(HERE / "config.toml"))
     ap.add_argument("-v", "--verbose", action="store_true")
-    args = ap.parse_args()
+    ap.add_argument("--no-serial", action="store_true", help="sem o DashDeck (USB)")
+    ap.add_argument("--no-deck", action="store_true", help="sem o Deck³ (Wi-Fi)")
+    ap.add_argument("--deck-port", type=int, help="porta do Deck³ (por omissão a do [deckd])")
+    args = ap.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     with open(args.config, "rb") as f:
         cfg = tomllib.load(f)
+    if args.no_serial:
+        cfg.setdefault("dashd", {})["serial"] = False
+    if args.no_deck:
+        cfg.setdefault("deckd", {})["enabled"] = False
+    if args.deck_port:
+        cfg.setdefault("deckd", {})["port"] = args.deck_port
     App(cfg).run()
 
 

@@ -22,10 +22,10 @@ tudo se faz aqui. A união com o DashDeck segue `docs/deck3/unificacao.md`.
   (BSP local). A RAM interna é muito justa (referência: heap ~47 KB, maior bloco ~27 KB). Medir com
   `deckctl.py send '{"t":"stats"}'` + `deckctl.py last stats`.
 - **Versão do firmware:** `DECK3_FW_VERSION` em `main/deck.h`.
-- **Host:** `host/deckd.py` (config `host/deck3.toml`), sobre o motor do DashDeck (`dashd.App`). O serviço
-  instalado (`systemctl --user restart deckd`) ainda corre o da pasta antiga até à fase 6 da união. Testar o do
-  ramo: parar o `deckd` e correr `cd host && /usr/bin/python3 deckd.py -v`; ou noutra porta com uma cópia do
-  config e `host/fakedeck.py --port 18765 --run "tap config; left; back"`. Controlo: `host/deckctl.py [--port N]
+- **Host:** o `dashd` serve o DashDeck e o Deck³ (`host/deck.py`; secções `[deckd]`, `[keys]`, `[about]` do
+  `host/config.toml`). O serviço instalado (`systemctl --user restart deckd`) ainda corre o da pasta antiga até à
+  fase 6 da união. Testar só o cubo noutra porta: `host/deckd.py --deck-port 18765` e
+  `host/fakedeck.py --port 18765 --run "tap config; left; back"`. Controlo: `host/deckctl.py [--port N]
   status|tap|swipe|back|home|send|last|put|ls|rm|ota`.
 - **Exemplos da Waveshare** em `~/esp/ref/wsamoled216` (código descarregado: só ler, não compilar lá dentro).
 

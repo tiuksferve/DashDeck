@@ -1,5 +1,8 @@
-# Configuração do dashd: o menu da tela DashDeck.
-# Edite e reinicie o serviço (systemctl --user restart dashd). Não é preciso regravar o ESP.
+# Configuração do dashd: o menu do DashDeck (ESP32-C6, USB) e do Deck³ (ESP32-S3, Wi-Fi), servidos pelo
+# mesmo serviço. Edite e reinicie (systemctl --user restart dashd). Não é preciso regravar os aparelhos.
+#
+# devices = ["deck3"] ou ["dashdeck"] num item: só aparece nesse ecrã (sem devices, aparece nos dois).
+# O Deck³ não tem dock: os itens do dock (menos Início e Brilho) aparecem no fim do menu dele.
 #
 # Tipos de item:
 #   submenu  — abre outro menu (items = [...])
@@ -24,6 +27,45 @@ layout = "grid"     # menus em boxes; "cards" = lista com cartões (cada submenu
 rotation = 1        # 0 = retrato, 1 = horizontal, 3 = horizontal invertido, 2 = retrato invertido
 screen_off = 180    # apaga o ecrã após N s sem toques na tela inicial (0 = nunca); um toque liga
 dock_screens = ["home", "apps"]   # telas com o dock (ids; "home" = tela inicial)
+# serial = false     # sem o DashDeck (só o Deck³)
+
+# Deck³: o cubo por Wi-Fi (WebSocket com token em ~/.config/deck3/token, gravado no aparelho pelo
+# setup/deck3/provision.py). Sem esta secção, ou com enabled = false, o dashd só serve o DashDeck.
+[deckd]
+enabled = true
+port = 8765          # WebSocket + firmware OTA; anunciado por mDNS como _deck3._tcp
+title = "Deck³"
+refresh = 2.0
+backlight = 80       # 0..100 (o aparelho guarda o último brilho escolhido)
+bl_levels = [20, 50, 80, 100]
+dim = 60             # escurece após N s sem toques (AMOLED: evita marcas); 0 = nunca
+off = 300            # apaga após N s; um toque, um botão ou agitar o cubo acorda
+
+# Botões do Deck³: <botão>_<gesto> = ação
+#   botões: boot (BOOT), user (IO18), pwr (PWR, pelo AXP2101; o toque longo de vários segundos desliga)
+#   gestos: short, long, double
+#   ações: back · home · bl (alterna o brilho) · open:<id do menu> · shell:<comando> · launch:<comando> · none
+[keys]
+boot_short = "back"
+boot_long = "home"
+user_short = "open:config"
+user_double = "shell:grim ~/Pictures/deck3-$(date +%Y%m%d-%H%M%S).png"
+pwr_short = "bl"
+
+# Créditos da cena "Sobre o Deck³" (toque no título "Deck³" da tela inicial)
+[about]
+lines = ["O DashDeck elevado ao cubo", "ESP-IDF · LVGL · voxels"]
+
+[[menu]]
+id = "config"
+label = "Config"
+vox = "gear"
+type = "provider"
+provider = "config"
+devices = ["deck3"]
+battery_mah = 1000   # capacidade da bateria ligada ao Deck³ (para as estimativas)
+# Páginas: ecrã e som (brilho, volume, escurecer/apagar) · bateria (gráfico e estimativa) · Wi-Fi ·
+# Bluetooth · aparelho (estado, testes, reiniciar) · sensores (microfone, IMU)
 
 [[menu]]
 id = "aio"

@@ -34,10 +34,10 @@ def main() -> int:
     ap.add_argument("--kind")
     ap.add_argument("--vox")
     ap.add_argument("--level", default="info")
-    ap.add_argument("--port", type=int, help="porta do deckd (por omissão a do deck3.toml)")
+    ap.add_argument("--port", type=int, help="porta do deckd (por omissão a do [deckd] do config.toml)")
     a = ap.parse_args()
     try:
-        port = a.port or tomllib.load(open(HERE / "deck3.toml", "rb")).get("deckd", {}).get("port", 8765)
+        port = a.port or tomllib.load(open(HERE / "config.toml", "rb")).get("deckd", {}).get("port", 8765)
     except OSError:
         port = 8765
     if a.cmd == "status":
