@@ -44,3 +44,20 @@ typedef struct {
     int shift;            // deslocamento anti-marcas (0..8)
 } away_t;
 void anim_away_draw(uint32_t *buf, int w, int h, int stride, float t, const away_t *a);
+
+// ---- relógio do uConsole (tpl "clock"): faces em ecrã inteiro (0 aurora boreal, 1 o cubo).
+#define ANIM_CLOCK_FACES 2
+typedef struct {
+    const char *time;     // "12:34"
+    const char *date;     // "QUI 26 NOV"
+    int bat;              // % do cubo (-1 sem bateria)
+    bool chg;
+    int shift;            // deslocamento anti-marcas (0..8)
+    bool has_wx;          // previsão do uConsole
+    int temp, tmax, tmin, rain;
+    bool has_icon;
+    uint8_t icon[256];    // ícone do tempo 16x16 (índices na paleta, 0 = transparente)
+    uint32_t icon_pal[8];
+} clock3_t;
+const char *anim_clock_name(int face);
+void anim_clock_draw(int face, uint32_t *buf, int w, int h, int stride, float t, const clock3_t *c);

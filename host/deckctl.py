@@ -28,7 +28,7 @@ def ctl(req: dict, port: int) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Controlo do deckd")
-    ap.add_argument("cmd", choices=["status", "last", "notify", "toast", "beep", "send", "ota", "put", "ls", "rm", "tap", "btn", "swipe", "back", "home"])
+    ap.add_argument("cmd", choices=["status", "last", "shot", "notify", "toast", "beep", "send", "ota", "put", "ls", "rm", "tap", "btn", "swipe", "back", "home"])
     ap.add_argument("args", nargs="*")
     ap.add_argument("--from", dest="frm", default="uConsole")
     ap.add_argument("--kind")
@@ -42,6 +42,8 @@ def main() -> int:
         port = 8765
     if a.cmd == "status":
         req = {"cmd": "status"}
+    elif a.cmd == "shot":          # deckctl.py shot [ficheiro.png]: captura do ecrã do cubo
+        req = {"cmd": "shot", **({"path": str(Path(a.args[0]).resolve())} if a.args else {})}
     elif a.cmd == "last":          # deckctl.py last [tipo]: últimas mensagens do aparelho
         req = {"cmd": "last", **({"t": a.args[0]} if a.args else {})}
     elif a.cmd == "put":           # deckctl.py put ficheiro.json vox/nome.json  (para o cartão SD do Deck³)

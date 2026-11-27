@@ -24,6 +24,7 @@ void link_transport_up(link_via_t via);
 void link_transport_down(link_via_t via);
 
 void link_send(const cJSON *msg);                       // pelo transporte ativo
+void link_send_text(const char *json);                  // texto JSON já feito, pelo transporte ativo (capturas)
 void link_send_via(const cJSON *msg, link_via_t via);   // por um transporte específico
 // {"t":type, k1:v1, k2:v2} (key NULL para omitir)
 void link_send_event(const char *type, const char *k1, const char *v1, const char *k2, const char *v2);

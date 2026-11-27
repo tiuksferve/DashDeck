@@ -14,6 +14,7 @@ Protocolo: docs/deck3/protocolo.md. Configuração: secções [deckd], [keys] e 
 from __future__ import annotations
 
 import asyncio
+import base64
 import hmac
 import json
 import logging
@@ -25,6 +26,7 @@ import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+import icons
 import paths
 import ws
 from session import Session, SessionEvents
@@ -92,6 +94,12 @@ class Dev:
         self.id = ""
         self.hello: dict = {}
         self.last: dict[str, dict] = {}
+        # ícones das boxes guardados no cartão do cubo (icons/<id>.bin), conhecidos por um "ls" no hello
+        self.icons: set[str] = set()
+        self.icons_known = False
+        self.icon_queue: list[tuple[str, str]] = []
+        self.icon_failed: set[str] = set()
+        self.icon_busy = False
 
     def send(self, msg: dict) -> None:
         self.sess.link.send(msg)
@@ -103,6 +111,13 @@ class Dev:
 
     def show(self) -> None:
         self.sess.link.events.put(("refresh", None))
+
+
+ICON_PX = 84   # tamanho dos ícones das boxes no cubo
+# ícones das boxes sem imagem no config (o DashDeck usa os símbolos do LVGL pelo "icon"; no cubo, um emoji)
+DECK_ICON = {"mail": "emoji:💬", "gps": "emoji:🛰️", "wifi": "emoji:📶", "list": "emoji:🗂️", "power": "emoji:🔧",
+             "settings": "emoji:🖥️", "bars": "emoji:📊", "folder": "emoji:📁", "bell": "emoji:🔔",
+             "audio": "emoji:🔊", "image": "emoji:🖼️", "home": "emoji:🏠", "eye": "emoji:👁️"}
 
 
 class DeckMixin:
@@ -209,10 +224,71 @@ class DeckMixin:
         self.link.send({"t": "time", "epoch": int(time.time()), "tz": self.tz})
         self.last_time = time.monotonic()
 
-    # o que o firmware do Deck³ ainda não tem (ícones, emojis, fundos, dock, cabeçalho)
+    def item_view(self, it: dict) -> dict:
+        if self.is_deck() and not it.get("img") and it.get("type") != "launch" and it.get("icon") in DECK_ICON:
+            it = {**it, "img": DECK_ICON[it["icon"]]}
+        return super().item_view(it)
+
+    # --- ícones das boxes: imagens do LVGL no cartão do cubo, enviadas uma vez (em segundo plano)
     def send_icons(self, scr: dict) -> None:
         if not self.is_deck():
-            super().send_icons(scr)
+            return super().send_icons(scr)
+        dev = self.session.dev
+        sd = bool(dev.hello.get("sd"))
+        for it in scr.get("items", []):
+            iid = it.pop("img", None)
+            if not iid or not sd:
+                continue
+            if iid in dev.icons:
+                it["img"] = f"icons/{iid}.bin"
+            elif iid not in dev.icon_failed and self._icon_src.get(iid) \
+                    and all(q[0] != iid for q in dev.icon_queue):
+                dev.icon_queue.append((iid, self._icon_src[iid]))
+        if dev.icon_queue and not dev.icon_busy:
+            dev.icon_busy = True
+            self.run_bg(lambda s=self.session: self._icon_worker(s))
+
+    def _icon_worker(self, sess: Session) -> None:
+        """Envia os ícones em falta para o cartão (pedaços de 3 KB, cada um confirmado) e redesenha."""
+        dev, link = sess.dev, sess.link
+        try:
+            t0 = time.monotonic()
+            while not dev.icons_known and time.monotonic() - t0 < 3:   # a resposta ao "ls icons" do hello
+                time.sleep(0.1)
+            sent = 0
+            while dev.icon_queue:
+                iid, src = dev.icon_queue[0]
+                if iid not in dev.icons:
+                    data = icons.lvgl_bin(src, ICON_PX)
+                    if data and self._upload(link, f"icons/{iid}.bin", data):
+                        dev.icons.add(iid)
+                        sent += 1
+                    else:
+                        dev.icon_failed.add(iid)
+                        log.warning("ícone %s (%s) não foi para o cartão do Deck³", iid, src)
+                dev.icon_queue.pop(0)
+            if sent:
+                log.info("%d ícone(s) enviados para o cartão do Deck³", sent)
+                link.events.put(("refresh", None))
+        finally:
+            dev.icon_busy = False
+
+    @staticmethod
+    def _upload(link, path: str, data: bytes, chunk: int = 3072) -> bool:
+        while not link.acks.empty():
+            link.acks.get_nowait()
+        for off in range(0, len(data), chunk):
+            link.send({"t": "file", "path": path, "data": base64.b64encode(data[off:off + chunk]).decode(),
+                       "append": off > 0}, raw=True)
+            try:
+                ack = link.acks.get(timeout=5)
+            except queue.Empty:
+                return False
+            if ack.get("t") != "file" or not ack.get("ok"):
+                return False
+        return True
+
+    # o que o firmware do Deck³ ainda não tem (emojis no texto, fundos, dock, cabeçalho)
 
     def send_emojis(self, scr: dict) -> None:
         if not self.is_deck():
@@ -279,6 +355,7 @@ class DeckMixin:
         if t == "hello":
             dev.hello = data
             dev.id = self.link.dev_id
+            dev.icons_known, dev.icon_failed = False, set()   # o cartão pode ter mudado
             if "bl" in data:   # o brilho fica guardado no aparelho
                 self.backlight = int(data["bl"])
             super().handle(kind, data)
@@ -289,6 +366,11 @@ class DeckMixin:
                 ab = self.cfg.get("about", {})
                 self.link.send({"t": "about", "lines": ab.get("lines", ["O DashDeck elevado ao cubo"])})
                 self.link.send({"t": "bat?", "n": 2})
+                self.link.send({"t": "ls", "path": "icons"})   # ícones que o cartão já tem
+            return
+        if t == "ls" and data.get("path") == "icons":
+            dev.icons = {n[:-4] for n, _size, is_dir in data.get("items", []) if n.endswith(".bin") and not is_dir}
+            dev.icons_known = True
             return
         if t not in self.DECK_MSGS:
             return super().handle(kind, data)
@@ -371,6 +453,8 @@ class DeckMixin:
             link.events.put(("msg", req["msg"]))
         elif cmd == "send":
             link.send(req["msg"], raw=True)
+        elif cmd == "shot":   # captura do ecrã do cubo para req["path"] (ou ~/Pictures/deck3-<data>.png)
+            link.events.put(("shot", req.get("path")))
         elif cmd == "ota":
             self.fw_path = Path(req["path"]).resolve()
             port = int(self.cfg_deck.get("port", 8765))
@@ -417,7 +501,7 @@ class Server:
                     m = json.loads(raw)
                 except json.JSONDecodeError:
                     continue
-                if m.get("t") in ("bgack", "iconack", "emojiack"):
+                if m.get("t") in ("bgack", "iconack", "emojiack", "file"):   # "file": cada pedaço escrito no cartão
                     link.acks.put(m)
                 elif m.get("t") == "jpgack":
                     link.jpg_acks.put(m)

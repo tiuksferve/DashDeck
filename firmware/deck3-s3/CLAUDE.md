@@ -35,6 +35,15 @@ tudo se faz aqui. A união com o DashDeck segue `docs/deck3/unificacao.md`.
 - BSP com correções locais em `components/waveshare__esp32_s3_touch_amoled_2_16/` (ver `DECK3.md` lá):
   o `bsp_display_lock()` original estava invertido (congelava o ecrã) e a faixa de desenho passou a 20 linhas.
 - Animações no estilo do DashDeck em `main/anim.c` (arranque, avisos, "Sobre").
+- **UI (0.7.0, 27/11):** cabeçalho com o título numa linha ("Config · Ecrã e som" = título + subtítulo cinzento,
+  `set_title`), a hora com o ponto da ligação e, por baixo, Wi-Fi e bateria; pontos das páginas desenhados em baixo.
+  Ícones das boxes: o dashd desenha-os (emoji, tema, SVG; `host/icons.py lvgl_bin`) e grava-os no cartão
+  (`icons/<id>.bin`, 84×84 ARGB8888); o firmware lê cada um uma vez para a PSRAM (`icon_cached`): ler do cartão a
+  cada `update` segurava o LVGL segundos e as mensagens seguintes eram descartadas ("lock do LVGL ocupado").
+  Labels do LVGL com `LONG_DOT` só cortam numa linha se tiverem altura fixa (senão quebram). Os sliders não
+  propagam o gesto (não mudam de página).
+- **Captura do ecrã:** `host/deckctl.py shot [ficheiro.png]` (sem ficheiro: `~/Pictures/deck3-<data>.png`). Logo
+  depois de arrancar pode falhar (o LVGL está ocupado): repetir.
 - Cartão SD (SDMMC 1 bit) em `/sdcard/deck3/` (`main/sd.c`): modelos e cenas de voxels em `vox/` (até 24³),
   imagens PNG/JPG em `icons/` e `scenes/` (no LVGL: `S:icons/x.png`), histórico da bateria (`log/bat.bin`) e
   eventos de fora de casa (`log/pendentes.jsonl`). As escritas passam pela tarefa `sdw` (`sd_append`), com stack

@@ -3,6 +3,8 @@
 // voxels: o cubo e os modelos dos avisos montam-se voxel a voxel (vox_view_t.fly).
 #include "anim.h"
 
+#include "esp_heap_caps.h"
+
 #include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -143,6 +145,7 @@ static const g5_t G5[] = {
     {'Y', {"10001", "10001", "10001", "01010", "00100", "00100", "00100"}},
     {'Z', {"11111", "00001", "00010", "00100", "01000", "10000", "11111"}},
     {'\x03', {"111", "001", "111", "001", "111", "000", "000"}},   // ³ (expoente)
+    {'\x02', {"010", "101", "010", "000", "000", "000", "000"}},   // °
     {':', {"00", "11", "11", "00", "11", "11", "00"}},
     {'.', {"00", "00", "00", "00", "00", "11", "11"}},
     {'%', {"11001", "11010", "00010", "00100", "01000", "01011", "10011"}},
@@ -171,6 +174,7 @@ static int fold(const char *s, char *out, int max)
     while (*p && n < max - 1) {
         unsigned c = *p++;
         if (c == 0xC2 && *p == 0xB3) { p++; out[n++] = '\x03'; continue; }
+        if (c == 0xC2 && *p == 0xB0) { p++; out[n++] = '\x02'; continue; }   // °
         if (c == 0xC3 && *p) {
             unsigned d = *p++ | 0x20;   // minúscula
             char b = d >= 0xE0 && d <= 0xE5 ? 'A' : d == 0xE7 ? 'C' : d >= 0xE8 && d <= 0xEB ? 'E'
@@ -589,12 +593,191 @@ void anim_away_draw(uint32_t *buf, int w, int h, int stride, float t, const away
     }
     // eventos guardados e estado
     char ev[48];
-    if (!a->sd) snprintf(ev, sizeof(ev), "SEM CARTAO: EVENTOS NAO GUARDADOS");
+    if (a->pending < 0) ev[0] = '\0';   // relógio do uConsole: sem a linha dos eventos
+    else if (!a->sd) snprintf(ev, sizeof(ev), "SEM CARTAO: EVENTOS NAO GUARDADOS");
     else if (a->pending == 1) snprintf(ev, sizeof(ev), "1 EVENTO GUARDADO NO CARTAO");
     else snprintf(ev, sizeof(ev), "%d EVENTOS GUARDADOS NO CARTAO", a->pending);
-    pfont_draw(buf, w, h, stride, ev, cx - pfont_width(ev, 2) / 2, by + 38, 2, a->pending ? 0xFFD64D : 0x6A7488, 0, -1);
+    if (ev[0]) pfont_draw(buf, w, h, stride, ev, cx - pfont_width(ev, 2) / 2, by + 38, 2, a->pending ? 0xFFD64D : 0x6A7488, 0, -1);
     if (a->status && *a->status) {
         int s2 = pfont_width(a->status, 2) <= w - 16 ? 2 : 1;
         pfont_draw(buf, w, h, stride, a->status, cx - pfont_width(a->status, s2) / 2, h - 30, s2, 0x6A7488, 0, -1);
+    }
+}
+
+// ------------------------------------------------------------------------------------- relógio
+// Faces do relógio do uConsole no cubo (tpl "clock"). A aurora é a cena "Sobre" do DashDeck: desenha-se a
+// meia resolução (240x240, pixel art como no C6) e amplia-se 2x; a hora, a data e o tempo vão por cima em
+// resolução total.
+
+#define LO 240
+static uint32_t *s_lo;
+static int16_t s_cfar[LO], s_cmid[LO], s_cstar[70][3];
+
+static void aurora_init(void)
+{
+    const int HZ = LO * 70 / 100;
+    for (int x = 0; x < LO; x++) {
+        float f = HZ - LO * 0.20f - (14 * sinf(x * .030f + 1.3f) + 8 * sinf(x * .081f + .4f) + 3 * sinf(x * .19f + 2));
+        s_cfar[x] = (int16_t)(lroundf(f / 2) * 2);
+        s_cmid[x] = (int16_t)lroundf(HZ - 10 - (5 * sinf(x * .047f + 2.1f) + 3 * sinf(x * .12f) + 2 * sinf(x * .28f + 1)));
+    }
+    uint32_t seed = 11;
+    for (int i = 0; i < 70; i++) {
+        seed = seed * 1664525u + 1013904223u;
+        s_cstar[i][0] = (int16_t)((seed >> 8) % LO);
+        seed = seed * 1664525u + 1013904223u;
+        s_cstar[i][1] = (int16_t)((seed >> 8) % (HZ - 30));
+        s_cstar[i][2] = (int16_t)((seed >> 4) % 628);
+    }
+}
+
+static void aurora_scene(float t)
+{
+    const int HZ = LO * 70 / 100;
+    // céu em faixas com pontilhado
+    for (int y = 0; y < HZ; y++) {
+        int f = y * 12 * 256 / HZ, b = f >> 8, fr = f & 255;
+        uint32_t c0 = mix(0x050818, 0x1A1440, b * 256 / 12), c1 = mix(0x050818, 0x1A1440, (b + 1) * 256 / 12);
+        uint32_t *row = &B[y * BS];
+        for (int x = 0; x < LO; x++) row[x] = 0xFF000000u | ((fr > 128 && ((x + y) & 1) == 0) ? c1 : c0);
+    }
+    for (int i = 0; i < 70; i++)
+        blend(s_cstar[i][0], s_cstar[i][1], 0xFFFFF0, (int)(140 + 100 * sinf(t * 2.3f + s_cstar[i][2] / 100.0f)));
+    // aurora: cortinas verticais que ondulam, mais intensas em baixo
+    for (int x = 0; x < LO; x++) {
+        float fx = (float)x * 1.333f;   // a mesma "largura" de ondas da cena do DashDeck (320 px)
+        float base = HZ * 0.55f + 9 * sinf(fx * 0.018f + t * 0.7f) + 5 * sinf(fx * 0.047f - t * 1.1f);
+        float inten = 0.55f + 0.45f * sinf(fx * 0.031f + t * 0.9f) * sinf(fx * 0.013f - t * 0.4f + 1);
+        if (inten < 0.1f) continue;
+        int hh = (int)(22 + 30 * inten), y0 = (int)base, ai = (int)(inten * 175);
+        uint32_t c0 = mix(0x3CFFB0, 0x50E0FF, (int)(128 + 127 * sinf(fx * 0.02f + t)));
+        for (int k = 0; k < hh; k++) {
+            int y = y0 - k;
+            if (y < 0) break;
+            blend(x, y, k > hh * 2 / 3 ? 0xB070FF : c0, ai * (hh - k) / hh);
+        }
+        blend(x, y0 + 1, c0, ai / 3);
+    }
+    // estrela cadente a cada 4 s
+    float ph = fmodf(t, 4.0f);
+    if (ph < 0.8f) {
+        int k = (int)(t / 4.0f);
+        float sx = LO * (0.15f + 0.6f * ((k * 37) % 10) / 10.0f), sy = HZ * 0.10f + (k * 13) % 18;
+        float p = ph / 0.8f;
+        for (int i = 0; i < 16; i++) {
+            float q = p - i * 0.02f;
+            if (q < 0) break;
+            blend((int)(sx + q * 70), (int)(sy + q * 26), 0xFFFFFF, (int)(240 * (1 - i / 16.0f) * (1 - p * 0.5f)));
+        }
+    }
+    // montanhas com um toque de verde da aurora no topo
+    for (int x = 0; x < LO; x++) {   // longe: azul escuro com neve no cimo; perto: colinas quase pretas
+        int fh = s_cfar[x], mh = s_cmid[x];
+        for (int y = fh; y < HZ; y++) {
+            uint32_t c = y >= mh ? 0x070D10 : mix(0x0C1030, 0x080A1E, (y - fh) * 256 / (HZ - fh + 1));
+            if (y < mh && y < fh + 5 && (x * 7 + y) % 5) c = mix(c, 0x8FA6C8, 120);   // neve
+            B[y * BS + x] = 0xFF000000u | c;
+        }
+        put(x, fh, 0x4FA89A);   // o verde da aurora no cimo
+    }
+    // cabana na margem, janela acesa e fumo
+    int cx = LO * 20 / 100, cy = HZ - 2;
+    rect(cx - 8, cy - 9, 16, 9, 0x2A1A12);
+    for (int i = 0; i < 10; i++) rect(cx - 10 + i, cy - 9 - i / 2, 20 - 2 * i, 1, 0x3A2416);
+    rect(cx + 2, cy - 6, 4, 3, ((int)(t * 3) % 7) ? 0xFFC860 : 0xFFE0A0);
+    for (int i = 0; i < 6; i++) {
+        float q = fmodf(t * 0.5f + i / 6.0f, 1);
+        blend(cx + 5 + (int)(4 * sinf(q * 6 + t)), cy - 15 - (int)(q * 26), 0x9098B0, (int)(120 * (1 - q)));
+    }
+    // lago: reflexo ondulado e mais escuro
+    int phs = (int)(t * 3 * 256);
+    for (int y = HZ; y < LO; y++) {
+        int sy2 = HZ - 1 - (y - HZ) * 2;
+        if (sy2 < 0) sy2 = 0;
+        int off = ((y * 230 + phs) / 256) % 3 - 1;
+        for (int x = 0; x < LO; x++) {
+            int xx = x + off < 0 ? 0 : x + off >= LO ? LO - 1 : x + off;
+            uint32_t p = B[sy2 * BS + xx];
+            int r = ((p >> 16) & 255) * 5 / 8, g = ((p >> 8) & 255) * 5 / 8, b = (p & 255) * 2 / 3 + 10;
+            B[y * BS + x] = 0xFF000000u | (uint32_t)(r << 16 | g << 8 | (b > 255 ? 255 : b));
+        }
+    }
+}
+
+// meia resolução -> ecrã (cada píxel vira 2x2)
+static void up2(uint32_t *dst, int w, int h, int stride)
+{
+    for (int y = 0; y < LO && y * 2 + 1 < h; y++) {
+        const uint32_t *src = &s_lo[y * LO];
+        uint32_t *d0 = &dst[(y * 2) * stride], *d1 = d0 + stride;
+        for (int x = 0; x < LO && x * 2 + 1 < w; x++) {
+            uint32_t v = src[x];
+            d0[x * 2] = d0[x * 2 + 1] = d1[x * 2] = d1[x * 2 + 1] = v;
+        }
+    }
+}
+
+// ícone do tempo (16x16, paleta) em blocos de sc píxeis
+static void wx_icon(int x, int y, int sc, const clock3_t *c)
+{
+    for (int j = 0; j < 16; j++)
+        for (int i = 0; i < 16; i++) {
+            int k = c->icon[j * 16 + i];
+            if (k > 0 && k < 8) rect(x + i * sc, y + j * sc, sc, sc, c->icon_pal[k]);
+        }
+}
+
+const char *anim_clock_name(int face)
+{
+    static const char *N[ANIM_CLOCK_FACES] = {"AURORA", "CUBO"};
+    return N[((face % ANIM_CLOCK_FACES) + ANIM_CLOCK_FACES) % ANIM_CLOCK_FACES];
+}
+
+void anim_clock_draw(int face, uint32_t *buf, int w, int h, int stride, float t, const clock3_t *c)
+{
+    face = ((face % ANIM_CLOCK_FACES) + ANIM_CLOCK_FACES) % ANIM_CLOCK_FACES;
+    char wx[40] = "";
+    if (c->has_wx) snprintf(wx, sizeof(wx), "%d\xC2\xB0  MAX %d  MIN %d  CHUVA %d%%", c->temp, c->tmax, c->tmin, c->rain);
+    if (face == 1) {   // o cubo a rodar, a hora às cores, a bateria e o tempo
+        away_t a = {.time = c->time, .date = c->date, .bat = c->bat, .chg = c->chg, .pending = -1, .sd = true,
+                    .status = wx, .shift = c->shift};
+        anim_away_draw(buf, w, h, stride, t, &a);
+        return;
+    }
+    if (!s_lo) {
+        s_lo = heap_caps_malloc(LO * LO * 4, MALLOC_CAP_SPIRAM);
+        if (!s_lo) return;
+        aurora_init();
+    }
+    B = s_lo; BW = LO; BH = LO; BS = LO;
+    aurora_scene(t);
+    up2(buf, w, h, stride);
+    B = buf; BW = w; BH = h; BS = stride;
+    int dx = (c->shift % 3 - 1) * 6, dy = (c->shift / 3 - 1) * 5;   // desloca-se um pouco a cada minuto (AMOLED)
+    // hora grande sobre o céu, os dois pontos a piscar
+    int sc = 13, tw = pfont_width(c->time, sc), x = w / 2 - tw / 2 + dx, y = 34 + dy;
+    char one[2] = {0, 0};
+    for (const char *p = c->time; *p; p++) {
+        one[0] = *p;
+        uint32_t col = *p == ':' ? ((int)(t * 2) % 2 ? 0xBFFFE8 : 0x2E6A60) : 0xEFFFF8;
+        pfont_draw(buf, w, h, stride, one, x, y, sc, col, 0x07161C, -1);
+        x += pfont_width(one, sc) + sc;
+    }
+    B = buf; BW = w; BH = h; BS = stride;
+    pfont_draw(buf, w, h, stride, c->date, w / 2 - pfont_width(c->date, 4) / 2 + dx, y + 7 * sc + 16, 4, 0xB8E8DA,
+               0x07161C, -1);
+    B = buf; BW = w; BH = h; BS = stride;
+    // tempo, em baixo sobre o lago: ícone, temperatura e máxima/mínima/chuva
+    if (c->has_wx) {
+        int bx = 34 + dx, by = h - 118 + dy;
+        if (c->has_icon) wx_icon(bx, by, 5, c);
+        char tt[12];
+        snprintf(tt, sizeof(tt), "%d\xC2\xB0", c->temp);
+        pfont_draw(buf, w, h, stride, tt, bx + 96, by + 6, 7, 0xFFFFFF, 0x07161C, -1);
+        B = buf; BW = w; BH = h; BS = stride;
+        char mm[32];
+        snprintf(mm, sizeof(mm), "%d / %d  %d%%", c->tmax, c->tmin, c->rain);
+        pfont_draw(buf, w, h, stride, mm, bx + 98, by + 66, 3, 0x9FD8FF, 0x07161C, -1);
+        B = buf; BW = w; BH = h; BS = stride;
     }
 }

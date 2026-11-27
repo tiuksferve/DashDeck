@@ -109,6 +109,13 @@ void link_send(const cJSON *msg)
     link_send_via(msg, via);
 }
 
+void link_send_text(const char *json)
+{
+    link_via_t via = s_active;
+    if (via == LINK_NONE) via = net_ws_connected() ? LINK_WIFI : LINK_USB;
+    send_text(json, via);
+}
+
 void link_send_event(const char *type, const char *k1, const char *v1, const char *k2, const char *v2)
 {
     cJSON *o = cJSON_CreateObject();

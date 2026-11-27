@@ -117,3 +117,17 @@ def rgb565a8(src: str, size: int = SIZE) -> bytes | None:
         rgb += bytes((v & 0xFF, v >> 8))
         alpha.append(a)
     return bytes(rgb + alpha)
+
+
+@functools.lru_cache(maxsize=64)
+def lvgl_bin(src: str, size: int) -> bytes | None:
+    """Imagem binária do LVGL 9 (cabeçalho de 12 bytes + ARGB8888, B G R A), para o Deck³ ler do cartão
+    sem descodificar PNG (lv_image "S:icons/<id>.bin")."""
+    img = _load(src, size)
+    if img is None:
+        return None
+    import struct
+    w, h = img.size
+    head = struct.pack("<BBHHHHH", 0x19, 0x10, 0, w, h, w * 4, 0)   # magia, LV_COLOR_FORMAT_ARGB8888
+    r, g, b, a = img.split()
+    return head + Image.merge("RGBA", (b, g, r, a)).tobytes()

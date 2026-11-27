@@ -59,7 +59,7 @@ lines = ["O DashDeck elevado ao cubo", "ESP-IDF · LVGL · voxels"]
 [[menu]]
 id = "config"
 label = "Config"
-vox = "gear"
+img = "emoji:🎛️"
 type = "provider"
 provider = "config"
 devices = ["deck3"]

@@ -2896,7 +2896,10 @@ class ClockProvider(Provider):
                     icons.append({k: v for k, v in self.cs.weather_icon(hk, not is_day).items() if k != "role"})
                 hours.append([-1 if i == 0 else int(tm[11:13]), keys.index(ik), temp, rain])
             clock["hours"], clock["hicons"] = hours, icons
-        scene = self.SCENES.get(self.face)
+        # fundo da cena só para o DashDeck: o Deck³ desenha as faces dele (e uma cena a 480x480 para a outra
+        # sessão estragava a cache da cena do DashDeck, que só guarda uma)
+        scene = self.SCENES.get(self.face) if getattr(self.app, "session", None) is None \
+            or self.app.session.kind != "deck3" else None
         if scene:
             winter = bool(self.node.get("winter_snow", True)) and now.tm_mon in (12, 1, 2)
             w, h = self.app.esp_w, self.app.esp_h

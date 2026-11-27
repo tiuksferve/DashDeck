@@ -23,6 +23,8 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "imu.h"
+#include "link.h"
+#include "mbedtls/base64.h"
 #include "net.h"
 #include "plot.h"
 #include "power.h"
@@ -50,6 +52,7 @@ static const char *TAG = "ui";
 // ------------------------------------------------------------------------------------------ estado
 
 static lv_obj_t *s_scr, *s_hdr, *s_back, *s_title, *s_dots, *s_clock, *s_wifi, *s_bat, *s_link, *s_body;
+static lv_obj_t *s_tbox, *s_tsub;   // título: "Config · Ecrã e som" = s_title (28) + s_tsub (20, cinzento)
 static char s_id[48];             // id da tela do host aberta ("" = arranque/offline)
 static cJSON *s_screen;           // cópia da última "screen" (as "update" juntam-se a ela)
 static char *s_refs[MAX_REFS];    // ids dos itens/botões (user_data dos eventos)
@@ -235,6 +238,46 @@ static lv_obj_t *vox_icon(lv_obj_t *parent, const char *model, uint32_t tint, in
     lv_obj_invalidate(cv);
     if (s_nicons < MAX_ICONS) s_icons[s_nicons++] = (icon_t){.cv = cv, .buf = buf, .m = m, .tint = tint, .size = size};
     return cv;
+}
+
+// Ícones das boxes enviados pelo dashd (deck3/icons/<id>.bin, imagem do LVGL ARGB8888): lidos do cartão uma
+// vez e guardados na PSRAM. O menu é refeito a cada "update"; ler 20 ficheiros de cada vez segurava o LVGL
+// segundos (e as mensagens seguintes eram descartadas).
+#define ICON_CACHE 64
+typedef struct {
+    char rel[48];
+    lv_image_dsc_t dsc;
+} icon_cache_t;
+static icon_cache_t s_icache[ICON_CACHE];
+static int s_nicache;
+
+static const lv_image_dsc_t *icon_cached(const char *rel)
+{
+    for (int i = 0; i < s_nicache; i++)
+        if (!strcmp(s_icache[i].rel, rel)) return &s_icache[i].dsc;
+    if (s_nicache >= ICON_CACHE || strlen(rel) >= sizeof(s_icache[0].rel)) return NULL;
+    char p[128];
+    if (!sd_path(rel, p, sizeof(p))) return NULL;
+    FILE *f = fopen(p, "rb");
+    if (!f) return NULL;
+    lv_image_header_t h;
+    uint8_t *data = NULL;
+    size_t n = 0;
+    if (fread(&h, 1, sizeof(h), f) == sizeof(h) && h.magic == LV_IMAGE_HEADER_MAGIC && h.w && h.h && h.w <= 256 &&
+        h.h <= 256) {
+        n = (size_t)h.stride * h.h;
+        data = heap_caps_malloc(n, MALLOC_CAP_SPIRAM);
+        if (data && fread(data, 1, n, f) != n) {
+            heap_caps_free(data);
+            data = NULL;
+        }
+    }
+    fclose(f);
+    if (!data) return NULL;
+    icon_cache_t *c = &s_icache[s_nicache++];
+    strlcpy(c->rel, rel, sizeof(c->rel));
+    c->dsc = (lv_image_dsc_t){.header = h, .data_size = n, .data = data};
+    return &c->dsc;
 }
 
 // ------------------------------------------------------------------------------------------ envio
@@ -475,6 +518,8 @@ static void hdr_refresh(void)
     localtime_r(&now, &tm);
     if (tm.tm_year > 120) lv_label_set_text_fmt(s_clock, "%02d:%02d", tm.tm_hour, tm.tm_min);
     else lv_label_set_text(s_clock, "--:--");
+    lv_obj_update_layout(s_clock);
+    lv_obj_align_to(s_link, s_clock, LV_ALIGN_OUT_LEFT_MID, -8, 0);   // a hora muda de largura
 
     net_info_t ni;
     net_get_info(&ni);
@@ -492,14 +537,62 @@ static void hdr_refresh(void)
     else if (p.percent > 12) sym = LV_SYMBOL_BATTERY_1;
     if (p.percent < 0) lv_label_set_text(s_bat, p.usb ? LV_SYMBOL_USB : "");
     else lv_label_set_text_fmt(s_bat, "%s%s %d%%", p.charging ? LV_SYMBOL_CHARGE : "", sym, p.percent);
+    lv_obj_update_layout(s_bat);
+    lv_obj_align_to(s_wifi, s_bat, LV_ALIGN_OUT_LEFT_MID, -10, 0);
     lv_obj_set_style_text_color(s_bat, lv_color_hex(p.percent >= 0 && p.percent <= 15 && !p.charging ? C_ERR : C_SUB), 0);
 }
 
+// Páginas: pontos desenhados (a fonte não tem o ●); a página atual é um traço mais largo, na cor de destaque.
 static void set_dots(int pages, int page)
 {
-    char d[40] = "";
-    for (int i = 0; i < pages && i < 9; i++) strcat(d, i == page ? "\xE2\x97\x8F " : "\xC2\xB7 ");
-    lv_label_set_text(s_dots, pages > 1 ? d : "");
+    lv_obj_clean(s_dots);
+    if (pages > 9) pages = 9;
+    if (pages < 2) {
+        lv_obj_add_flag(s_dots, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    for (int i = 0; i < pages; i++) {
+        lv_obj_t *d = box(s_dots, i == page ? C_ACCENT : 0x4A5462, LV_RADIUS_CIRCLE);
+        lv_obj_set_size(d, i == page ? 20 : 8, 8);
+    }
+    lv_obj_remove_flag(s_dots, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Título do cabeçalho numa só linha: "Config · Ecrã e som" fica "Config" (28) e "Ecrã e som" (20, cinzento)
+// a seguir, cortado com reticências se não couber. Um título longo sem " · " desce para a fonte 20.
+static int32_t text_w(const char *txt, const lv_font_t *f)
+{
+    lv_point_t sz;
+    lv_text_get_size(&sz, txt, f, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    return sz.x;
+}
+
+static void set_title(const char *txt)
+{
+    if (!txt) txt = "";
+    char head[96];
+    const char *sep = strstr(txt, " \xC2\xB7 ");   // " · "
+    size_t hl = sep ? (size_t)(sep - txt) : strlen(txt);
+    if (hl >= sizeof(head)) hl = sizeof(head) - 1;
+    memcpy(head, txt, hl);
+    head[hl] = '\0';
+    bool back = !lv_obj_has_flag(s_back, LV_OBJ_FLAG_HIDDEN);
+    int32_t avail = W - 44 - 96 - (back ? 52 : 0);   // painel menos os cantos, o estado à direita e o "voltar"
+    lv_obj_set_width(s_tbox, avail);
+    lv_obj_align(s_tbox, LV_ALIGN_LEFT_MID, back ? 52 : 0, 2);
+    const lv_font_t *f = &deck_font_28;
+    if (text_w(head, f) > avail) f = &deck_font_20;
+    lv_obj_set_style_text_font(s_title, f, 0);
+    lv_obj_set_height(s_title, lv_font_get_line_height(f));
+    lv_label_set_text(s_title, head);
+    int32_t tw = text_w(head, f);
+    lv_obj_set_width(s_title, tw > avail ? avail : LV_SIZE_CONTENT);
+    if (sep && tw + 40 < avail) {
+        lv_label_set_text(s_tsub, sep + 4);   // depois de " · " (o · ocupa 2 bytes)
+        lv_obj_remove_flag(s_tsub, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s_tsub, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 // ------------------------------------------------------------------------------------ ecrã de arranque
@@ -610,9 +703,9 @@ static void boot_show_mode(bool away)
     body_free();
     s_id[0] = '\0';
     s_page = -1;
-    lv_label_set_text(s_title, "");
-    set_dots(0, 0);
     lv_obj_add_flag(s_back, LV_OBJ_FLAG_HIDDEN);
+    set_title("");
+    set_dots(0, 0);
     s_boot_buf = heap_caps_calloc(1, BOOT_W * BOOT_H * 4, MALLOC_CAP_SPIRAM);
     if (!s_boot_buf) return;
     s_boot_cv = lv_canvas_create(s_scr);
@@ -728,11 +821,24 @@ static void build_menu(const cJSON *scr)
         if (!model) model = vox_for_icon(jstr(it, "icon"));
         uint32_t tint = color_of(jstr(it, "color"), 0);
         lv_obj_t *cv;
-        if (jstr(it, "img") && sd_ok()) {   // ícone do cartão (PNG/JPG em deck3/, ex. "icons/radio.png")
-            char src[112];
-            snprintf(src, sizeof(src), "S:%s", jstr(it, "img"));
+        const char *img = jstr(it, "img");
+        const lv_image_dsc_t *ic = NULL;
+        char src[112] = "";
+        if (img && sd_ok()) {
+            size_t L = strlen(img);
+            if (L > 4 && !strcmp(img + L - 4, ".bin")) {
+                ic = icon_cached(img);   // ícone do dashd (na PSRAM depois da 1.ª vez)
+            } else {                     // PNG/JPG posto à mão no cartão: só se existir (senão a box ficava vazia)
+                snprintf(src, sizeof(src), "S:%s", img);
+                lv_fs_file_t fh;
+                if (lv_fs_open(&fh, src, LV_FS_MODE_RD) == LV_FS_RES_OK) lv_fs_close(&fh);
+                else src[0] = '\0';
+            }
+        }
+        if (ic || src[0]) {
             cv = lv_image_create(t);
-            lv_image_set_src(cv, src);
+            if (ic) lv_image_set_src(cv, ic);
+            else lv_image_set_src(cv, src);
             lv_obj_set_size(cv, 84, 84);
             lv_image_set_inner_align(cv, LV_IMAGE_ALIGN_CONTAIN);
         } else {
@@ -743,6 +849,7 @@ static void build_menu(const cJSON *scr)
         const char *val = jstr(it, "value");
         lv_obj_t *l = label(t, jstr(it, "label"), &deck_font_20, C_TEXT);
         lv_obj_set_width(l, 128);
+        lv_obj_set_height(l, lv_font_get_line_height(&deck_font_20));   // uma linha (com altura livre, o LVGL quebra)
         lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
         lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
         lv_obj_align(l, LV_ALIGN_TOP_MID, 0, val ? 88 : 96);
@@ -752,6 +859,7 @@ static void build_menu(const cJSON *scr)
         }
         lv_obj_t *s = label(t, jstr(it, "sub"), &deck_font_16, color_of(jstr(it, "sub_color"), C_SUB));
         lv_obj_set_width(s, 128);
+        lv_obj_set_height(s, lv_font_get_line_height(&deck_font_16));
         lv_obj_set_style_text_align(s, LV_TEXT_ALIGN_CENTER, 0);
         lv_label_set_long_mode(s, LV_LABEL_LONG_DOT);
         lv_obj_align(s, LV_ALIGN_TOP_MID, 0, val ? 138 : 124);
@@ -959,6 +1067,8 @@ typedef struct {
 } slider_ctx_t;
 
 static void build_body(const cJSON *scr);
+static void clock_apply(const cJSON *scr);
+static void clock_hide(void);
 
 static void rebuild_async(void *arg)
 {
@@ -1040,6 +1150,7 @@ static void build_sliders(const cJSON *scr)
         lv_obj_set_style_bg_color(sl, lv_color_hex(C_TEXT), LV_PART_KNOB);
         lv_obj_set_style_pad_all(sl, 8, LV_PART_KNOB);
         lv_obj_set_ext_click_area(sl, 18);
+        lv_obj_remove_flag(sl, LV_OBJ_FLAG_GESTURE_BUBBLE);   // arrastar o slider não muda de página
         lv_obj_add_event_cb(sl, slider_cb, LV_EVENT_PRESSED, ctx);
         lv_obj_add_event_cb(sl, slider_cb, LV_EVENT_VALUE_CHANGED, ctx);
         lv_obj_add_event_cb(sl, slider_cb, LV_EVENT_RELEASED, ctx);
@@ -1201,7 +1312,9 @@ static void build_body(const cJSON *scr)
     if (!tpl) tpl = "text";
     build_sliders(scr);   // extras de qualquer template: sliders e gráficos antes do corpo
     build_charts(scr);
+    if (strcmp(tpl, "clock") != 0) clock_hide();
     if (!strcmp(tpl, "panel")) { /* só os extras */ }
+    else if (!strcmp(tpl, "clock")) clock_apply(scr);
     else if (!strcmp(tpl, "menu")) build_menu(scr);
     else if (!strcmp(tpl, "image")) build_image(scr);
     else if (!strcmp(tpl, "plot")) build_plot(scr);
@@ -1230,9 +1343,9 @@ static void apply_screen(bool fresh)
     int dir = same && s_page >= 0 && page != s_page ? (page > s_page ? 1 : -1) : 0;
     strlcpy(s_id, id ? id : "", sizeof(s_id));
     s_page = page;
-    lv_label_set_text(s_title, jstr(msg, "title") ? jstr(msg, "title") : "");
     if (cJSON_IsFalse(cJSON_GetObjectItem(msg, "back"))) lv_obj_add_flag(s_back, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_remove_flag(s_back, LV_OBJ_FLAG_HIDDEN);
+    set_title(jstr(msg, "title"));
     set_dots(jint(msg, "pages", 1), page);
     const char *bg = jstr(msg, "bg_img");   // imagem de fundo do cartão (ex. "scenes/praia.jpg")
     if (bg && sd_ok()) {
@@ -1284,7 +1397,7 @@ static void update_screen(const cJSON *msg)
         else cJSON_AddItemToObject(s_screen, f->string, dup);
     }
     if (s_boot_buf) return;
-    if (cJSON_GetObjectItem(msg, "title")) lv_label_set_text(s_title, jstr(s_screen, "title"));
+    if (cJSON_GetObjectItem(msg, "title")) set_title(jstr(s_screen, "title"));
     if (s_dragging) {   // não destruir o slider debaixo do dedo
         s_rebuild_pending = true;
         return;
@@ -1297,7 +1410,7 @@ static void update_screen(const cJSON *msg)
 
 static void gesture_cb(lv_event_t *e)
 {
-    if (!s_id[0] || s_confirm || s_notif) return;
+    if (!s_id[0] || s_confirm || s_notif || s_dragging) return;
     lv_dir_t d = lv_indev_get_gesture_dir(lv_indev_active());
     if (d == LV_DIR_LEFT) send_tap("swipe", "dir", "left");
     else if (d == LV_DIR_RIGHT) send_tap("swipe", "dir", "right");
@@ -1418,6 +1531,122 @@ static void notify_show(const cJSON *msg)
     }
 }
 
+// ------------------------------------------------------------------------------------ relógio
+// tpl "clock" do dashd: ecrã inteiro com uma das faces de anim.c (a hora é a do relógio do cubo; o dashd dá a
+// previsão). Swipe para os lados troca a face (guardada no cubo); um toque volta.
+static lv_obj_t *s_clk, *s_clk_cv, *s_clk_name;
+static uint32_t *s_clk_buf;
+static lv_timer_t *s_clk_tm;
+static int64_t s_clk_t0, s_clk_name_until;
+static int s_clk_face;
+static clock3_t s_clk_data;
+
+static void clock_hide(void)
+{
+    if (s_clk_tm) lv_timer_delete(s_clk_tm);
+    s_clk_tm = NULL;
+    if (s_clk) lv_obj_delete(s_clk);
+    s_clk = s_clk_cv = s_clk_name = NULL;
+    heap_caps_free(s_clk_buf);
+    s_clk_buf = NULL;
+}
+
+static void clock_tick(lv_timer_t *t)
+{
+    static const char *DOW[] = {"DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SAB"};
+    static const char *MON[] = {"JAN", "FEV", "MAR", "ABR", "MAI", "JUN", "JUL", "AGO", "SET", "OUT", "NOV", "DEZ"};
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    char hm[8], date[24];
+    if (tm.tm_year > 120) {
+        snprintf(hm, sizeof(hm), "%02d:%02d", tm.tm_hour, tm.tm_min);
+        snprintf(date, sizeof(date), "%s %d %s", DOW[tm.tm_wday % 7], tm.tm_mday, MON[tm.tm_mon % 12]);
+    } else {
+        strcpy(hm, "--:--");
+        date[0] = '\0';
+    }
+    power_info_t p;
+    power_get(&p);
+    s_clk_data.time = hm;
+    s_clk_data.date = date;
+    s_clk_data.bat = p.percent;
+    s_clk_data.chg = p.charging;
+    s_clk_data.shift = (int)((now / 60) % 9);
+    float el = (esp_timer_get_time() - s_clk_t0) / 1e6f;
+    anim_clock_draw(s_clk_face, s_clk_buf, W, H, canvas_stride(s_clk_cv), el, &s_clk_data);
+    lv_obj_invalidate(s_clk_cv);
+    if (s_clk_name && esp_timer_get_time() > s_clk_name_until) lv_obj_add_flag(s_clk_name, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void clock_face_name(void)
+{
+    lv_label_set_text(s_clk_name, anim_clock_name(s_clk_face));
+    lv_obj_remove_flag(s_clk_name, LV_OBJ_FLAG_HIDDEN);
+    s_clk_name_until = esp_timer_get_time() + 1500000;
+}
+
+static void clock_ev(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_GESTURE) {
+        lv_dir_t d = lv_indev_get_gesture_dir(lv_indev_active());
+        if (d != LV_DIR_LEFT && d != LV_DIR_RIGHT) return;
+        s_clk_face = (s_clk_face + (d == LV_DIR_LEFT ? 1 : ANIM_CLOCK_FACES - 1)) % ANIM_CLOCK_FACES;
+        store_set("clkface", s_clk_face);
+        clock_face_name();
+        lv_indev_wait_release(lv_indev_active());   // o gesto não conta também como toque
+    } else if (code == LV_EVENT_SHORT_CLICKED) {
+        send_tap("back", NULL, NULL);
+    }
+}
+
+// Dados do "clock" do dashd: previsão e ícone do tempo ({"wx":{t,max,min,rain}, "icon":{pal,d}}).
+static void clock_apply(const cJSON *scr)
+{
+    const cJSON *c = cJSON_GetObjectItem(scr, "clock");
+    const cJSON *wx = cJSON_GetObjectItem(c, "wx");
+    s_clk_data.has_wx = cJSON_IsObject(wx);
+    if (s_clk_data.has_wx) {
+        s_clk_data.temp = jint(wx, "t", 0);
+        s_clk_data.tmax = jint(wx, "max", 0);
+        s_clk_data.tmin = jint(wx, "min", 0);
+        s_clk_data.rain = jint(wx, "rain", 0);
+    }
+    const cJSON *ic = cJSON_GetObjectItem(c, "icon");
+    const char *d = jstr(ic, "d");
+    const cJSON *pal = cJSON_GetObjectItem(ic, "pal");
+    s_clk_data.has_icon = d && strlen(d) >= 256 && cJSON_IsArray(pal);
+    if (s_clk_data.has_icon) {
+        for (int i = 0; i < 256; i++) s_clk_data.icon[i] = (uint8_t)(d[i] - '0');
+        for (int i = 0; i < 8; i++) s_clk_data.icon_pal[i] = color_of(cJSON_GetStringValue(cJSON_GetArrayItem(pal, i)), 0);
+    }
+    if (s_clk) return;
+    s_clk_buf = heap_caps_calloc(1, W * H * 4, MALLOC_CAP_SPIRAM);
+    if (!s_clk_buf) return;
+    s_clk_face = (int)store_get("clkface", 0) % ANIM_CLOCK_FACES;
+    s_clk = box(s_scr, 0x000000, 0);   // por cima do cabeçalho e do corpo; os avisos ficam por cima (camada de topo)
+    lv_obj_set_size(s_clk, W, H);
+    lv_obj_add_flag(s_clk, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(s_clk, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_event_cb(s_clk, clock_ev, LV_EVENT_GESTURE, NULL);
+    lv_obj_add_event_cb(s_clk, clock_ev, LV_EVENT_SHORT_CLICKED, NULL);
+    s_clk_cv = lv_canvas_create(s_clk);
+    lv_canvas_set_buffer(s_clk_cv, s_clk_buf, W, H, LV_COLOR_FORMAT_XRGB8888);
+    lv_obj_remove_flag(s_clk_cv, LV_OBJ_FLAG_CLICKABLE);
+    s_clk_name = label(s_clk, "", &deck_font_20, 0xFFFFFF);
+    lv_obj_set_style_bg_color(s_clk_name, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(s_clk_name, LV_OPA_60, 0);
+    lv_obj_set_style_pad_hor(s_clk_name, 14, 0);
+    lv_obj_set_style_pad_ver(s_clk_name, 4, 0);
+    lv_obj_set_style_radius(s_clk_name, 14, 0);
+    lv_obj_align(s_clk_name, LV_ALIGN_BOTTOM_MID, 0, -14);
+    clock_face_name();
+    s_clk_t0 = esp_timer_get_time();
+    s_clk_tm = lv_timer_create(clock_tick, 66, NULL);   // ~15 qps
+    clock_tick(NULL);
+}
+
 // ------------------------------------------------------------------------------------ "Sobre"
 
 static void about_close(void)
@@ -1486,6 +1715,62 @@ static void about_show(void)
 static void title_tap(lv_event_t *e)
 {
     if (!strcmp(s_id, "home")) about_show();
+}
+
+// ------------------------------------------------------------------------------------ captura do ecrã
+
+// {"t":"shot"}: redesenha o ecrã inteiro e, a cada faixa enviada ao painel, manda os píxeis (RGB565, base64)
+// {"t":"shotpx","x","y","w","h","d"}; no fim {"t":"shotend","w","h"}. O dashd monta o PNG (deckctl.py shot).
+static bool s_shot_on;
+static int s_shot_n;
+static char s_shot_line[2600];
+
+static void shot_ev(lv_event_t *e)
+{
+    if (!s_shot_on) return;
+    const lv_area_t *a = lv_event_get_param(e);
+    lv_draw_buf_t *b = lv_display_get_buf_active(lv_event_get_target(e));
+    if (!a || !b || !b->data) return;
+    int w = lv_area_get_width(a), h = lv_area_get_height(a);
+    uint32_t stride = b->header.stride ? b->header.stride : (uint32_t)w * 2;
+    int rows = 1800 / (w * 2);
+    if (rows < 1) rows = 1;
+    static uint8_t raw[1800];
+    for (int y = 0; y < h; y += rows) {
+        int n = h - y < rows ? h - y : rows;
+        int k = snprintf(s_shot_line, sizeof(s_shot_line), "{\"t\":\"shotpx\",\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"d\":\"",
+                         (int)a->x1, (int)a->y1 + y, w, n);
+        size_t rl = 0;
+        for (int r = 0; r < n; r++) {
+            memcpy(raw + rl, b->data + (size_t)(y + r) * stride, (size_t)w * 2);
+            rl += (size_t)w * 2;
+        }
+        size_t olen = 0;
+        mbedtls_base64_encode((unsigned char *)s_shot_line + k, sizeof(s_shot_line) - k - 4, &olen, raw, rl);
+        k += (int)olen;
+        snprintf(s_shot_line + k, sizeof(s_shot_line) - k, "\"}");
+        link_send_text(s_shot_line);
+        s_shot_n++;
+    }
+}
+
+static void shot_take(void)
+{
+    static bool hooked;
+    lv_display_t *d = lv_display_get_default();
+    if (!hooked) {
+        lv_display_add_event_cb(d, shot_ev, LV_EVENT_FLUSH_START, NULL);
+        hooked = true;
+    }
+    lv_obj_invalidate(lv_screen_active());
+    s_shot_n = 0;
+    s_shot_on = true;
+    lv_refr_now(d);
+    s_shot_on = false;
+    char buf[64];
+    snprintf(buf, sizeof(buf), "{\"t\":\"shotend\",\"w\":%d,\"h\":%d}", W, H);
+    link_send_text(buf);
+    ESP_LOGI(TAG, "captura: %d blocos enviados (via %s)", s_shot_n, link_via_name(link_active()));
 }
 
 // ------------------------------------------------------------------------------------ mensagens
@@ -1587,6 +1872,7 @@ void ui_handle(const cJSON *msg, link_via_t via)
     }
     if (!strcmp(t, "screen")) show_screen(msg);
     else if (!strcmp(t, "update")) update_screen(msg);
+    else if (!strcmp(t, "shot")) shot_take();
     else if (!strcmp(t, "toast")) toast_nolock(jstr(msg, "text"), jstr(msg, "level"));
     else if (!strcmp(t, "notify")) notify_show(msg);
     else if (!strcmp(t, "status")) strlcpy(s_status, jstr(msg, "text") ? jstr(msg, "text") : "", sizeof(s_status));
@@ -1715,24 +2001,41 @@ void ui_init(lv_display_t *disp)
     lv_obj_add_event_cb(s_back, back_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_center(label(s_back, LV_SYMBOL_LEFT, &deck_font_28, C_TEXT));
     lv_obj_add_flag(s_back, LV_OBJ_FLAG_HIDDEN);
-    s_title = label(s_hdr, "", &deck_font_28, C_TEXT);
-    lv_obj_set_width(s_title, 190);
+    // título à esquerda (uma linha: título + subtítulo); à direita, em duas linhas, a hora com o ponto da
+    // ligação e, por baixo, o Wi-Fi e a bateria
+    s_tbox = box(s_hdr, C_BG, 0);
+    lv_obj_set_height(s_tbox, 44);
+    lv_obj_set_flex_flow(s_tbox, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_tbox, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(s_tbox, 10, 0);
+    s_title = label(s_tbox, "", &deck_font_28, C_TEXT);
     lv_label_set_long_mode(s_title, LV_LABEL_LONG_DOT);
-    lv_obj_align(s_title, LV_ALIGN_LEFT_MID, 52, 4);
     lv_obj_add_flag(s_title, LV_OBJ_FLAG_CLICKABLE);   // na tela inicial abre o "Sobre"
     lv_obj_set_ext_click_area(s_title, 10);
     lv_obj_add_event_cb(s_title, title_tap, LV_EVENT_CLICKED, NULL);
-    s_dots = label(s_hdr, "", &deck_font_16, C_ACCENT);
-    lv_obj_align(s_dots, LV_ALIGN_BOTTOM_MID, 0, 6);
-    s_bat = label(s_hdr, "", &deck_font_16, C_SUB);
-    lv_obj_align(s_bat, LV_ALIGN_RIGHT_MID, 0, 4);
-    s_wifi = label(s_hdr, LV_SYMBOL_WIFI, &deck_font_20, 0x3A424D);
-    lv_obj_align_to(s_wifi, s_bat, LV_ALIGN_OUT_LEFT_MID, -86, 0);
+    s_tsub = label(s_tbox, "", &deck_font_20, C_SUB);
+    lv_label_set_long_mode(s_tsub, LV_LABEL_LONG_DOT);
+    lv_obj_set_height(s_tsub, lv_font_get_line_height(&deck_font_20));
+    lv_obj_set_flex_grow(s_tsub, 1);
+    lv_obj_set_style_translate_y(s_tsub, 3, 0);   // na linha de base do título
     s_clock = label(s_hdr, "--:--", &deck_font_20, C_TEXT);
-    lv_obj_align(s_clock, LV_ALIGN_RIGHT_MID, -150, 4);
+    lv_obj_align(s_clock, LV_ALIGN_TOP_RIGHT, 0, 4);
     s_link = box(s_hdr, C_ERR, LV_RADIUS_CIRCLE);
     lv_obj_set_size(s_link, 8, 8);
-    lv_obj_align(s_link, LV_ALIGN_RIGHT_MID, -136, 4);
+    lv_obj_align_to(s_link, s_clock, LV_ALIGN_OUT_LEFT_MID, -8, 0);
+    s_bat = label(s_hdr, "", &deck_font_16, C_SUB);
+    lv_obj_align(s_bat, LV_ALIGN_BOTTOM_RIGHT, 0, -2);
+    s_wifi = label(s_hdr, LV_SYMBOL_WIFI, &deck_font_16, 0x3A424D);
+    // páginas: pontos num "comprimido" em baixo, ao centro, por cima do corpo
+    s_dots = box(s_scr, C_BG, LV_RADIUS_CIRCLE);
+    lv_obj_set_style_bg_opa(s_dots, LV_OPA_80, 0);
+    lv_obj_set_size(s_dots, LV_SIZE_CONTENT, 18);
+    lv_obj_set_style_pad_hor(s_dots, 9, 0);
+    lv_obj_set_flex_flow(s_dots, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_dots, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(s_dots, 6, 0);
+    lv_obj_remove_flag(s_dots, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(s_dots, LV_OBJ_FLAG_HIDDEN);
 
     s_bgimg = lv_image_create(s_scr);   // por baixo do corpo
     lv_obj_set_size(s_bgimg, W, H - HDR_H);
@@ -1743,6 +2046,8 @@ void ui_init(lv_display_t *disp)
     s_body = lv_obj_create(s_scr);
     lv_obj_set_size(s_body, W, H - HDR_H);
     lv_obj_align(s_body, LV_ALIGN_TOP_LEFT, 0, HDR_H);
+    lv_obj_align(s_dots, LV_ALIGN_BOTTOM_MID, 0, -8);
+    lv_obj_move_foreground(s_dots);   // os pontos das páginas ficam por cima do corpo
     lv_obj_set_style_bg_opa(s_body, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_body, 0, 0);
     lv_obj_set_style_radius(s_body, 0, 0);

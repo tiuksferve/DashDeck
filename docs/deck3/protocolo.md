@@ -27,6 +27,7 @@ funcionou → gateway da rede na porta 8765 (o uConsole em modo hotspot).
 | `screen` | `id`, `tpl`, `title`, `back`, `pages`, `page`, dados do template, `buttons` | Nova tela |
 | `update` | `id` + os campos que mudaram | Junta à tela aberta (se o `id` for o mesmo) e redesenha mantendo o scroll |
 | `toast` | `text`, `level` (`ok` `warn` `err` `info`) | Aviso de 2,5 s |
+| `shot` | | Captura do ecrã: o aparelho redesenha tudo e responde com `shotpx` (`x`, `y`, `w`, `h`, `d` = RGB565 em base64, por faixas) e `shotend` (`w`, `h`); o dashd monta o PNG (`deckctl.py shot [ficheiro]`) |
 | `notify` | `from`, `text`; `title`, `kind` (`alarm`, `squawk`), `vox` (modelo), `dur` (s, 8), `sound` (false = sem som) | Aviso por cima de tudo: modelo de voxels a montar-se e a balançar, som. Um toque responde `{"t":"notify","act":"open"}` |
 | `vox` | `save` (true = guarda no cartão em `deck3/vox/<id>.json`), `id`, `size` `[nx,ny,nz]` (até 12), `pal` (até 15 `#rrggbb`), `layers` (de baixo para cima; cada linha com `nx` caracteres: `.` vazio, `1`-`9` `a`-`f` = cor) | Define um modelo de voxels para usar em `vox` |
 | `time` | `epoch` (UTC), `tz` (regra POSIX, ex.: `WET0WEST,M3.5.0/1,M10.5.0`) | Acerta o relógio (há também SNTP quando há Internet) |
@@ -70,14 +71,14 @@ Resposta: `{"t":"cfg","ok":true,"nets":[...],"state":"...","ssid","ip","host","t
 
 | `tpl` | Dados |
 |---|---|
-| `menu` | `items`: `id`, `label`, `sub`, `vox` (modelo), `img` (ícone PNG/JPG do cartão, ex. `icons/radio.png`, 84×84), `icon` (nome do DashDeck → modelo), `color` (tinge a cor 1 do modelo), `badge`, `value`, `value_color`, `sub_color`, `dot`, `bg`, `confirm`. Boxes 140×164 em 3 colunas |
+| `menu` | `items`: `id`, `label`, `sub`, `vox` (modelo), `img` (ícone do cartão: `icons/<id>.bin`, imagem do LVGL ARGB8888 84×84 que o dashd envia uma vez com `file` e o aparelho guarda na PSRAM; ou um PNG/JPG posto à mão; se o ficheiro não existir, usa o modelo), `icon` (nome do DashDeck → modelo), `color` (tinge a cor 1 do modelo), `badge`, `value`, `value_color`, `sub_color`, `dot`, `bg`, `confirm`. Boxes 140×164 em 3 colunas |
 | `list` | `items`: `id`, `label`, `sub`, `right`, `color`, `bg`, `confirm`; `empty` |
 | `kv` | `rows`: `[chave, valor, cor?]` (cor `#rrggbb`, `ok`, `warn`, `err`, `sub`, `accent`) |
 | `text` | `text` |
 | `panel` | só os extras abaixo |
 | `image` | `src` (ficheiro do cartão, PNG ou JPG, ex. `scenes/praia.jpg`), `h` (altura, 320), `caption` |
 | `vox` | `model` (cena em voxels até 24³, ex. do cartão `deck3/vox/<nome>.json`), `caption`, `spin` (false = parada). Monta-se voxel a voxel e roda devagar; o IMU inclina-a |
-| todos | `bg_img`: imagem de fundo do cartão (cobre o corpo da tela) |
+| todos | `bg_img`: imagem de fundo do cartão (cobre o corpo da tela). `title` com " · " mostra a parte de depois mais pequena e a cinzento ("Config · Ecrã e som") |
 | todos | `buttons`: `id`, `label`, `color`, `confirm` |
 | todos | `sliders`: `id`, `label`, `v`, `min`, `max`, `step`, `unit`, `color`, `live` (`"bl"` = aplica o brilho enquanto se arrasta). Ao largar: `slider` |
 | todos | `chart`: objeto ou lista de `{title, value, value_color, min, max, h, labels:[esq, dir], series:[{color, points}]}` (linhas; a série mais curta acaba à direita) |
