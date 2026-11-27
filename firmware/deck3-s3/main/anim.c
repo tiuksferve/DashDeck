@@ -4,6 +4,8 @@
 #include "anim.h"
 
 #include "esp_heap_caps.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -13,12 +15,11 @@
 
 // ------------------------------------------------------------------------------------- comum
 
-static uint32_t *B;
-static int BW, BH, BS;
-
 #define LO 240                 // lado do buffer baixo (ampliado 2x)
 static uint32_t *s_lo;
 static void up2(uint32_t *dst, int w, int h, int stride);
+static uint32_t *B;
+static int BW, BH, BS;
 static void cube8(int cx, int cy, int L, float z0, float z1, int ps);
 static float bounce(float t);
 static const uint32_t CUBE8[3] = {0x2DE2FF, 0xFF3D9A, 0xFFC21A};   // cores do cubo: ciano, magenta, âmbar
@@ -33,9 +34,72 @@ static inline uint32_t mix(uint32_t a, uint32_t b, int t)
     return (uint32_t)(r << 16 | g << 8 | bl);
 }
 
+// Saídas em RGB565 (os ecrãs inteiros: menos memória a mexer e o LVGL copia-as sem converter). O buffer
+// atual B é tratado como RGB565 se estiver registado com anim_out16(); os outros (s_lo, avisos) são ARGB8888.
+#define NOUT16 6
+static const void *s_out16[NOUT16];
+static const uint32_t *s_b16_chk = (const uint32_t *)1;
+static bool s_b16;
+
+// trinco: o ui.c desenha quadros numa tarefa à parte e o resto (avisos, ícones, Pomodoro) na do LVGL
+static SemaphoreHandle_t s_amx;
+void anim_init(void)
+{
+    if (!s_amx) s_amx = xSemaphoreCreateRecursiveMutex();
+}
+void anim_lock(void)
+{
+    xSemaphoreTakeRecursive(s_amx, portMAX_DELAY);
+}
+void anim_unlock(void)
+{
+    xSemaphoreGiveRecursive(s_amx);
+}
+TaskHandle_t anim_lock_holder(void)
+{
+    return s_amx ? xSemaphoreGetMutexHolder(s_amx) : NULL;
+}
+
+void anim_out16(const void *buf, bool on)
+{
+    for (int i = 0; i < NOUT16; i++)
+        if (s_out16[i] == buf) s_out16[i] = NULL;
+    if (on)
+        for (int i = 0; i < NOUT16; i++)
+            if (!s_out16[i]) {
+                s_out16[i] = buf;
+                break;
+            }
+    s_b16_chk = (const uint32_t *)1;
+}
+
+static inline bool b16(void)
+{
+    if (B != s_b16_chk) {
+        s_b16_chk = B;
+        s_b16 = false;
+        for (int i = 0; i < NOUT16; i++)
+            if (B && s_out16[i] == B) s_b16 = true;
+    }
+    return s_b16;
+}
+
+static inline uint16_t c565(uint32_t c)
+{
+    return (uint16_t)((((c >> 16) & 0xF8) << 8) | (((c >> 8) & 0xFC) << 3) | ((c & 0xFF) >> 3));
+}
+
+static inline uint32_t c888(uint16_t p)
+{
+    uint32_t r = p >> 11, g = (p >> 5) & 0x3F, b = p & 0x1F;
+    return ((r << 3 | r >> 2) << 16) | ((g << 2 | g >> 4) << 8) | (b << 3 | b >> 2);
+}
+
 static inline void put(int x, int y, uint32_t c)
 {
-    if (x >= 0 && y >= 0 && x < BW && y < BH) B[y * BS + x] = 0xFF000000u | c;
+    if (x < 0 || y < 0 || x >= BW || y >= BH) return;
+    if (b16()) ((uint16_t *)B)[y * BS + x] = c565(c);
+    else B[y * BS + x] = 0xFF000000u | c;
 }
 
 // mistura com alfa a (0..256); sobre píxeis transparentes (avisos) a cor fica com essa opacidade
@@ -43,6 +107,11 @@ static void blend(int x, int y, uint32_t c, int a)
 {
     if (x < 0 || y < 0 || x >= BW || y >= BH || a <= 0) return;
     if (a > 256) a = 256;
+    if (b16()) {
+        uint16_t *q = &((uint16_t *)B)[y * BS + x];
+        *q = c565(mix(c888(*q), c, a));
+        return;
+    }
     uint32_t *p = &B[y * BS + x];
     uint32_t pa = *p >> 24;
     if (pa == 0) {
@@ -61,32 +130,18 @@ static void rect(int x, int y, int w, int h, uint32_t c)
 
 static void fill(uint32_t c)
 {
+    if (b16()) {
+        uint16_t v = c565(c);
+        for (int y = 0; y < BH; y++) {
+            uint16_t *row = &((uint16_t *)B)[y * BS];
+            for (int x = 0; x < BW; x++) row[x] = v;
+        }
+        return;
+    }
     uint32_t v = 0xFF000000u | c;
     for (int y = 0; y < BH; y++) {
         uint32_t *row = &B[y * BS];
         for (int x = 0; x < BW; x++) row[x] = v;
-    }
-}
-
-static void ring(int cx, int cy, int r, uint32_t c, int a)
-{
-    int n = r * 7 < 30 ? 30 : r * 7;
-    for (int k = 0; k < n; k++) {
-        float t = (float)k / n * 6.2831853f;
-        int x = cx + (int)lroundf(cosf(t) * r), y = cy + (int)lroundf(sinf(t) * r);
-        blend(x, y, c, a);
-        blend(x + 1, y, c, a / 2);   // 2 px: lê-se melhor nos 480x480
-    }
-}
-
-static void line_a(float x0, float y0, float x1, float y1, uint32_t c, int a)
-{
-    float dx = x1 - x0, dy = y1 - y0;
-    int n = (int)(fmaxf(fabsf(dx), fabsf(dy))) + 1;
-    if (n > 600) n = 600;
-    for (int i = 0; i <= n; i++) {
-        float k = (float)i / n;
-        blend((int)(x0 + dx * k), (int)(y0 + dy * k), c, a * (64 + 192 * i / n) / 256);   // cauda mais fraca
     }
 }
 
@@ -184,9 +239,10 @@ static int fold(const char *s, char *out, int max)
         if (c == 0xC2 && *p == 0xB3) { p++; out[n++] = '\x03'; continue; }
         if (c == 0xC2 && *p == 0xB0) { p++; out[n++] = '\x02'; continue; }   // °
         if (c == 0xC3 && *p) {
-            unsigned d = *p++ | 0x20;   // minúscula
-            char b = d >= 0xE0 && d <= 0xE5 ? 'A' : d == 0xE7 ? 'C' : d >= 0xE8 && d <= 0xEB ? 'E'
-                   : d >= 0xEC && d <= 0xEF ? 'I' : d >= 0xF2 && d <= 0xF6 ? 'O' : d >= 0xF9 && d <= 0xFC ? 'U' : ' ';
+            unsigned d = *p++ | 0x20;   // 2.º byte de U+00C0..U+00FF, maiúsculas e minúsculas juntas (0xA0..0xBF)
+            char b = d >= 0xA0 && d <= 0xA5 ? 'A' : d == 0xA7 ? 'C' : d >= 0xA8 && d <= 0xAB ? 'E'
+                   : d >= 0xAC && d <= 0xAF ? 'I' : d == 0xB1 ? 'N' : d >= 0xB2 && d <= 0xB6 ? 'O'
+                   : d >= 0xB9 && d <= 0xBC ? 'U' : ' ';
             out[n++] = b;
             continue;
         }
@@ -303,11 +359,9 @@ static void stars_draw(float t, int amax)
 #define LOGO "DASHDECK\xC2\xB3"
 #define MAXC 400
 
-// o nome a sair do cubo no "Sobre"
+// o nome no "Sobre" (células acesas)
 static int16_t s_cells[MAXC][3];
-static int16_t s_from[MAXC][2];
-static uint8_t s_delay[MAXC];
-static int s_ncells, s_logo_y;
+static int s_ncells;
 
 // ------------------------------------------------------------------------------------- avisos
 // 8 bits: ondas em blocos a fechar sobre o centro, o sprite (envelope, despertador, avião) cai e assenta
@@ -328,17 +382,6 @@ uint32_t anim_notify_color(int kind, int which)
     return NCOL[kind < 0 || kind > 2 ? 0 : kind][which & 3];
 }
 
-void anim_notify_start(int sprite, const char *name, int kind)
-{
-    s_nkind = kind < 0 || kind > 2 ? 0 : kind;
-    s_nsprite = sprite < 0 || sprite > 2 ? 0 : sprite;
-    char f[96];
-    s_nlen = fold(name ? name : "", f, sizeof(f));
-    if (s_nlen > (int)sizeof(s_nname) - 1) s_nlen = sizeof(s_nname) - 1;
-    memcpy(s_nname, f, s_nlen);
-    s_nname[s_nlen] = '\0';
-}
-
 int anim_sprite_id(const char *name)
 {
     if (!name) return -1;
@@ -348,75 +391,168 @@ int anim_sprite_id(const char *name)
     return -1;
 }
 
-#define NS 8   // tamanho de um pixel do sprite no ecrã
-#define INK 0x0A0A18
-#define PAPER 0xF4F7FF
+// Sprites em blocos de NP píxeis (como os do DashDeck, notify.c, mas com mais detalhe no ecrã maior): a
+// grelha de cores monta-se no anim_notify_start; no desenho, cada bloco voa até ao seu lugar e depois o
+// sprite inteiro mexe-se conforme o tipo.
+#define NP 4
+#define SGW 36
+#define SGH 32
+static uint32_t *s_sg;          // cores (0 = vazio; as outras com o bit 24 aceso), SGW x SGH, na PSRAM
+static int16_t (*s_sfrom)[2];   // de onde vem cada bloco
+static uint8_t *s_sdel;         // atraso de cada bloco (centésimos de s)
+static int s_sw, s_sh;          // tamanho do sprite em blocos
+#define GL 3                    // alcance do brilho à volta do sprite (blocos)
+static uint8_t *s_sglow;        // distância (1..GL) ao sprite de cada bloco vazio à volta; 0 = sem brilho
 
-static const char *SPR_MAIL_ROWS[12] = {
-    "oooooooooooooooo",
-    "owwppppppppppwwo",
-    "opwwppppppppwwpo",
-    "oppwwppppppwwppo",
-    "opppwwppppwwpppo",
-    "oppppwwppwwppppo",
-    "opppppwwwwpppppo",
-    "oppppppwwppppppo",
-    "oppppppppppppppo",
-    "oppppppppppppppo",
-    "oppppppppppppppo",
-    "oooooooooooooooo",
-};
-static const char *SPR_PLANE_ROWS[13] = {
-    ".......oo.......",
-    "......owwo......",
-    "......olwo......",
-    ".....owwwwo.....",
-    "...oowwwwwwoo...",
-    ".oowwwwwwwwwwoo.",
-    "owwwwwwwwwwwwwwo",
-    "oooooowwwwoooooo",
-    "......owwo......",
-    "......owwo......",
-    ".....owwwwo.....",
-    "....owwwwwwo....",
-    "....oooooooo....",
-};
-
-static inline void sp(int ox, int oy, int x, int y, uint32_t c)
+static inline void sg(int x, int y, uint32_t c)
 {
-    rect(ox + x * NS, oy + y * NS, NS, NS, c);
+    if (x >= 0 && y >= 0 && x < SGW && y < SGH) s_sg[y * SGW + x] = 0x01000000u | (c & 0xFFFFFF);
 }
 
-static void spr_rows(const char *const *rows, int nr, int ox, int oy, uint32_t w, uint32_t l)
+static inline bool sg_on(int x, int y)
 {
-    for (int y = 0; y < nr; y++)
-        for (int x = 0; x < 16; x++) {
-            char k = rows[y][x];
-            if (k == '.') continue;
-            sp(ox, oy, x, y, k == 'o' ? INK : k == 'w' ? w : k == 'l' ? l : PAPER);
+    return x >= 0 && y >= 0 && x < s_sw && y < s_sh && s_sg[y * SGW + x];
+}
+
+// envelope fechado: corpo, aba mais clara com o bico a 3/5 da altura, dobras de baixo, selo e contorno
+static void sg_mail(const uint32_t *C)
+{
+    const int w = 36, h = 24;
+    s_sw = w;
+    s_sh = h;
+    const float half = w / 2.0f, my = h * 0.6f, fy = h * 0.5f;
+    uint32_t body = C[0], flap = mix(C[0], C[1], 120), fold = mix(C[0], C[2], 90), shade = mix(C[0], C[2], 50);
+    for (int j = 0; j < h; j++)
+        for (int i = 0; i < w; i++) {
+            float u = 1 - fabsf(i + 0.5f - half) / half;   // 1 no meio, 0 nas pontas
+            float f = my * u;                              // borda da aba
+            float g = (h - 1) - ((h - 1) - fy) * u;        // dobras de baixo (dos cantos para o meio)
+            uint32_t c = j >= h - 4 ? shade : body;
+            if (j > f + 1 && fabsf(j - g) < 0.7f) c = fold;
+            if (j < f) c = j <= 2 ? mix(flap, 0xFFFFFF, 60) : flap;
+            if (fabsf(j + 0.5f - f) < 0.9f) c = C[2];
+            if (i == 0 || j == 0 || i == w - 1 || j == h - 1) c = C[2];
+            sg(i, j, c);
+        }
+    for (int i = 1; i < w - 1; i++)   // brilho no topo
+        if (s_sg[1 * SGW + i] && (s_sg[1 * SGW + i] & 0xFFFFFF) != C[2]) sg(i, 1, mix(C[1], 0xFFFFFF, 90));
+    int sx = w / 2, sy = (int)my;     // selo no bico da aba
+    for (int y = -2; y <= 2; y++)
+        for (int x = -2; x <= 2; x++) {
+            int d = x * x + y * y;
+            if (d <= 5) sg(sx + x, sy + y, d >= 4 ? C[2] : d <= 1 ? 0xFFFFFF : C[1]);
         }
 }
 
-// despertador 16x16: duas campainhas, caixa redonda, mostrador, ponteiros e pés
-static void spr_clock(int ox, int oy, uint32_t w, uint32_t l)
+// despertador: duas campainhas, martelo, caixa redonda, mostrador com as marcas, ponteiros nas 10:10, pés
+static void sg_clock(const uint32_t *C)
 {
-    static const int8_t BELL[2][2] = {{3, 2}, {12, 2}};
-    for (int b = 0; b < 2; b++)
-        for (int y = -2; y <= 2; y++)
-            for (int x = -2; x <= 2; x++) {
-                int d = x * x + y * y;
-                if (d <= 5) sp(ox, oy, BELL[b][0] + x, BELL[b][1] + y, d >= 4 ? INK : l);
+    s_sw = 32;
+    s_sh = 32;
+    const float cx = 15.5f, cy = 18.0f;
+    for (int b = -1; b <= 1; b += 2)   // campainhas
+        for (int y = 0; y < 11; y++)
+            for (int x = 0; x < 32; x++) {
+                float dx = x + 0.5f - (cx + b * 10.5f), dy = y + 0.5f - 6.0f, d = dx * dx + dy * dy;
+                if (d > 4.6f * 4.6f) continue;
+                sg(x, y, d > 3.5f * 3.5f ? C[2] : (dx * b < -1 && dy < -0.5f) ? C[1] : C[0]);
             }
-    for (int y = 0; y < 16; y++)
-        for (int x = 0; x < 16; x++) {
-            float dx = x - 7.5f, dy = y - 8.5f, d = dx * dx + dy * dy;
-            if (d > 6.6f * 6.6f) continue;
-            sp(ox, oy, x, y, d > 5.7f * 5.7f ? INK : d > 4.6f * 4.6f ? w : PAPER);
+    for (int x = 13; x <= 18; x++) sg(x, 2, C[2]);   // martelo
+    sg(15, 3, C[2]); sg(16, 3, C[2]); sg(15, 4, C[2]); sg(16, 4, C[2]);
+    for (int k = 0; k < 3; k++) {                    // pés
+        sg(8 - k, 28 + k, C[2]); sg(9 - k, 28 + k, C[2]);
+        sg(22 + k, 28 + k, C[2]); sg(23 + k, 28 + k, C[2]);
+    }
+    for (int y = 0; y < 32; y++)
+        for (int x = 0; x < 32; x++) {
+            float dx = x + 0.5f - cx, dy = y + 0.5f - cy, d = dx * dx + dy * dy;
+            if (d > 12.6f * 12.6f) continue;
+            uint32_t c = d > 11.5f * 11.5f ? C[2] : d > 9.6f * 9.6f ? (dx + dy < -4 ? C[1] : C[0]) : C[3];
+            sg(x, y, c);
         }
-    for (int k = 0; k < 4; k++) sp(ox, oy, 7, 8 - k, INK);   // ponteiros
-    for (int k = 1; k < 3; k++) sp(ox, oy, 7 + k, 8, INK);
-    sp(ox, oy, 3, 15, INK); sp(ox, oy, 12, 15, INK);         // pés
-    sp(ox, oy, 7, 1, INK); sp(ox, oy, 8, 1, INK);             // martelo
+    static const int8_t MARK[12][2] = {{15, 8}, {16, 8}, {15, 27}, {16, 27}, {6, 17}, {6, 18}, {25, 17}, {25, 18},
+                                       {20, 10}, {11, 10}, {20, 25}, {11, 25}};
+    for (int k = 0; k < 12; k++) sg(MARK[k][0], MARK[k][1], k < 8 ? C[2] : mix(C[3], C[2], 120));
+    for (int k = 1; k <= 5; k++) sg(15 - k, 18 - k * 3 / 5 - (k > 2), C[2]);   // horas: para as 10
+    for (int k = 1; k <= 7; k++) sg(16 + k * 4 / 5, 17 - k, C[2]);              // minutos: para as 2
+    sg(15, 17, C[2]); sg(16, 17, C[2]); sg(15, 18, C[2]); sg(16, 18, C[2]);
+    sg(15, 17, 0xFF5470);
+}
+
+// avião visto de cima (emergência ADS-B): fuselagem, asas em flecha, motores, estabilizadores e cabina
+static bool plane_on(int x, int y)
+{
+    float dx = fabsf(x + 0.5f - 16.0f);
+    if (y >= 1 && y <= 29 && dx <= (y < 4 ? 0.8f + y * 0.45f : 2.4f)) return true;            // fuselagem
+    if (dx <= 15) {                                                                            // asas
+        float lead = 9.5f + dx * 0.36f, trail = 15.5f + dx * 0.26f;
+        if (y >= lead && y <= trail) return true;
+    }
+    if (dx >= 5.5f && dx <= 8.5f && y >= 14 && y <= 19) return true;                          // motores
+    if (dx <= 7.5f) {                                                                          // cauda
+        float lead = 23 + dx * 0.36f;
+        if (y >= lead && y <= 28.5f) return true;
+    }
+    return false;
+}
+
+static void sg_plane(const uint32_t *C)
+{
+    s_sw = 32;
+    s_sh = 32;
+    for (int y = 0; y < 32; y++)
+        for (int x = 0; x < 32; x++)
+            if (plane_on(x, y)) sg(x, y, x < 15 ? mix(C[0], C[1], 70) : C[0]);
+    for (int y = 0; y < 32; y++)   // contorno
+        for (int x = 0; x < 32; x++)
+            if (plane_on(x, y) && (!plane_on(x - 1, y) || !plane_on(x + 1, y) || !plane_on(x, y - 1) || !plane_on(x, y + 1)))
+                sg(x, y, C[2]);
+    for (int k = 0; k < 2; k++) { sg(9, 18 + k, C[3]); sg(22, 18 + k, C[3]); }   // bocas dos motores
+    sg(15, 4, C[3]); sg(16, 4, C[3]); sg(15, 5, C[3]); sg(16, 5, C[3]);         // cabina
+}
+
+void anim_notify_start(int sprite, const char *name, int kind)
+{
+    s_nkind = kind < 0 || kind > 2 ? 0 : kind;
+    s_nsprite = sprite < 0 || sprite > 2 ? 0 : sprite;
+    char f[96];
+    s_nlen = fold(name ? name : "", f, sizeof(f));
+    if (s_nlen > (int)sizeof(s_nname) - 1) s_nlen = sizeof(s_nname) - 1;
+    memcpy(s_nname, f, s_nlen);
+    s_nname[s_nlen] = '\0';
+    if (!s_sg) {
+        s_sg = heap_caps_malloc(SGW * SGH * 4, MALLOC_CAP_SPIRAM);
+        s_sfrom = heap_caps_malloc(SGW * SGH * sizeof(*s_sfrom), MALLOC_CAP_SPIRAM);
+        s_sdel = heap_caps_malloc(SGW * SGH, MALLOC_CAP_SPIRAM);
+        if (!s_sg || !s_sfrom || !s_sdel) return;
+    }
+    memset(s_sg, 0, SGW * SGH * 4);
+    const uint32_t *C = NCOL[s_nkind];
+    if (s_nsprite == SPR_CLOCK) sg_clock(C);
+    else if (s_nsprite == SPR_PLANE) sg_plane(C);
+    else sg_mail(C);
+    if (!s_sglow) s_sglow = heap_caps_malloc((SGW + 2 * GL) * (SGH + 2 * GL), MALLOC_CAP_SPIRAM);
+    if (s_sglow) {
+        int gw = s_sw + 2 * GL, gh = s_sh + 2 * GL;
+        for (int y = 0; y < gh; y++)
+            for (int x = 0; x < gw; x++) {
+                int best = 0;
+                if (!sg_on(x - GL, y - GL))
+                    for (int j = -GL; j <= GL; j++)
+                        for (int i = -GL; i <= GL; i++) {
+                            int d = (i < 0 ? -i : i) > (j < 0 ? -j : j) ? (i < 0 ? -i : i) : (j < 0 ? -j : j);
+                            if (d && sg_on(x - GL + i, y - GL + j) && (!best || d < best)) best = d;
+                        }
+                s_sglow[y * gw + x] = (uint8_t)best;
+            }
+    }
+    s_seed = 41;
+    for (int i = 0; i < SGW * SGH; i++) {   // os blocos vêm de um anel à volta, com atrasos ao acaso
+        float an = frand() * 6.2831853f, r = 120 + frand() * 60;
+        s_sfrom[i][0] = (int16_t)(cosf(an) * r);
+        s_sfrom[i][1] = (int16_t)(sinf(an) * r);
+        s_sdel[i] = (uint8_t)(frand() * 35);
+    }
 }
 
 // círculo em blocos de 4 px (ondas de 8 bits) sobre o canvas transparente
@@ -445,30 +581,58 @@ void anim_notify_draw(uint32_t *buf, int w, int h, int stride, float t)
         float p = clampf((t - k * 0.15f) / 0.8f);
         if (p > 0 && p < 1) ring8(cx, cy, (int)(160 - 135 * ease(p)), C[1], (int)(205 * (1 - p * 0.5f)));
     }
-    float k = (t - 0.35f) / 0.6f;   // o sprite cai e assenta com ressalto
-    if (k < 0) return;
-    int nr = s_nsprite == SPR_MAIL ? 12 : s_nsprite == SPR_PLANE ? 13 : 16;
-    int sw = 16 * NS, sh = nr * NS;
-    int ox = cx - sw / 2, oy0 = cy - sh / 2;
-    int oy = oy0 - (int)lroundf((1 - bounce(k)) * (oy0 + sh));
-    uint32_t main = C[0], light = C[1];
-    if (k >= 1) {
-        float kt = t - 0.95f;
-        if (s_nkind == 2) {                                  // emergência: pisca 3 vezes por segundo
-            if (((int)(kt * 6)) % 2 == 0) { main = C[1]; light = 0xFFFFFF; }
-        } else if (s_nkind == 1) {                           // alarme: abana em rajadas de 0,6 s
-            if (fmodf(kt, 1.0f) < 0.6f) ox += ((int)(t * 20)) % 2 ? NS / 2 : -NS / 2;
-        } else {                                             // mensagem: balança aos degraus
-            oy += ((int)lroundf(sinf(kt * 4) * 1.5f)) * (NS / 2);
+    if (!s_sg) return;
+    int ox = cx - s_sw * NP / 2, oy = cy - s_sh * NP / 2;
+    const float FORM = 1.25f;   // os blocos chegam até aqui
+    if (t < FORM) {
+        for (int y = 0; y < s_sh; y++)
+            for (int x = 0; x < s_sw; x++) {
+                uint32_t c = s_sg[y * SGW + x];
+                if (!c) continue;
+                int i = y * SGW + x;
+                float e = ease((t - 0.35f - s_sdel[i] / 100.0f) / 0.55f);
+                if (e <= 0) continue;
+                int tx = ox + x * NP, ty = oy + y * NP;
+                int px = (int)lroundf(cx + s_sfrom[i][0] + (tx - cx - s_sfrom[i][0]) * e);
+                int py = (int)lroundf(cy + s_sfrom[i][1] + (ty - cy - s_sfrom[i][1]) * e);
+                rect(px, py, NP, NP, mix(C[1], c & 0xFFFFFF, (int)(e * 256)));
+            }
+    } else {
+        float kt = t - FORM;
+        bool lit = false;
+        if (s_nkind == 2) lit = ((int)(kt * 6)) % 2 == 0;                          // emergência: pisca
+        else if (s_nkind == 1) { if (fmodf(kt, 1.0f) < 0.6f) ox += ((int)(t * 20)) % 2 ? NP : -NP; }   // abana
+        else oy += (int)lroundf(sinf(kt * 3.2f) * 1.4f) * NP;                     // mensagem: balança
+        float pulse = 0.5f + 0.5f * sinf(kt * 4);
+        if (s_sglow) {   // brilho com a forma do sprite, mais fraco para fora, a pulsar
+            int gw = s_sw + 2 * GL, gh = s_sh + 2 * GL;
+            for (int y = 0; y < gh; y++)
+                for (int x = 0; x < gw; x++) {
+                    int d = s_sglow[y * gw + x];
+                    if (!d) continue;
+                    int a = (int)((70 + 50 * pulse) * (GL + 1 - d) / (GL + 1));
+                    int bx = ox + (x - GL) * NP, by = oy + (y - GL) * NP;
+                    for (int j = 0; j < NP; j++)
+                        for (int i = 0; i < NP; i++) blend(bx + i, by + j, C[1], a);
+                }
         }
-        for (int j = 0; j < 2; j++) {                        // ondas a sair
+        for (int y = 0; y < s_sh; y++)
+            for (int x = 0; x < s_sw; x++) {
+                uint32_t c = s_sg[y * SGW + x];
+                if (!c) continue;
+                c &= 0xFFFFFF;
+                if (lit) c = mix(c, 0xFFFFFF, 90);
+                rect(ox + x * NP, oy + y * NP, NP, NP, c);
+            }
+        if (s_nsprite == SPR_PLANE && lit) {   // luzes nas pontas das asas
+            rect(ox + 1 * NP, oy + 17 * NP, NP, NP, 0xFFFFFF);
+            rect(ox + 30 * NP, oy + 17 * NP, NP, NP, 0xFFFFFF);
+        }
+        for (int j = 0; j < 2; j++) {   // ondas a sair
             float r = fmodf(kt * 80 + j * 40, 80);
-            ring8(cx, cy, 84 + (int)r, C[1], (int)(clampf(1 - r / 80) * 170));
+            ring8(cx, cy, 96 + (int)r, C[1], (int)(clampf(1 - r / 80) * 170));
         }
     }
-    if (s_nsprite == SPR_CLOCK) spr_clock(ox, oy, main, light);
-    else if (s_nsprite == SPR_PLANE) spr_rows(SPR_PLANE_ROWS, 13, ox, oy, main, light);
-    else spr_rows(SPR_MAIL_ROWS, 12, ox, oy, main, light);
     // o nome escreve-se letra a letra por baixo
     if (t > 1.3f && s_nlen) {
         int shown = (int)((t - 1.3f) / 0.07f);
@@ -477,6 +641,8 @@ void anim_notify_draw(uint32_t *buf, int w, int h, int stride, float t)
                    0x0E1A12, shown);
     }
 }
+
+#define INK 0x0A0A18
 
 // Ícone de reserva das boxes (sem imagem do dashd): placa de 8 bits na cor do item com a inicial.
 void anim_badge(uint32_t *buf, int size, int stride, uint32_t col, const char *label)
@@ -498,90 +664,487 @@ void anim_badge(uint32_t *buf, int size, int stride, uint32_t col, const char *l
 }
 
 // ------------------------------------------------------------------------------------- "Sobre"
-// Salto no hiperespaço em 8 bits (desenhado a 240x240 e ampliado 2x): as estrelas esticam-se em riscos,
-// clarão, as camadas do cubo caem e o nome sai do cubo.
+// Hiperespaço (como no DashDeck, aboutanim.c), à resolução do ecrã (480x480, 1:1): as estrelas esticam-se
+// em riscos até ao clarão; à chegada, um planeta com anéis, uma lua em órbita e uma nave a passar, e o nome
+// DASHDECK³ revelado em pontilhado. Os sprites usam blocos de AP píxeis.
 
-#define NWARP 120
-static float s_warp[NWARP][3];   // ângulo, distância inicial, velocidade
+#define AP 4                       // píxel dos sprites pequenos (nave)
+#define AP2 6                      // píxel dos sprites grandes (nave de pouso, astronauta, dono; o cão a metade)
+#define NWARP 160
+#define NSTAR2 200
+static float s_wx[NWARP], s_wy[NWARP], s_wz[NWARP];
+static int16_t s_st2[NSTAR2][3];
+static int s_lsc2, s_ly2, s_sup2;
+static const uint8_t BAYER[16] = {0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5};
 
-void anim_about_start(int w, int h)
+static void line2(int x0, int y0, int x1, int y1, uint32_t c, int a0, int a1)
 {
-    (void)w;
-    (void)h;
-    if (!s_lo) s_lo = heap_caps_malloc(LO * LO * 4, MALLOC_CAP_SPIRAM);
-    BW = LO;
-    BH = LO;
-    stars_init(LO, LO);
-    s_seed = 23;
-    for (int i = 0; i < NWARP; i++) {
-        s_warp[i][0] = frand() * 6.2831853f;
-        s_warp[i][1] = 2 + frand() * 30;
-        s_warp[i][2] = 0.6f + frand() * 0.8f;
+    int dx = x1 - x0, dy = y1 - y0, ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy, n = ax > ay ? ax : ay;
+    if (n == 0) {
+        blend(x0, y0, c, a1);
+        return;
     }
-    char f[16];
-    fold(LOGO, f, sizeof(f));
-    s_logo_y = LO * 63 / 100;
-    s_sup_fix = 4;
-    s_ncells = cells(f, (LO - pfont_width(LOGO, 4)) / 2, s_logo_y, 4, s_cells, MAXC);
-    s_sup_fix = 0;
-    s_seed = 31;
+    if (n > 700) n = 700;
+    for (int i = 0; i <= n; i++) blend(x0 + dx * i / n, y0 + dy * i / n, c, a0 + (a1 - a0) * i / n);
+}
+
+static void disc2(int cx, int cy, int r, uint32_t c)
+{
+    for (int y = -r; y <= r; y++)
+        for (int x = -r; x <= r; x++)
+            if (x * x + y * y <= r * r + r) put(cx + x, cy + y, c);
+}
+
+// nome revelado em pontilhado (0..16), com contorno escuro; o ³ às faixas com as cores do cubo
+static void logo2(int reveal, uint32_t outc)
+{
+    if (reveal <= 0) return;
     for (int i = 0; i < s_ncells; i++) {
-        s_from[i][0] = (int16_t)(LO / 2 + (frand() - 0.5f) * 20);   // os pixels saem do cubo
-        s_from[i][1] = (int16_t)(LO * 0.36f + (frand() - 0.5f) * 20);
-        s_delay[i] = (uint8_t)(frand() * 40);
+        int z = s_cells[i][2] & SUP ? s_sup2 : s_lsc2;
+        if (reveal >= 16) rect(s_cells[i][0] - 2, s_cells[i][1] - 2, z + 4, z + 4, outc);   // já todo: opaco
+        else
+            for (int j = -2; j < z + 2; j++)
+                for (int k = -2; k < z + 2; k++) blend(s_cells[i][0] + k, s_cells[i][1] + j, outc, reveal * 12);
+    }
+    for (int i = 0; i < s_ncells; i++) {
+        int z = s_cells[i][2] & SUP ? s_sup2 : s_lsc2;
+        uint32_t c = s_cells[i][2] & SUP ? CUBE8[((s_cells[i][1] - s_ly2) / z / 2) % 3] : 0xFFFFFF;
+        for (int j = 0; j < z; j++)
+            for (int k = 0; k < z; k++) {
+                int x = s_cells[i][0] + k, y = s_cells[i][1] + j;
+                if (BAYER[((y / 2) & 3) * 4 + ((x / 2) & 3)] < reveal) put(x, y, c);
+            }
     }
 }
 
-void anim_about_draw(uint32_t *buf, int stride, float t, float tilt)
+static void stars2(float t, float ymax)
 {
-    (void)tilt;
-    if (!s_lo) return;
-    B = s_lo; BW = LO; BH = LO; BS = LO;
-    fill(0x000000);
-    int cx = LO / 2, cy = LO * 36 / 100;
-    const float JUMP = 1.7f;
-    if (t < JUMP) {
-        float acc = t * t * 1.4f;
-        for (int i = 0; i < NWARP; i++) {
-            float a = s_warp[i][0], d0 = s_warp[i][1], sp2 = s_warp[i][2];
-            float d = fmodf(d0 + acc * 130 * sp2, 180);
-            float len = 2 + acc * 60 * sp2;
-            float cs = cosf(a), sn = sinf(a);
-            uint32_t c = i % 5 == 0 ? 0xA8C8FF : i % 7 == 0 ? 0xD2A8FF : 0xFFFFFF;
-            line_a(cx + cs * d, LO / 2 + sn * d, cx + cs * (d + len), LO / 2 + sn * (d + len), c,
-                   (int)(80 + 176 * clampf(t / 0.8f)));
-        }
-    } else {
-        float k = t - JUMP;
-        stars_draw(t, (int)(150 * clampf(k / 0.6f)));
-        for (int j = 0; j < 3 && k > 1.4f; j++) {   // ondas do cubo montado
-            float r = fmodf((k - 1.4f) * 35 + j * 25, 75);
-            ring(cx, cy, 32 + (int)r, PAL[(j * 3 + 1) % 8], (int)(clampf(1 - r / 75) * 120));
-        }
-        int bob = k > 1.4f ? (int)lroundf(sinf(k * 2) * 2) : 0;
-        for (int s3 = 0; s3 < 3; s3++) {   // as camadas caem
-            float e = bounce((k - 0.2f - s3 * 0.3f) / 0.55f);
-            if (k < 0.2f + s3 * 0.3f) break;
-            cube8(cx, cy + bob - (int)lroundf((1 - e) * (cy + 30)), 22, s3 / 3.0f, (s3 + 1) / 3.0f, 1);
-        }
-        for (int i = 0; i < s_ncells; i++) {   // o nome sai do cubo
-            float e = ease((k - 1.2f - s_delay[i] / 100.0f) / 1.0f);
-            if (e <= 0) continue;
-            int x = (int)lroundf(s_from[i][0] + (s_cells[i][0] - s_from[i][0]) * e);
-            int y = (int)lroundf(s_from[i][1] + (s_cells[i][1] - s_from[i][1]) * e);
-            uint32_t c = s_cells[i][2] & SUP ? CUBE8[(((s_cells[i][1] - s_logo_y) / 4 + 1) / 2) % 3]   // ³ em faixas
-                                             : PAL[((s_cells[i][2] & 0xFF) * 2) % 8];
-            int z = e < 1 ? 2 + (int)(e * 2) : 4;
-            if (e >= 1) rect(x + 1, y + 1, 4, 4, 0x05040E);
-            rect(x, y, z, z, e < 1 ? mix(0, c, (int)(100 + 156 * e)) : c);
-        }
-        if (k < 0.35f) {   // clarão no fim do salto
-            int a = (int)((1 - k / 0.35f) * 230);
-            for (int y = 0; y < LO; y++)
-                for (int x = 0; x < LO; x++) blend(x, y, 0xFFFFFF, a);
+    for (int i = 0; i < NSTAR2; i++) {
+        if (s_st2[i][1] > ymax) continue;
+        int a = (int)(150 + 90 * sinf(t * 2 + s_st2[i][2]));
+        uint32_t c = i % 7 ? 0xFFFFFF : 0xFFD8A0;
+        blend(s_st2[i][0], s_st2[i][1], c, a);
+        if (i % 4 == 0) {   // as maiores, 2x2
+            blend(s_st2[i][0] + 1, s_st2[i][1], c, a);
+            blend(s_st2[i][0], s_st2[i][1] + 1, c, a);
+            blend(s_st2[i][0] + 1, s_st2[i][1] + 1, c, a);
         }
     }
-    up2(buf, LO * 2, LO * 2, stride);
+}
+
+static void planet2(int cx, int cy, int r, float t)
+{
+    int rr = r * 19 / 10, steps = rr * 8;
+    for (int pass = 0; pass < 2; pass++) {   // 0: metade de trás do anel; 1: corpo; depois a da frente
+        if (pass == 1) {
+            static const uint32_t BANDS[6] = {0xD99A5E, 0xE8C08A, 0xB86E48, 0xF0D6A8, 0xC98458, 0xE2B07A};
+            int shift = (int)(t * 9);
+            for (int y = -r; y <= r; y++) {
+                int half = (int)sqrtf((float)(r * r - y * y));
+                int bi = ((y + r) * 6 / (2 * r + 1) + ((y * 3 + shift) / 34)) % 6;
+                if (bi < 0) bi += 6;
+                uint32_t base = BANDS[bi];
+                for (int x = -half; x <= half; x++) {
+                    int lit = 256 - ((x + r) * 180) / (2 * r);   // luz da esquerda
+                    int a = lit - (x * x + y * y) * 90 / (r * r);
+                    if (a < 30) a = 30;
+                    uint32_t c = mix(0x1A0E18, base, a);
+                    int px = cx + x, py = cy + y;
+                    if (BAYER[((py / 2) & 3) * 4 + ((px / 2) & 3)] * 16 > a + 40) c = mix(c, 0x1A0E18, 60);
+                    put(px, py, c);
+                }
+            }
+        }
+        for (int k = 0; k < steps; k++) {
+            float an = k * 6.2831853f / steps, s = sinf(an);
+            if ((pass == 0) != (s <= 0)) continue;
+            for (int w = 0; w < 6; w++) {
+                int x = cx + (int)((rr - w * 3) * cosf(an)), y = cy + (int)((rr - w * 3) * 0.28f * s);
+                blend(x, y, w == 2 ? 0xC8A878 : pass ? 0xF0DCB0 : 0xE0C898, pass ? 210 : 150);
+            }
+        }
+    }
+}
+
+// sprite em blocos de ps píxeis a partir de uma origem
+static int s_ox, s_oy, s_ps = AP;
+static inline void spx(int x, int y, uint32_t c)
+{
+    rect(s_ox + x * s_ps, s_oy + y * s_ps, s_ps, s_ps, c);
+}
+
+static void ship2(int x, int y, float t)
+{
+    static const char *S[7] = {"..##.....", ".####....", "########.", "#######CC", "########.", ".####....",
+                               "..##....."};
+    s_ox = x; s_oy = y; s_ps = AP;
+    for (int r = 0; r < 7; r++)
+        for (int k = 0; k < 9; k++) {
+            char ch = S[r][k];
+            if (ch == '#') spx(k, r, r == 3 ? 0xB8C4D8 : 0xE6EDF3);
+            else if (ch == 'C') spx(k, r, 0x5EF2FF);
+        }
+    int fl = 3 + (int)(3 * fabsf(sinf(t * 23)));
+    for (int i = 0; i < fl; i++) {
+        spx(-1 - i, 3, i < 2 ? 0xFFF0A0 : 0xFF8A3C);
+        if (i < fl - 2) {
+            spx(-1 - i, 2, 0xFF6A2C);
+            spx(-1 - i, 4, 0xFF6A2C);
+        }
+    }
+}
+
+// salto: riscos a partir do centro, a acelerar até TW, e um clarão de 0,25 s à saída
+static void warp2(float t, float TW, float acc)
+{
+    int cx = BW / 2, cy = BH / 2;
+    float sp = t < TW ? 0.15f + t * t * acc : 3.4f;
+    for (int i = 0; i < NWARP; i++) {
+        float z = s_wz[i] - fmodf(t * sp * 0.6f + i * 0.0091f, 1.0f);
+        while (z <= 0.04f) z += 1.0f;
+        float z2 = z + 0.02f + sp * 0.05f;
+        int x1 = cx + (int)(s_wx[i] / z * BW * 0.25f), y1 = cy + (int)(s_wy[i] / z * BH * 0.25f);
+        int x0 = cx + (int)(s_wx[i] / z2 * BW * 0.25f), y0 = cy + (int)(s_wy[i] / z2 * BH * 0.25f);
+        int a = (int)(clampf(1.2f - z) * 255);
+        uint32_t c = i % 5 ? 0xCFE2FF : 0x9AB8FF;
+        line2(x0, y0, x1, y1, c, a / 4, a);
+        if (z < 0.5f) line2(x0 + 1, y0, x1 + 1, y1, c, a / 8, a / 2);   // os mais perto, mais grossos
+    }
+    if (t > TW) {   // clarão na saída do salto
+        int a = (int)((1 - (t - TW) / 0.25f) * 220);
+        for (int y = 0; y < BH; y++)
+            for (int x = 0; x < BW; x++) blend(x, y, 0xE8F0FF, a);
+    }
+}
+
+static void moon2(int mx, int my)
+{
+    disc2(mx, my, 11, 0xB8C0D0);
+    rect(mx + 3, my - 4, 4, 4, 0x8890A0);   // crateras
+    rect(mx - 7, my + 2, 4, 4, 0x8890A0);
+    rect(mx - 4, my - 7, 3, 3, 0xE6EAF2);
+}
+
+static int s_moon_x, s_moon_y;
+static bool s_moon_vis;
+static float s_x_t0 = -1;
+
+static void space_draw(float t)
+{
+    const float TW = 2.4f;   // fim do salto
+    fill(0x03040C);
+    s_moon_vis = false;
+    if (t < TW + 0.25f) {
+        warp2(t, TW, 0.55f);
+        if (t < TW) return;
+    }
+    // nebulosa ténue (elipse em xadrez, sobre o fundo liso: sem ler o buffer), depois as estrelas
+    const int ncx = BW * 22 / 100, ncy = BH * 64 / 100, nrx = BW * 24 / 100, nry = BH * 16 / 100;
+    for (int y = ncy - nry; y <= ncy + nry; y++)
+        for (int x = ncx - nrx + (y & 1); x <= ncx + nrx; x += 2) {
+            int dx = x - ncx, dy = y - ncy, d = dx * dx * 256 / (nrx * nrx) + dy * dy * 256 / (nry * nry);
+            if (d < 256) put(x, y, mix(0x03040C, 0x6A3CA0, (256 - d) / 4));
+        }
+    stars2(t, BH);
+    int pr = BH * 17 / 100, px = BW * 64 / 100, py = BH * 58 / 100;
+    float ma = t * 0.8f;
+    int mx = px + (int)(pr * 2.3f * cosf(ma)), my = py + (int)(pr * 0.6f * sinf(ma));
+    bool front = sinf(ma) > 0;   // a lua passa à frente do planeta na metade de baixo da órbita
+    if (!front) moon2(mx, my);
+    planet2(px, py, pr, t);
+    if (front) moon2(mx, my);
+    s_moon_x = mx;
+    s_moon_y = my;
+    s_moon_vis = front || mx < px - pr - 11 || mx > px + pr + 11;
+    float sp = fmodf(t - TW, 6.0f);
+    ship2((int)(-40 + sp * (BW + 80) / 6.0f), BH * 36 / 100 + (int)(6 * sinf(t * 1.5f)), t);
+    logo2((int)(clampf((t - TW - 0.25f) / 0.5f) * 16), 0x03040C);
+}
+
+// =======================================================================
+#define NCRAT 18
+static int16_t s_crat[NCRAT][3];
+
+static int ground2(int x)
+{
+    int d = x - BW / 2;
+    return BH * 62 / 100 + d * d / (BW * 3);
+}
+
+static void lander2(int x, int y, bool legs, bool flame, float t)
+{
+    s_ox = x; s_oy = y; s_ps = AP2;
+    static const char *S[11] = {"....#....", "...###...", "...#C#...", "..#####..", "..#####..", ".#######.",
+                                ".#######.", ".#######.", "#########", "##.###.##", "#...#...#"};
+    for (int r = 0; r < 11; r++)
+        for (int k = 0; k < 9; k++) {
+            char ch = S[r][k];
+            if (r == 10 && !legs) continue;
+            if (ch == '#') spx(-4 + k, -11 + r, k < 4 ? 0xE6EDF3 : 0xB8C4D8);
+            else if (ch == 'C') spx(-4 + k, -11 + r, 0x5EF2FF);
+        }
+    if (legs) {
+        spx(-5, -1, 0xB8C4D8);
+        spx(5, -1, 0xB8C4D8);
+    }
+    if (flame) {
+        int fl = 3 + (int)(4 * fabsf(sinf(t * 25)));
+        for (int i = 0; i < fl; i++) {
+            spx(0, i, i < 2 ? 0xFFF0A0 : 0xFF8A3C);
+            if (i < fl - 1) {
+                spx(-1, i, 0xFF6A2C);
+                spx(1, i, 0xFF6A2C);
+            }
+        }
+    }
+}
+
+static void runner_dog2(int x, int y, int fr)
+{
+    static const char *const R[2][5] = {
+        {".....#.", "t...##n", "t####g.", ".####..", ".#..#.."},
+        {".....#.", "t...##n", "t####g.", ".####..", "#..#..#"},
+    };
+    const char *const *rows = R[fr];
+    s_ps = AP2 / 2;
+    s_ox = x;
+    s_oy = y - (4 + fr) * s_ps;
+    for (int j = 0; j < 5; j++)
+        for (int i = 0; i < 7; i++) {
+            if (rows[j][i] == '.') continue;
+            for (int k = 0; k < 4; k++) {
+                int ii = i + (k == 0) - (k == 1), jj = j + (k == 2) - (k == 3);
+                if (ii < 0 || jj < 0 || ii >= 7 || jj >= 5 || rows[jj][ii] == '.') spx(ii, jj, 0x20242E);
+            }
+        }
+    for (int j = 0; j < 5; j++)
+        for (int i = 0; i < 7; i++) {
+            char ch = rows[j][i];
+            if (ch != '.') spx(i, j, ch == 'g' ? 0xC2C6CE : ch == 'n' ? 0x1E1E28 : 0xF4F4EE);
+        }
+}
+
+static void runner_owner2(int x, int y, int fr)
+{
+    static const char *const R[2][7] = {
+        {"s...s", "c.h.c", "c.s.c", "ccccc", ".ccc.", ".ppp.", ".p.p."},
+        {".s.s.", "s.h.s", "c.s.c", "ccccc", ".ccc.", ".ppp.", "p...p"},
+    };
+    s_ps = AP2;
+    s_ox = x - 2 * AP2;
+    s_oy = y - (fr ? AP2 : 0);
+    for (int j = 0; j < 7; j++)
+        for (int i = 0; i < 5; i++) {
+            char ch = R[fr][j][i];
+            if (ch == '.') continue;
+            spx(i, j - 7, ch == 's' ? 0xE6BEA0 : ch == 'h' ? 0x3C281E : ch == 'c' ? 0x3A6EA8 : 0x2A2F45);
+        }
+}
+
+static void x_draw2(float e, float t)
+{
+    const float TW = 1.6f;
+    fill(0x03040C);
+    if (e < TW + 0.25f) {
+        warp2(e, TW, 1.6f);
+        if (e < TW) return;
+    }
+    float s = e - TW;
+    stars2(t, BH * 0.62f);
+    planet2(BW * 70 / 100, BH * 30 / 100, BH * 21 / 100, t);
+    for (int x = 0; x < BW; x++) {   // superfície da lua
+        int gy = ground2(x);
+        for (int y = gy; y < BH; y++) {
+            int depth = (y - gy) * 256 / (BH - gy + 1);
+            uint32_t c = mix(0xB8BCC6, 0x6A6E7A, depth * 3 / 4 + x * 64 / BW);
+            if (BAYER[((y / 2) & 3) * 4 + ((x / 2) & 3)] < 3) c = mix(c, 0x50545E, 90);
+            put(x, y, c);
+        }
+        put(x, gy, 0xD8DCE4);
+        put(x, gy + 1, 0xD8DCE4);
+    }
+    for (int i = 0; i < NCRAT; i++) {
+        int cx = s_crat[i][0], cy = s_crat[i][1], cr = s_crat[i][2];
+        if (cy < ground2(cx) + 5) continue;
+        for (int y = -cr / 2; y <= cr / 2; y++)
+            for (int x = -cr; x <= cr; x++) {
+                int d = x * x + 4 * y * y;
+                if (d > cr * cr) continue;
+                int rim = d > (cr - 3) * (cr - 3);
+                blend(cx + x, cy + y, rim ? (y < 0 ? 0x50545E : 0xE0E4EC) : 0x7A7E8A, rim ? 160 : 120);
+            }
+    }
+    int lx = BW * 36 / 100, ly = ground2(lx);
+    const float TD = 4.2f;
+    if (s < TD) {
+        float q = s / TD, ez = 1 - (1 - q) * (1 - q);
+        int x = (int)(-40 + (lx + 40) * clampf(ez * 1.25f));
+        int y = (int)(ly - 260 + 260 * ez);
+        lander2(x, y, q > 0.6f, true, t);
+        return;
+    }
+    lander2(lx, ly, true, false, t);
+    float d = s - TD;
+    if (d < 1.4f) {   // poeira
+        for (int i = 0; i < 20; i++) {
+            float dir = (i < 10 ? -1.0f : 1.0f) * (0.3f + (i % 10) * 0.1f);
+            int px = lx + (int)(dir * d * 170), py = ly - (int)((i % 3) * d * 24 * (1.4f - d));
+            int a = (int)(200 * (1 - d / 1.4f));
+            for (int k = 0; k < 16; k++) blend(px + k % 4, py - k / 4, 0xD0D4DC, a);
+        }
+    }
+    s_ox = lx; s_oy = ly; s_ps = AP2;
+    if (((int)(t * 2)) % 2) spx(0, -12, 0xFF3030);   // luz no topo
+    const int ax = lx + 20 * AP2;
+    const float run_t = 4.0f, own_t = 4.45f;
+    const float gone = own_t + (BW + 16 - lx) / 195.0f + 0.5f;
+    const float b = d - gone;
+    if (d > 1.6f) {
+        s_ox = b >= 0 ? ax : lx + 7 * AP2 + (int)(clampf((d - 1.6f) / 1.5f) * 13 * AP2);
+        s_oy = ly;
+        s_ps = AP2;
+        const uint32_t w = 0xF4F4F8, visor = 0xE3B341, pack = 0xB8C4D8, pole = 0xC0C4CC, cloth = 0x58A6FF,
+                       wh = 0xFFFFFF;
+        if (b < 0) {
+            int step = (d < 3.1f) && ((int)(t * 6) % 2);
+            spx(-1, -7, w); spx(0, -7, w); spx(-1, -6, w); spx(0, -6, visor);
+            for (int y = -5; y <= -3; y++) { spx(-1, y, w); spx(0, y, w); }
+            spx(-1 - step, -2, w); spx(0 + step, -2, w);
+            spx(1, -5, pack);
+            if (d > 3.3f) {
+                int fx = 4;
+                for (int y = 1; y <= 10; y++) spx(fx, -y, pole);
+                int wv = (int)(t * 4) % 2;
+                for (int y = 0; y < 3; y++)
+                    for (int x = 1; x <= 5; x++) spx(fx + x, -10 + y + (x > 3 ? wv : 0), cloth);
+                spx(fx + 2, -9, wh);
+            }
+        } else if (b < 2.0f) {
+            bool knee = b > 0.5f && b < 1.5f;
+            spx(-1, -7, w); spx(0, -7, w); spx(-1, -6, w); spx(0, -6, visor);
+            for (int y = -5; y <= -3; y++) { spx(-1, y, w); spx(0, y, w); }
+            spx(-1, -2, w);
+            if (knee) { spx(1, -3, w); spx(1, -2, w); } else spx(0, -2, w);
+            spx(-2, -5, pack);
+            if (b < 0.5f) {
+                int up = (int)(b / 0.5f * 3), fx = 4 - (int)(b / 0.5f * 2);
+                for (int y = 1; y <= 10; y++) spx(fx, -y - up, pole);
+                for (int y = 0; y < 3; y++)
+                    for (int x = 1; x <= 5; x++) spx(fx + x, -10 - up + y, cloth);
+                spx(1, -4, w);
+            } else if (b < 1.1f) {
+                for (int x = -4; x <= 5; x++) spx(x, -4, pole);
+                for (int y = 0; y < 3; y++)
+                    for (int x = 0; x < 3; x++) spx(6 + x, -6 + y, cloth);
+                spx(-4, -5, w); spx(5, -5, w);
+            } else if (b < 1.4f) {
+                for (int x = -4; x <= 0; x++) spx(x, -6 - (x + 4) / 2 + 2, pole);
+                for (int x = 1; x <= 5; x++) spx(x, -4 + (x - 1) / 2 - 2, pole);
+                for (int y = 0; y < 3; y++)
+                    for (int x = 0; x < 3; x++) spx(6 + x, -5 + y, cloth);
+                if (b < 1.25f)
+                    for (int k = 0; k < 5; k++) {
+                        float an = k * 1.2566f;
+                        int bx = s_ox + AP2 / 2, by = s_oy - 9 * AP2;
+                        rect(bx + (int)(cosf(an) * 20), by + (int)(sinf(an) * 20), 4, 4, 0xFFFFFF);
+                        rect(bx + (int)(cosf(an) * 13), by + (int)(sinf(an) * 13), 3, 3, 0xFFF0A0);
+                    }
+            } else {
+                int dy = (int)(clampf((b - 1.4f) / 0.4f) * 5);
+                for (int x = -8; x <= -4; x++) spx(x, -6 + dy, pole);
+                for (int x = 6; x <= 10; x++) spx(x, -6 + dy, pole);
+                for (int y = 0; y < 2; y++)
+                    for (int x = 0; x < 3; x++) spx(11 + x, -7 + dy + y, cloth);
+            }
+        } else {
+            for (int x = -8; x <= -4; x++) spx(x, -1, pole);
+            for (int x = 6; x <= 10; x++) spx(x, -1, pole);
+            for (int x = 0; x < 3; x++) spx(11 + x, -1, cloth);
+            static const char *const SIT[5] = {"..ww..", ".wWWw.", "..WV..", ".PWW..", "..WWWW"};
+            int sag = ((int)(t * 0.7f)) % 3 == 2;
+            for (int r = 0; r < 5; r++)
+                for (int k = 0; k < 6; k++) {
+                    char ch = SIT[r][k];
+                    if (ch == '.' || (r == 2 && sag)) continue;
+                    spx(k - 2, -5 + r + (r < 3 ? sag : 0), ch == 'V' ? visor : ch == 'P' ? pack : w);
+                }
+        }
+    }
+    if (d > run_t) {
+        int fr = ((int)(t * 9)) & 1;
+        int dxp = lx + (int)((d - run_t) * 240);
+        if (dxp < BW + 20) runner_dog2(dxp, ground2(dxp + 6), fr);
+        if (d > own_t) {
+            int ox = lx + (int)((d - own_t) * 195);
+            if (ox < BW + 24) runner_owner2(ox, ground2(ox) + 2, fr);
+        }
+    }
+    if (d > 4.0f) {
+        char m[16];
+        fold("TAHDAAAH!!!", m, sizeof(m));
+        int sc = 5, n = cells(m, (BW - pfont_width("TAHDAAAH!!!", sc)) / 2, 30, sc, s_tmp, 1200);
+        int a = (int)(clampf((d - 4.0f) / 0.5f) * 256);
+        for (int i = 0; i < n; i++) {
+            for (int j = -2; j < sc + 2; j++)
+                for (int k = -2; k < sc + 2; k++) blend(s_tmp[i][0] + k, s_tmp[i][1] + j, 0x03040C, a);
+        }
+        for (int i = 0; i < n; i++)
+            for (int j = 0; j < sc; j++)
+                for (int k = 0; k < sc; k++) blend(s_tmp[i][0] + k, s_tmp[i][1] + j, 0xFFD64D, a);
+    }
+}
+
+void anim_about_start(int w, int h)
+{
+    BW = w;
+    BH = h;
+    s_seed = 7;
+    for (int i = 0; i < NSTAR2; i++) {
+        s_st2[i][0] = (int16_t)(frand() * w);
+        s_st2[i][1] = (int16_t)(frand() * h);
+        s_st2[i][2] = (int16_t)(frand() * 6);
+    }
+    for (int i = 0; i < NWARP; i++) {
+        s_wx[i] = frand() * 2 - 1;
+        s_wy[i] = frand() * 2 - 1;
+        s_wz[i] = frand() * 0.9f + 0.1f;
+    }
+    s_seed = 99;
+    for (int i = 0; i < NCRAT; i++) {
+        s_crat[i][0] = (int16_t)(frand() * w);
+        s_crat[i][1] = (int16_t)(h * 0.68f + frand() * h * 0.32f);
+        s_crat[i][2] = (int16_t)(6 + frand() * 16);
+    }
+    char f[16];
+    fold(LOGO, f, sizeof(f));
+    s_lsc2 = 7;
+    s_sup2 = 6;   // o ³ com blocos quase do tamanho dos das letras (o glifo é mais baixo: lê-se como expoente)
+    s_ly2 = 44;
+    s_sup_fix = s_sup2;
+    s_ncells = cells(f, (w - pfont_width(LOGO, s_lsc2)) / 2, s_ly2, s_lsc2, s_cells, MAXC);
+    s_sup_fix = 0;
+    s_x_t0 = -1;
+}
+
+void anim_about_draw(uint32_t *buf, int w, int h, int stride, float t)
+{
+    B = buf; BW = w; BH = h; BS = stride;
+    if (s_x_t0 >= 0) x_draw2(t - s_x_t0, t);
+    else space_draw(t);
+}
+
+float anim_about_credits_at(void)
+{
+    return 2.65f;   // depois do salto
+}
+
+bool anim_about_touch(int x, int y, float t)
+{
+    if (s_x_t0 >= 0 || !s_moon_vis) return false;
+    int dx = x - s_moon_x, dy = y - s_moon_y;
+    if (dx * dx + dy * dy > 40 * 40) return false;
+    s_x_t0 = t;
+    return true;
 }
 
 // ------------------------------------------------------------------------------------- fora de casa
@@ -999,6 +1562,19 @@ static void pet_draw(const clock3_t *st, float t)
 // meia resolução -> ecrã (cada píxel vira 2x2)
 static void up2(uint32_t *dst, int w, int h, int stride)
 {
+    B = dst;
+    if (b16()) {   // cada píxel baixo vira 2x2 em RGB565 (dois píxeis por palavra de 32 bits)
+        for (int y = 0; y < LO && y * 2 + 1 < h; y++) {
+            const uint32_t *src = &s_lo[y * LO];
+            uint32_t *d0 = (uint32_t *)&((uint16_t *)dst)[(y * 2) * stride], *d1 = (uint32_t *)&((uint16_t *)dst)[(y * 2 + 1) * stride];
+            int n = w / 2 < LO ? w / 2 : LO;
+            for (int x = 0; x < n; x++) {
+                uint32_t v = c565(src[x]);
+                d0[x] = d1[x] = v | v << 16;
+            }
+        }
+        return;
+    }
     for (int y = 0; y < LO && y * 2 + 1 < h; y++) {
         const uint32_t *src = &s_lo[y * LO];
         uint32_t *d0 = &dst[(y * 2) * stride], *d1 = d0 + stride;

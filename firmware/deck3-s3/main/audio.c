@@ -29,6 +29,8 @@ typedef struct {
 static esp_codec_dev_handle_t s_spk, s_mic;
 static QueueHandle_t s_tones;
 static volatile int s_mic_hz;
+static volatile bool s_mic_local;          // varanda aberta: nível do microfone só para o cubo
+static volatile float s_mic_db = -120;
 static int s_vol = 60;
 
 void audio_tone(int freq, int ms, int vol)
@@ -75,7 +77,8 @@ static void mic_task(void *arg)
     TickType_t last = 0;
     while (true) {
         int hz = s_mic_hz;
-        if (hz <= 0) {
+        if (hz <= 0 && s_mic_local) hz = -10;   // só local: 10 leituras por segundo, nada para o host
+        if (hz == 0) {
             vTaskDelay(pdMS_TO_TICKS(200));
             continue;
         }
@@ -83,7 +86,7 @@ static void mic_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
-        if (xTaskGetTickCount() - last < pdMS_TO_TICKS(1000 / hz)) continue;
+        if (xTaskGetTickCount() - last < pdMS_TO_TICKS(1000 / abs(hz))) continue;
         last = xTaskGetTickCount();
         double acc = 0;
         int peak = 0;
@@ -93,6 +96,8 @@ static void mic_task(void *arg)
             if (abs(v) > peak) peak = abs(v);
         }
         float rms = sqrtf(acc / (n * CHANS));
+        s_mic_db = 20 * log10f(rms / 32768.0f + 1e-6f);
+        if (hz < 0) continue;
         cJSON *o = cJSON_CreateObject();
         cJSON_AddStringToObject(o, "t", "mic");
         cJSON_AddNumberToObject(o, "db", roundf(20 * log10f(rms / 32768.0f + 1e-6f) * 10) / 10);
@@ -100,6 +105,17 @@ static void mic_task(void *arg)
         link_send(o);
         cJSON_Delete(o);
     }
+}
+
+void audio_mic_local(bool on)
+{
+    s_mic_local = on;
+    if (!on) s_mic_db = -120;
+}
+
+float audio_mic_db(void)
+{
+    return s_mic_db;
 }
 
 void audio_init(void)

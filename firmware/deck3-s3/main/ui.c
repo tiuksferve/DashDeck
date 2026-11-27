@@ -23,6 +23,9 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/task.h"
 #include "imu.h"
 #include "link.h"
 #include "mbedtls/base64.h"
@@ -31,6 +34,7 @@
 #include "power.h"
 #include "sd.h"
 #include "store.h"
+#include "varanda.h"
 
 static const char *TAG = "ui";
 
@@ -61,11 +65,28 @@ static void *s_bufs[MAX_BUFS];    // buffers dos canvas do corpo
 static int s_nbufs;
 static char s_status[64];         // texto do host para o cabeçalho (ex.: bateria do uConsole)
 
+// quadros desenhados noutra tarefa (ver fr_open, mais abaixo)
+typedef struct fr fr_t;
+typedef void (*fr_fn_t)(fr_t *f, uint32_t *buf, int stride);
+enum { FR_IDLE, FR_BUSY, FR_READY };
+struct fr {
+    lv_obj_t *cv;
+    uint16_t *buf[2];
+    int w, h, stride, front;
+    fr_fn_t fn;
+    volatile int state;
+    float t, last;        // instante a desenhar; o último pedido
+    union {               // cópia dos dados do quadro (o LVGL continua a mexer nos originais)
+        struct { clock3_t c; char hm[8], date[24]; int face; } clk;
+        struct { bool away; float prog, tilt; char st[80]; away_t a; char hm[8], date[24]; } boot;
+    } a;
+};
+
 // arranque / offline: ecrã inteiro por baixo do cabeçalho, desenhado em anim.c
 #define BOOT_W W
 #define BOOT_H (H - HDR_H)
 static lv_obj_t *s_boot_cv;
-static uint32_t *s_boot_buf;
+static fr_t s_boot_fr;
 static lv_timer_t *s_boot_tm;
 static int64_t s_boot_t0;
 static bool s_boot_first = true;   // o 1.º arranque mostra a sequência toda (como no DashDeck)
@@ -82,15 +103,14 @@ static lv_obj_t *s_bgimg;
 static int s_page = -1;
 
 // "Sobre o DashDeck³" (toque no título da tela inicial)
-static lv_obj_t *s_about, *s_about_cv, *s_about_txt;
-static uint32_t *s_about_buf;
+static lv_obj_t *s_about, *s_about_txt;
 static lv_timer_t *s_about_tm;
 static int64_t s_about_t0;
 static cJSON *s_about_lines;       // linhas de créditos enviadas pelo deckd ({"t":"about"})
 
 // ecrã apagado
 static int s_dim_s = 60, s_off_s = 300, s_bl = 80;
-static int s_bl_state;            // 0 normal, 1 escurecido, 2 apagado
+static int s_bl_state;            // 0 normal, 1 escurecido, 2 apagado (inatividade), 3 desligado no botão (0%)
 static lv_obj_t *s_wake_pane;
 
 // notificação ("Ondas LoRa" em pixel art)
@@ -100,6 +120,9 @@ static lv_obj_t *s_notif, *s_notif_cv, *s_notif_band;
 static uint32_t *s_notif_buf;
 static lv_timer_t *s_notif_tm;
 static lv_obj_t *s_pomo;          // ecrã do Pomodoro (cubo girado para a direita)
+static lv_obj_t *s_var;           // varanda do Romeu (cubo girado para a esquerda)
+static bool s_var_want;           // o cubo está girado para a esquerda (abre quando houver imagens)
+static bool s_rot_test;           // aberto por mensagem de teste: o IMU em pé não o fecha
 static bool s_notif_local;       // alarme/temporizador do próprio cubo: o toque só cala, não vai ao host
 static int64_t s_ring_until;     // o cubo toca o alarme na sua coluna até aqui (ou até um toque)
 static int64_t s_notif_t0;
@@ -195,10 +218,133 @@ static lv_obj_t *box(lv_obj_t *parent, uint32_t bg, int radius)
     return o;
 }
 
+// Telas inteiras opacas na camada de topo (Sobre, Pomodoro): o LVGL desenharia sempre a tela ativa por
+// baixo, a cada quadro. Enquanto estão abertas, a tela ativa passa a ser uma vazia.
+// Brilho: o comando vai pelo mesmo SPI que os quadros. Só a tarefa do LVGL o envia (entre refrescos);
+// de outra tarefa, a meio de um envio ao painel, o driver SPI baralhava-se e o LVGL ficava à espera.
+static volatile int s_bl_pending = -1;
+static void bl_set(int v)
+{
+    s_bl_pending = v;
+}
+
+static void bl_apply_cb(lv_timer_t *t)
+{
+    int v = s_bl_pending;
+    if (v < 0) return;
+    s_bl_pending = -1;
+    bsp_display_brightness_set(v);
+}
+
+static lv_obj_t *s_blank;
+static uint32_t s_pf_dn;    // desenhos de quadros (perf)
+static int64_t s_pf_draw;   // tempo total desses desenhos (us)
+static void screen_cover(void)
+{
+    bool want = s_about || s_pomo || s_var;
+    if (want && !s_blank) {
+        s_blank = lv_obj_create(NULL);
+        lv_obj_remove_style_all(s_blank);
+        lv_obj_set_style_bg_color(s_blank, lv_color_hex(0), 0);
+        lv_obj_set_style_bg_opa(s_blank, LV_OPA_COVER, 0);
+    }
+    lv_obj_t *act = lv_screen_active();
+    if (want && act != s_blank) lv_screen_load(s_blank);
+    else if (!want && act == s_blank) lv_screen_load(s_scr);
+}
+
 static int canvas_stride(lv_obj_t *cv)
 {
     lv_draw_buf_t *db = lv_canvas_get_draw_buf(cv);
-    return db ? db->header.stride / 4 : 0;
+    return db ? db->header.stride / lv_color_format_get_size(db->header.cf) : 0;
+}
+
+// ---- quadros desenhados noutra tarefa: enquanto o LVGL manda um quadro ao painel (~45 ms por ecrã inteiro),
+// o seguinte desenha-se no buffer de trás, no outro núcleo. Duplo buffer RGB565; o anim.c tem um trinco.
+#define ANIM(call) do { anim_lock(); call; anim_unlock(); } while (0)
+static QueueHandle_t s_frq;
+
+static void fr_task(void *arg)
+{
+    fr_t *f;
+    for (;;) {
+        if (xQueueReceive(s_frq, &f, portMAX_DELAY) != pdTRUE) continue;
+        int64_t t0 = esp_timer_get_time();
+        anim_lock();
+        f->fn(f, (uint32_t *)f->buf[f->front ^ 1], f->stride);
+        anim_unlock();
+        s_pf_draw += esp_timer_get_time() - t0;
+        s_pf_dn++;
+        f->state = FR_READY;
+    }
+}
+
+static bool fr_open(fr_t *f, lv_obj_t *parent, int w, int h, fr_fn_t fn)
+{
+    memset(f, 0, sizeof(*f));
+    for (int i = 0; i < 2; i++) {
+        f->buf[i] = heap_caps_calloc(1, (size_t)w * h * 2, MALLOC_CAP_SPIRAM);
+        if (!f->buf[i]) {
+            heap_caps_free(f->buf[0]);
+            f->buf[0] = NULL;
+            return false;
+        }
+    }
+    ANIM(anim_out16(f->buf[0], true); anim_out16(f->buf[1], true));
+    f->w = w;
+    f->h = h;
+    f->fn = fn;
+    f->last = -1;
+    f->cv = lv_canvas_create(parent);
+    lv_canvas_set_buffer(f->cv, f->buf[0], w, h, LV_COLOR_FORMAT_RGB565);
+    lv_obj_remove_flag(f->cv, LV_OBJ_FLAG_CLICKABLE);
+    f->stride = canvas_stride(f->cv);
+    return true;
+}
+
+// espera pelo quadro em curso e liberta os buffers (o canvas é apagado com o objeto pai)
+static void fr_close(fr_t *f)
+{
+    while (f->state == FR_BUSY) vTaskDelay(1);
+    if (f->buf[0]) ANIM(anim_out16(f->buf[0], false); anim_out16(f->buf[1], false));
+    heap_caps_free(f->buf[0]);
+    heap_caps_free(f->buf[1]);
+    f->buf[0] = f->buf[1] = NULL;
+    f->cv = NULL;
+    f->state = FR_IDLE;
+}
+
+// Mostra o quadro pronto. true = pode pedir-se o seguinte (o anterior já está no ecrã) e já passou min_dt.
+static bool fr_step(fr_t *f, float now, float min_dt)
+{
+    if (!f->cv || f->state == FR_BUSY) return false;
+    if (f->state == FR_READY) {
+        f->front ^= 1;
+        lv_canvas_set_buffer(f->cv, f->buf[f->front], f->w, f->h, LV_COLOR_FORMAT_RGB565);
+        lv_obj_invalidate(f->cv);
+        f->state = FR_IDLE;
+    }
+    return f->last < 0 || now - f->last >= min_dt;
+}
+
+// desenha já no buffer da frente (o 1.º quadro, sem esperar pela tarefa)
+static void fr_now(fr_t *f, float t)
+{
+    f->t = t;
+    ANIM(f->fn(f, (uint32_t *)f->buf[f->front], f->stride));
+    lv_obj_invalidate(f->cv);
+}
+
+static void fr_submit(fr_t *f, float t)
+{
+    if (f->last < 0) {   // o 1.º quadro desenha-se já, para o ecrã não mostrar o buffer vazio
+        fr_now(f, t);
+        f->last = t;
+        return;
+    }
+    f->t = f->last = t;
+    f->state = FR_BUSY;
+    if (xQueueSend(s_frq, &f, 0) != pdTRUE) f->state = FR_IDLE;
 }
 
 // Ícone de reserva das boxes (sem imagem do dashd): placa de 8 bits na cor do item com a inicial.
@@ -208,7 +354,7 @@ static lv_obj_t *badge_icon(lv_obj_t *parent, const char *label_txt, uint32_t co
     lv_obj_t *cv = lv_canvas_create(parent);
     if (!buf) return cv;
     lv_canvas_set_buffer(cv, buf, size, size, LV_COLOR_FORMAT_ARGB8888);
-    anim_badge(buf, size, canvas_stride(cv), col, label_txt);
+    ANIM(anim_badge(buf, size, canvas_stride(cv), col, label_txt));
     lv_obj_invalidate(cv);
     return cv;
 }
@@ -507,8 +653,14 @@ void ui_progress(const char *text, int pct)
 static void wake_nolock(void)
 {
     if (s_bl_state) {
-        bsp_display_brightness_set(s_bl);
+        bool manual = s_bl_state == 3;
+        bl_set(s_bl);
         s_bl_state = 0;
+        if (manual) {   // estava a 0% pelo botão: o host fica a saber o brilho de volta (o ciclo segue daqui)
+            char b[32];
+            snprintf(b, sizeof(b), "{\"t\":\"bl\",\"v\":%d}", s_bl);
+            link_send_text(b);
+        }
     }
     if (s_wake_pane) {
         lv_obj_delete(s_wake_pane);
@@ -530,12 +682,31 @@ static void wake_pane_cb(lv_event_t *e)
     wake_nolock();   // este toque só acorda, não abre nada
 }
 
+// 0% no botão: o ecrã apaga como na inatividade (um toque acorda no brilho anterior, sem abrir nada)
+static void bl_off_nolock(void)
+{
+    bl_set(0);
+    s_bl_state = 3;
+    if (!s_wake_pane) {
+        s_wake_pane = box(lv_layer_top(), 0, 0);
+        lv_obj_set_size(s_wake_pane, W, H);
+        lv_obj_set_style_bg_opa(s_wake_pane, LV_OPA_TRANSP, 0);
+        lv_obj_add_flag(s_wake_pane, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(s_wake_pane, wake_pane_cb, LV_EVENT_PRESSED, NULL);
+    }
+}
+
+bool ui_bl_off(void)
+{
+    return s_bl_state == 3;
+}
+
 static void idle_check(void)
 {
-    if (s_notif || s_prog || s_pomo) return;   // o Pomodoro fica sempre aceso enquanto está de lado
+    if (s_notif || s_prog || s_pomo || s_bl_state == 3) return;   // o Pomodoro fica sempre aceso enquanto está de lado
     uint32_t idle = lv_display_get_inactive_time(NULL) / 1000;
     if (s_bl_state == 0 && s_dim_s > 0 && idle >= (uint32_t)s_dim_s) {
-        bsp_display_brightness_set(s_bl > 10 ? 10 : s_bl);
+        bl_set(s_bl > 10 ? 10 : s_bl);
         s_bl_state = 1;
         if (!s_wake_pane) {
             s_wake_pane = box(lv_layer_top(), 0, 0);
@@ -545,7 +716,7 @@ static void idle_check(void)
             lv_obj_add_event_cb(s_wake_pane, wake_pane_cb, LV_EVENT_PRESSED, NULL);
         }
     } else if (s_bl_state == 1 && s_off_s > 0 && idle >= (uint32_t)s_off_s) {
-        bsp_display_brightness_set(0);
+        bl_set(0);
         s_bl_state = 2;
     }
 }
@@ -674,10 +845,15 @@ static void boot_stop(void)
 {
     if (s_boot_tm) lv_timer_delete(s_boot_tm);
     s_boot_tm = NULL;
+    fr_close(&s_boot_fr);
     if (s_boot_cv) lv_obj_delete(s_boot_cv);
     s_boot_cv = NULL;
-    heap_caps_free(s_boot_buf);
-    s_boot_buf = NULL;
+}
+
+static void boot_draw_fn(fr_t *f, uint32_t *buf, int stride)
+{
+    if (f->a.boot.away) anim_away_draw(buf, f->w, f->h, stride, f->t, &f->a.boot.a);
+    else anim_boot_draw(buf, stride, f->t, f->a.boot.prog, f->a.boot.st, f->a.boot.tilt);
 }
 
 static void away_draw(float sec)
@@ -700,15 +876,20 @@ static void away_draw(float sec)
     if (ni.state == NET_ONLINE) snprintf(st, sizeof(st), "A AGUARDAR O UCONSOLE");
     else if (ni.state >= NET_DISCOVERING) snprintf(st, sizeof(st), "FORA DE CASA  WI-FI %s", ni.ssid);
     else snprintf(st, sizeof(st), "FORA DE CASA  %s", net_state_text(ni.state));
-    away_t a = {.time = hm, .date = date, .bat = p.percent, .chg = p.charging, .pending = sd_events_pending(),
-                .sd = sd_ok(), .status = st, .shift = tm.tm_min % 9};
-    anim_away_draw(s_boot_buf, BOOT_W, BOOT_H, canvas_stride(s_boot_cv), sec, &a);
-    lv_obj_invalidate(s_boot_cv);
+    fr_t *f = &s_boot_fr;
+    if (!fr_step(f, sec, 0.2f)) return;
+    f->a.boot.away = true;
+    strlcpy(f->a.boot.hm, hm, sizeof(f->a.boot.hm));
+    strlcpy(f->a.boot.date, date, sizeof(f->a.boot.date));
+    strlcpy(f->a.boot.st, st, sizeof(f->a.boot.st));
+    f->a.boot.a = (away_t){.time = f->a.boot.hm, .date = f->a.boot.date, .bat = p.percent, .chg = p.charging,
+                           .pending = sd_events_pending(), .sd = sd_ok(), .status = f->a.boot.st, .shift = tm.tm_min % 9};
+    fr_submit(f, sec);
 }
 
 static void boot_anim(lv_timer_t *t)
 {
-    if (!s_boot_buf) return;
+    if (!s_boot_cv) return;
     float sec = (esp_timer_get_time() - s_boot_t0) / 1e6f;
     if (s_away) {
         if (s_boot_exit) {   // o uConsole voltou
@@ -721,7 +902,6 @@ static void boot_anim(lv_timer_t *t)
     }
     if (!s_boot_exit && sec > 30) {   // 30 s sem uConsole: passa ao relógio "fora de casa"
         s_away = true;
-        lv_timer_set_period(s_boot_tm, 250);
         away_draw(sec);
         return;
     }
@@ -737,25 +917,27 @@ static void boot_anim(lv_timer_t *t)
     } else {
         s_boot_prog += (boot_target() - s_boot_prog) * 0.06f;
     }
-    char st[80] = "";
-    if (!s_boot_exit) boot_status(st, sizeof(st));
-    anim_boot_draw(s_boot_buf, canvas_stride(s_boot_cv), sec, s_boot_prog, st, imu_tilt());
-    lv_obj_invalidate(s_boot_cv);
+    fr_t *f = &s_boot_fr;
+    if (!fr_step(f, sec, 0)) return;
+    f->a.boot.away = false;
+    f->a.boot.st[0] = '\0';
+    if (!s_boot_exit) boot_status(f->a.boot.st, sizeof(f->a.boot.st));
+    f->a.boot.prog = s_boot_prog;
+    f->a.boot.tilt = imu_tilt();
+    fr_submit(f, sec);
 }
 
 static void boot_show_mode(bool away)
 {
-    if (s_boot_buf) return;
+    if (s_boot_cv) return;
     body_free();
     s_id[0] = '\0';
     s_page = -1;
     lv_obj_add_flag(s_back, LV_OBJ_FLAG_HIDDEN);
     set_title("");
     set_dots(0, 0);
-    s_boot_buf = heap_caps_calloc(1, BOOT_W * BOOT_H * 4, MALLOC_CAP_SPIRAM);
-    if (!s_boot_buf) return;
-    s_boot_cv = lv_canvas_create(s_scr);
-    lv_canvas_set_buffer(s_boot_cv, s_boot_buf, BOOT_W, BOOT_H, LV_COLOR_FORMAT_XRGB8888);
+    if (!fr_open(&s_boot_fr, s_scr, BOOT_W, BOOT_H, boot_draw_fn)) return;
+    s_boot_cv = s_boot_fr.cv;
     lv_obj_set_pos(s_boot_cv, 0, HDR_H);
     s_boot_min = s_boot_first;
     s_boot_first = false;
@@ -764,9 +946,9 @@ static void boot_show_mode(bool away)
     s_boot_prog = 0;
     s_away = away;
     if (s_bgimg) lv_obj_add_flag(s_bgimg, LV_OBJ_FLAG_HIDDEN);
-    anim_boot_start(BOOT_W, BOOT_H);
+    ANIM(anim_boot_start(BOOT_W, BOOT_H));
     s_boot_t0 = esp_timer_get_time();
-    s_boot_tm = lv_timer_create(boot_anim, away ? 250 : 33, NULL);
+    s_boot_tm = lv_timer_create(boot_anim, 15, NULL);
     boot_anim(NULL);
 }
 
@@ -778,6 +960,8 @@ static void boot_show(void)
 // ---- entrada das telas
 static void intro_start(const char *tpl, int slide_dir)
 {
+    // as boxes (menus) entram sem animação: deslizar as imagens todas pesava demasiado
+    if (tpl && !strcmp(tpl, "menu")) return;
     if (slide_dir) {   // mudança de página: o corpo entra do lado do gesto
         lv_anim_t a;
         lv_anim_init(&a);
@@ -788,23 +972,7 @@ static void intro_start(const char *tpl, int slide_dir)
         lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
         lv_anim_start(&a);
     }
-    if (tpl && !strcmp(tpl, "menu")) {
-        // as boxes sobem em cascata (como cartas a pousar)
-        uint32_t n = lv_obj_get_child_count(s_body);
-        for (uint32_t i = 0; i < n; i++) {
-            lv_obj_t *o = lv_obj_get_child(s_body, i);
-            lv_obj_set_style_translate_y(o, 60, 0);
-            lv_anim_t a;
-            lv_anim_init(&a);
-            lv_anim_set_var(&a, o);
-            lv_anim_set_exec_cb(&a, anim_ty_cb);
-            lv_anim_set_values(&a, 60, 0);
-            lv_anim_set_delay(&a, i * 50);
-            lv_anim_set_duration(&a, 340);
-            lv_anim_set_path_cb(&a, lv_anim_path_overshoot);
-            lv_anim_start(&a);
-        }
-    } else if (!slide_dir) {
+    if (!slide_dir) {
         lv_anim_t a;
         lv_anim_init(&a);
         lv_anim_set_var(&a, s_body);
@@ -878,13 +1046,25 @@ static void build_menu(const cJSON *scr)
         lv_obj_set_style_text_align(s, LV_TEXT_ALIGN_CENTER, 0);
         lv_label_set_long_mode(s, LV_LABEL_LONG_DOT);
         lv_obj_align(s, LV_ALIGN_TOP_MID, 0, val ? 138 : 124);
-        int badge = jint(it, "badge", 0);
-        if (badge > 0) {
+        // selo vermelho (ex.: mensagens não lidas): o dashd manda-o em texto ("3"), como ao DashDeck
+        const cJSON *bj = cJSON_GetObjectItem(it, "badge");
+        char btxt[8] = "";
+        if (cJSON_IsNumber(bj) && bj->valueint > 0) snprintf(btxt, sizeof(btxt), "%d", bj->valueint > 99 ? 99 : bj->valueint);
+        else if (cJSON_IsString(bj) && bj->valuestring[0] && strcmp(bj->valuestring, "0") != 0) {
+            int n = atoi(bj->valuestring);
+            if (n > 99) strcpy(btxt, "99+");
+            else strlcpy(btxt, bj->valuestring, sizeof(btxt));
+        }
+        if (btxt[0]) {
             lv_obj_t *b = box(t, C_ERR, LV_RADIUS_CIRCLE);
-            lv_obj_set_size(b, 32, 32);
-            lv_obj_align(b, LV_ALIGN_TOP_RIGHT, -6, 6);
-            lv_obj_t *bl = label(b, "", &deck_font_16, 0xFFFFFF);
-            lv_label_set_text_fmt(bl, "%d", badge > 99 ? 99 : badge);
+            lv_obj_set_style_border_width(b, 3, 0);               // aro escuro: destaca-se do ícone
+            lv_obj_set_style_border_color(b, lv_color_hex(0x0D1117), 0);
+            lv_obj_set_height(b, 36);
+            lv_obj_set_style_min_width(b, 36, 0);
+            lv_obj_set_width(b, LV_SIZE_CONTENT);
+            lv_obj_set_style_pad_hor(b, 8, 0);
+            lv_obj_align(b, LV_ALIGN_TOP_RIGHT, -4, 4);
+            lv_obj_t *bl = label(b, btxt, &deck_font_16, 0xFFFFFF);
             lv_obj_center(bl);
         }
         const char *dot = jstr(it, "dot");
@@ -1110,7 +1290,7 @@ static void slider_cb(lv_event_t *e)
     }
     lv_label_set_text_fmt(c->val, "%d%s", v, c->unit);
     if (code == LV_EVENT_VALUE_CHANGED) {
-        if (!strcmp(c->live, "bl")) bsp_display_brightness_set(v < 2 ? 2 : v);
+        if (!strcmp(c->live, "bl")) bl_set(v < 2 ? 2 : v);
         return;
     }
     // largado
@@ -1340,7 +1520,7 @@ static void show_screen(const cJSON *msg)
 {
     cJSON_Delete(s_screen);
     s_screen = cJSON_Duplicate(msg, true);
-    if (s_boot_buf) {   // ecrã de arranque: a tela entra quando a sequência acabar
+    if (s_boot_cv) {   // ecrã de arranque: a tela entra quando a sequência acabar
         s_boot_exit = true;
         return;
     }
@@ -1351,7 +1531,7 @@ static void update_screen(const cJSON *msg)
 {
     const char *id = jstr(msg, "id");
     if (!s_screen || !id) return;
-    if (s_boot_buf) {   // ainda no arranque: junta à tela pendente
+    if (s_boot_cv) {   // ainda no arranque: junta à tela pendente
         if (strcmp(id, jstr(s_screen, "id") ? jstr(s_screen, "id") : "") != 0) return;
     } else if (strcmp(id, s_id) != 0) {
         return;
@@ -1371,7 +1551,7 @@ static void update_screen(const cJSON *msg)
         if (cJSON_GetObjectItem(s_screen, f->string)) cJSON_ReplaceItemInObject(s_screen, f->string, dup);
         else cJSON_AddItemToObject(s_screen, f->string, dup);
     }
-    if (s_boot_buf) return;
+    if (s_boot_cv) return;
     if (cJSON_GetObjectItem(msg, "title")) set_title(jstr(s_screen, "title"));
     if (s_dragging) {   // não destruir o slider debaixo do dedo
         s_rebuild_pending = true;
@@ -1434,7 +1614,7 @@ static void notif_tick(lv_timer_t *t)
     // fundo a escurecer e a clarear nas pontas (0,3 s)
     float fade = el < 0.3f ? el / 0.3f : el > s_notif_total - 0.3f ? (s_notif_total - el) / 0.3f : 1;
     lv_obj_set_style_bg_opa(s_notif, (lv_opa_t)(215 * fade), 0);
-    anim_notify_draw(s_notif_buf, NCV_W, NCV_H, canvas_stride(s_notif_cv), el);
+    ANIM(anim_notify_draw(s_notif_buf, NCV_W, NCV_H, canvas_stride(s_notif_cv), el));
     lv_obj_invalidate(s_notif_cv);
     if (el > NOTIFY_ANIM) {   // a faixa sobe de baixo
         float p = (el - NOTIFY_ANIM) / 0.35f;
@@ -1454,6 +1634,12 @@ static void notif_tap(lv_event_t *e)
 
 static void notify_show(const cJSON *msg)
 {
+    // varanda aberta: as mensagens (não os alarmes nem as emergências) chegam com o pombo
+    if (s_var && !jstr(msg, "kind") && !cJSON_IsTrue(cJSON_GetObjectItem(msg, "local"))) {
+        varanda_event(VEV_DM, 0, 0, jstr(msg, "from") ? jstr(msg, "from") : jstr(msg, "title"), jstr(msg, "text"));
+        if (!cJSON_IsFalse(cJSON_GetObjectItem(msg, "sound"))) { audio_tone(1319, 70, 0); audio_tone(1760, 90, 0); }
+        return;
+    }
     if (!s_notif) {
         notify_start(msg);
         return;
@@ -1477,7 +1663,7 @@ static void notify_start(const cJSON *msg)
     s_notif_buf = heap_caps_calloc(1, NCV_W * NCV_H * 4, MALLOC_CAP_SPIRAM);
     if (!s_notif_buf) return;
     const char *from = jstr(msg, "from");
-    anim_notify_start(spr, from ? from : jstr(msg, "title"), kind);
+    ANIM(anim_notify_start(spr, from ? from : jstr(msg, "title"), kind));
 
     s_notif = box(lv_layer_top(), 0x000000, 0);
     lv_obj_set_size(s_notif, W, H);
@@ -1555,8 +1741,8 @@ static void notify_start(const cJSON *msg)
 // nas zonas da face do temporizador e alarme.
 // O temporizador e o alarme são só do cubo: guardados na NVS, contados aqui (tick_1s, mesmo sem uConsole)
 // e tocados na coluna do cubo. Os do DashDeck (C6 + som no uConsole) são outros.
-static lv_obj_t *s_clk, *s_clk_cv, *s_clk_name;
-static uint32_t *s_clk_buf;
+static lv_obj_t *s_clk, *s_clk_name;
+static fr_t s_clk_fr;
 static lv_timer_t *s_clk_tm;
 static int64_t s_clk_t0, s_clk_name_until;
 static int s_clk_face;
@@ -1567,10 +1753,9 @@ static void clock_hide(void)
 {
     if (s_clk_tm) lv_timer_delete(s_clk_tm);
     s_clk_tm = NULL;
+    fr_close(&s_clk_fr);
     if (s_clk) lv_obj_delete(s_clk);
-    s_clk = s_clk_cv = s_clk_name = NULL;
-    heap_caps_free(s_clk_buf);
-    s_clk_buf = NULL;
+    s_clk = s_clk_name = NULL;
 }
 
 // epoch "local" (a hora local contada como se fosse UTC; é a base de tend): 0 sem hora acertada
@@ -1668,8 +1853,16 @@ static void clock_check(void)
     }
 }
 
+static void clk_draw_fn(fr_t *f, uint32_t *buf, int stride)
+{
+    anim_clock_draw(f->a.clk.face, buf, f->w, f->h, stride, f->t, &f->a.clk.c);
+}
+
 static void clock_tick(lv_timer_t *t)
 {
+    float el = (esp_timer_get_time() - s_clk_t0) / 1e6f;
+    if (s_clk_name && esp_timer_get_time() > s_clk_name_until) lv_obj_add_flag(s_clk_name, LV_OBJ_FLAG_HIDDEN);
+    if (!fr_step(&s_clk_fr, el, 0.04f)) return;   // até 25 qps
     static const char *DOW[] = {"DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SAB"};
     static const char *MON[] = {"JAN", "FEV", "MAR", "ABR", "MAI", "JUN", "JUL", "AGO", "SET", "OUT", "NOV", "DEZ"};
     time_t now = time(NULL);
@@ -1693,10 +1886,15 @@ static void clock_tick(lv_timer_t *t)
     c->shift = (int)((now / 60) % 9);
     c->now = local_now(NULL);
     c->scene = bg_get(s_clk_bg);
-    float el = (esp_timer_get_time() - s_clk_t0) / 1e6f;
-    anim_clock_draw(s_clk_face, s_clk_buf, W, H, canvas_stride(s_clk_cv), el, c);
-    lv_obj_invalidate(s_clk_cv);
-    if (s_clk_name && esp_timer_get_time() > s_clk_name_until) lv_obj_add_flag(s_clk_name, LV_OBJ_FLAG_HIDDEN);
+    fr_t *f = &s_clk_fr;
+    f->a.clk.c = *c;
+    strlcpy(f->a.clk.hm, hm, sizeof(f->a.clk.hm));
+    strlcpy(f->a.clk.date, date, sizeof(f->a.clk.date));
+    f->a.clk.c.time = f->a.clk.hm;
+    f->a.clk.c.date = f->a.clk.date;
+    f->a.clk.face = s_clk_face;
+    c->time = c->date = "";   // hm e date são locais: não deixar ponteiros para a pilha
+    fr_submit(f, el);
 }
 
 static void clock_face_name(void)
@@ -1810,8 +2008,6 @@ static void clock_apply(const cJSON *scr)
         d->pet = -1;
     }
     if (s_clk) return;
-    s_clk_buf = heap_caps_calloc(1, W * H * 4, MALLOC_CAP_SPIRAM);
-    if (!s_clk_buf) return;
     s_clk_face = (int)store_get("clkface", 0) % ANIM_CLOCK_FACES;
     s_clk = box(s_scr, 0x000000, 0);   // por cima do cabeçalho e do corpo; os avisos ficam por cima (camada de topo)
     lv_obj_set_size(s_clk, W, H);
@@ -1820,9 +2016,11 @@ static void clock_apply(const cJSON *scr)
     lv_obj_add_event_cb(s_clk, clock_ev, LV_EVENT_GESTURE, NULL);
     lv_obj_add_event_cb(s_clk, clock_ev, LV_EVENT_SHORT_CLICKED, NULL);
     lv_obj_add_event_cb(s_clk, clock_ev, LV_EVENT_LONG_PRESSED_REPEAT, NULL);
-    s_clk_cv = lv_canvas_create(s_clk);
-    lv_canvas_set_buffer(s_clk_cv, s_clk_buf, W, H, LV_COLOR_FORMAT_XRGB8888);
-    lv_obj_remove_flag(s_clk_cv, LV_OBJ_FLAG_CLICKABLE);
+    if (!fr_open(&s_clk_fr, s_clk, W, H, clk_draw_fn)) {
+        lv_obj_delete(s_clk);
+        s_clk = NULL;
+        return;
+    }
     s_clk_name = label(s_clk, "", &deck_font_20, 0xFFFFFF);
     lv_obj_set_style_bg_color(s_clk_name, lv_color_hex(0x000000), 0);
     lv_obj_set_style_bg_opa(s_clk_name, LV_OPA_60, 0);
@@ -1832,7 +2030,7 @@ static void clock_apply(const cJSON *scr)
     lv_obj_align(s_clk_name, LV_ALIGN_BOTTOM_MID, 0, -14);
     clock_face_name();
     s_clk_t0 = esp_timer_get_time();
-    s_clk_tm = lv_timer_create(clock_tick, 66, NULL);   // ~15 qps
+    s_clk_tm = lv_timer_create(clock_tick, 15, NULL);
     clock_tick(NULL);
 }
 
@@ -1848,7 +2046,7 @@ static struct {
     int64_t end_us;
 } s_po = {.left = 25 * 60, .yday = -1};
 static lv_obj_t *s_pomo_cv;
-static uint32_t *s_pomo_buf, *s_pomo_up;
+static uint16_t *s_pomo_buf, *s_pomo_up;
 static lv_timer_t *s_pomo_tm;
 static int64_t s_pomo_t0;
 
@@ -1902,12 +2100,12 @@ static void pomo_draw(void)
     if (tm.tm_year > 120 && tm.tm_yday != s_po.yday && s_po.yday >= 0) s_po.today = 0;   // outro dia
     pomo_t p = {.phase = s_po.phase, .total = POMO_LEN[s_po.phase], .left = pomo_left(), .run = s_po.run,
                 .done = s_po.done, .today = s_po.today, .clock = tm.tm_year > 120 ? hm : NULL};
-    anim_pomo_draw(s_pomo_up, W, H, W, (esp_timer_get_time() - s_pomo_t0) / 1e6f, &p);
+    ANIM(anim_pomo_draw((uint32_t *)s_pomo_up, W, H, W, (esp_timer_get_time() - s_pomo_t0) / 1e6f, &p));
     // rodar 90°: o topo de quem olha é o lado esquerdo do painel (cubo girado para a direita)
     int st = canvas_stride(s_pomo_cv);
     for (int y = 0; y < H; y++) {
-        uint32_t *row = &s_pomo_buf[y * st];
-        const uint32_t *col = &s_pomo_up[W - 1 - y];
+        uint16_t *row = &s_pomo_buf[y * st];
+        const uint16_t *col = &s_pomo_up[W - 1 - y];
         for (int x = 0; x < W; x++) row[x] = col[x * W];
     }
     lv_obj_invalidate(s_pomo_cv);
@@ -1961,27 +2159,31 @@ static void pomo_hide(void)
     s_pomo_tm = NULL;
     if (s_pomo) lv_obj_delete(s_pomo);
     s_pomo = s_pomo_cv = NULL;
+    ANIM(anim_out16(s_pomo_up, false));
     heap_caps_free(s_pomo_buf);
     heap_caps_free(s_pomo_up);
     s_pomo_buf = s_pomo_up = NULL;
+    screen_cover();
 }
 
 static void pomo_show(void)
 {
     if (s_pomo) return;
-    s_pomo_buf = heap_caps_malloc(W * H * 4, MALLOC_CAP_SPIRAM);
-    s_pomo_up = heap_caps_malloc(W * H * 4, MALLOC_CAP_SPIRAM);
+    s_pomo_buf = heap_caps_malloc(W * H * 2, MALLOC_CAP_SPIRAM);
+    s_pomo_up = heap_caps_malloc(W * H * 2, MALLOC_CAP_SPIRAM);
     if (!s_pomo_buf || !s_pomo_up) {
         pomo_hide();
         return;
     }
+    ANIM(anim_out16(s_pomo_up, true));
     s_pomo = box(lv_layer_top(), 0x000000, 0);   // por cima de tudo menos dos avisos que vierem depois
     lv_obj_set_size(s_pomo, W, H);
     lv_obj_add_flag(s_pomo, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(s_pomo, pomo_ev, LV_EVENT_SHORT_CLICKED, NULL);
     s_pomo_cv = lv_canvas_create(s_pomo);
-    lv_canvas_set_buffer(s_pomo_cv, s_pomo_buf, W, H, LV_COLOR_FORMAT_XRGB8888);
+    lv_canvas_set_buffer(s_pomo_cv, s_pomo_buf, W, H, LV_COLOR_FORMAT_RGB565);
     lv_obj_remove_flag(s_pomo_cv, LV_OBJ_FLAG_CLICKABLE);
+    screen_cover();
     s_pomo_t0 = esp_timer_get_time();
     s_pomo_tm = lv_timer_create(pomo_tick, 200, NULL);
     pomo_draw();
@@ -2013,11 +2215,111 @@ static void pomo_check(void)
     cJSON_Delete(m);
 }
 
-void ui_orient(bool right)
+// ------------------------------------------------------------------------------------- Varanda do Romeu
+// O cubo em pé girado 90° para a esquerda abre a varanda (varanda.c). Desenha-se direita para quem olha e roda-se:
+// o topo de quem olha é o lado direito do painel.
+static fr_t s_var_fr;
+static uint16_t *s_var_up;
+static lv_timer_t *s_var_tm;
+static int64_t s_var_t0;
+static bool s_var_chg;
+
+static void var_draw_fn(fr_t *f, uint32_t *buf, int stride)
+{
+    varanda_draw(s_var_up, f->t);
+    uint16_t *o = (uint16_t *)buf;
+    for (int y = 0; y < H; y++) {
+        uint16_t *row = &o[y * stride];
+        for (int x = 0; x < W; x++) row[x] = s_var_up[(W - 1 - x) * W + y];
+    }
+}
+
+static void var_tick(lv_timer_t *t)
+{
+    float el = (esp_timer_get_time() - s_var_t0) / 1e6f;
+    if (fr_step(&s_var_fr, el, 0.05f)) fr_submit(&s_var_fr, el);
+    power_info_t p;
+    power_get(&p);
+    if (p.charging && !s_var_chg) varanda_event(VEV_CHARGE, 0, 0, NULL, NULL);
+    s_var_chg = p.charging;
+    lv_display_trigger_activity(NULL);
+}
+
+static void var_ev(lv_event_t *e)
+{
+    lv_point_t pt;
+    lv_indev_get_point(lv_indev_active(), &pt);
+    varanda_event(VEV_TOUCH, pt.y, W - 1 - pt.x, NULL, NULL);   // ponto do painel -> coordenadas de quem olha
+}
+
+static void var_hide(void)
+{
+    if (!s_var) return;
+    if (s_var_tm) lv_timer_delete(s_var_tm);
+    s_var_tm = NULL;
+    fr_close(&s_var_fr);
+    lv_obj_delete(s_var);
+    s_var = NULL;
+    ANIM(anim_out16(s_var_up, false));
+    heap_caps_free(s_var_up);
+    s_var_up = NULL;
+    audio_mic_local(false);
+    link_send_event("varanda", "open", "0", NULL, NULL);
+    screen_cover();
+}
+
+static void var_show(void)
+{
+    if (s_var) return;
+    if (!varanda_load()) {   // ainda sem imagens: o dashd envia-as e manda {"t":"varanda","reload":true}
+        link_send_event("varanda", "open", "1", "need", "1");
+        toast_nolock("A preparar a varanda do Romeu...", "info");
+        return;
+    }
+    s_var_up = heap_caps_malloc(W * H * 2, MALLOC_CAP_SPIRAM);
+    if (!s_var_up) return;
+    ANIM(anim_out16(s_var_up, true));
+    s_var = box(lv_layer_top(), 0x000000, 0);
+    lv_obj_set_size(s_var, W, H);
+    lv_obj_add_flag(s_var, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(s_var, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_event_cb(s_var, var_ev, LV_EVENT_PRESSED, NULL);
+    ANIM(varanda_reset());
+    if (!fr_open(&s_var_fr, s_var, W, H, var_draw_fn)) {
+        lv_obj_delete(s_var);
+        s_var = NULL;
+        return;
+    }
+    power_info_t p;
+    power_get(&p);
+    s_var_chg = p.charging;
+    audio_mic_local(true);
+    s_var_t0 = esp_timer_get_time();
+    s_var_tm = lv_timer_create(var_tick, 15, NULL);
+    var_tick(NULL);
+    screen_cover();
+    link_send_event("varanda", "open", "1", NULL, NULL);
+}
+
+bool ui_rotated_open(void)
+{
+    return (s_var || s_pomo) && !s_rot_test;
+}
+
+void ui_imu_event(int ev)
+{
+    if (s_var) varanda_event(ev == 1 ? VEV_KNOCK : VEV_SHAKE, 0, 0, NULL, NULL);
+}
+
+void ui_orient(int ori)
 {
     if (!bsp_display_lock(500)) return;
-    if (right) pomo_show();
+    s_var_want = ori == 2;
+    s_rot_test = false;
+    if (ori == 1) pomo_show();
     else pomo_hide();
+    if (ori == 2) var_show();
+    else var_hide();
     wake_nolock();
     bsp_display_unlock();
 }
@@ -2030,74 +2332,125 @@ bool ui_pomo_key(int key, int ev)
             pomo_zone(PZ_GO);
             used = true;
         }
+        if (s_var && key == 0 && ev == 0) {    // BOOT curto na varanda: festas no Romeu
+            varanda_event(VEV_PET, 0, 0, NULL, NULL);
+            used = true;
+        }
         bsp_display_unlock();
     }
     return used;
 }
 
 // ------------------------------------------------------------------------------------ "Sobre"
+// Hiperespaço (anim.c) com os créditos numa faixa escura em baixo, como no DashDeck: aparecem depois do salto
+// e somem ao fim de 7 s. Um toque fecha (se a cena não o usar); fecha sozinha ao fim de ABOUT_SECS.
+#define ABOUT_SECS 45
+#define ABOUT_CREDITS_S 7.0f
+static fr_t s_about_fr;
+static float s_about_until, s_about_cred;
+static char s_host_ver[40];
+
+static void about_draw_fn(fr_t *f, uint32_t *buf, int stride)
+{
+    anim_about_draw(buf, f->w, f->h, stride, f->t);
+}
 
 static void about_close(void)
 {
     if (s_about_tm) lv_timer_delete(s_about_tm);
     s_about_tm = NULL;
+    fr_close(&s_about_fr);
     if (s_about) lv_obj_delete(s_about);
-    s_about = s_about_cv = s_about_txt = NULL;
-    heap_caps_free(s_about_buf);
-    s_about_buf = NULL;
+    s_about = s_about_txt = NULL;
+    screen_cover();
 }
 
 static void about_tick(lv_timer_t *t)
 {
     float el = (esp_timer_get_time() - s_about_t0) / 1e6f;
-    if (el > 40) {
+    if (el > s_about_until) {
         about_close();
         return;
     }
-    anim_about_draw(s_about_buf, canvas_stride(s_about_cv), el, imu_tilt());
-    lv_obj_invalidate(s_about_cv);
-    // créditos: aparecem com o nome e somem ao fim de 7 s, deixando só a animação
-    float a = el < 3.2f ? 0 : el < 3.7f ? (el - 3.2f) / 0.5f : el < 10.2f ? 1 : el < 10.7f ? (10.7f - el) / 0.5f : 0;
-    lv_obj_set_style_opa(s_about_txt, (lv_opa_t)(255 * a), 0);
+    if (fr_step(&s_about_fr, el, 0)) fr_submit(&s_about_fr, el);
+    // os créditos aparecem em s_about_cred (0,4 s) e somem (0,6 s) ABOUT_CREDITS_S depois
+    if (s_about_txt && s_about_cred >= 0) {
+        float c = el - s_about_cred;
+        if (c >= 0 && c < ABOUT_CREDITS_S + 0.6f) {
+            float a = c < 0.4f ? c / 0.4f : c < ABOUT_CREDITS_S ? 1 : 1 - (c - ABOUT_CREDITS_S) / 0.6f;
+            lv_obj_remove_flag(s_about_txt, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_style_opa(s_about_txt, (lv_opa_t)(255 * a), 0);
+        } else if (c >= ABOUT_CREDITS_S + 0.6f) {
+            lv_obj_add_flag(s_about_txt, LV_OBJ_FLAG_HIDDEN);
+            s_about_cred = -1;   // acabou
+        }
+    }
+    lv_display_trigger_activity(NULL);
 }
 
 static void about_tap(lv_event_t *e)
 {
     lv_indev_t *in = lv_indev_active();
-    if (in) lv_indev_wait_release(in);
+    if (!in) return;
+    lv_indev_wait_release(in);   // o toque não passa para a tela por baixo
+    lv_point_t p;
+    lv_indev_get_point(in, &p);
+    float el = (esp_timer_get_time() - s_about_t0) / 1e6f;
+    bool used;
+    anim_lock();
+    used = anim_about_touch(p.x, p.y, el);
+    anim_unlock();
+    if (used) {
+        lv_obj_add_flag(s_about_txt, LV_OBJ_FLAG_HIDDEN);
+        s_about_cred = -1;
+        s_about_until = el + 30;
+        return;
+    }
     about_close();
 }
 
 static void about_show(void)
 {
     if (s_about || s_notif) return;
-    s_about_buf = heap_caps_calloc(1, W * H * 4, MALLOC_CAP_SPIRAM);
-    if (!s_about_buf) return;
     s_about = box(lv_layer_top(), 0x000000, 0);
     lv_obj_set_size(s_about, W, H);
     lv_obj_add_flag(s_about, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(s_about, LV_OBJ_FLAG_GESTURE_BUBBLE);
     lv_obj_add_event_cb(s_about, about_tap, LV_EVENT_PRESSED, NULL);
-    s_about_cv = lv_canvas_create(s_about);
-    lv_canvas_set_buffer(s_about_cv, s_about_buf, W, H, LV_COLOR_FORMAT_XRGB8888);
-    lv_obj_remove_flag(s_about_cv, LV_OBJ_FLAG_CLICKABLE);
-    s_about_txt = box(s_about, 0x000000, 0);
-    lv_obj_set_style_bg_opa(s_about_txt, LV_OPA_TRANSP, 0);
+    ANIM(anim_about_start(W, H));
+    if (!fr_open(&s_about_fr, s_about, W, H, about_draw_fn)) {
+        lv_obj_delete(s_about);
+        s_about = NULL;
+        ui_toast("DashDeck\xC2\xB3 " DECK3_FW_VERSION " por CT7BRA", "info");
+        return;
+    }
+    // créditos numa faixa escura em baixo
+    s_about_txt = box(s_about, 0x05070C, 0);
+    lv_obj_set_style_bg_opa(s_about_txt, LV_OPA_60, 0);
     lv_obj_set_size(s_about_txt, W, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_ver(s_about_txt, 12, 0);
+    lv_obj_set_style_pad_bottom(s_about_txt, 18, 0);
     lv_obj_set_flex_flow(s_about_txt, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(s_about_txt, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_align(s_about_txt, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(s_about_txt, 4, 0);
     lv_obj_remove_flag(s_about_txt, LV_OBJ_FLAG_CLICKABLE);
-    label(s_about_txt, "DashDeck\xC2\xB3 " DECK3_FW_VERSION, &deck_font_20, 0xFFFFFF);
+    char ver[72];
+    snprintf(ver, sizeof(ver), "firmware %s%s%s", DECK3_FW_VERSION, s_host_ver[0] ? " \xC2\xB7 host " : "", s_host_ver);
+    label(s_about_txt, "por CT7BRA", &deck_font_20, 0xFFFFFF);
+    label(s_about_txt, "github.com/tiuksferve/DashDeck", &deck_font_16, 0x7CC4FF);
+    label(s_about_txt, ver, &deck_font_16, 0xB8C2D0);
     const cJSON *ln;
     cJSON_ArrayForEach(ln, s_about_lines) {
-        if (cJSON_IsString(ln)) label(s_about_txt, ln->valuestring, &deck_font_16, 0xB8C2D0);
+        if (cJSON_IsString(ln)) label(s_about_txt, ln->valuestring, &deck_font_16, 0x8A94A8);
     }
-    lv_obj_align(s_about_txt, LV_ALIGN_BOTTOM_MID, 0, -40);
-    lv_obj_set_style_opa(s_about_txt, LV_OPA_TRANSP, 0);
-    anim_about_start(W, H);
+    lv_obj_align(s_about_txt, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_add_flag(s_about_txt, LV_OBJ_FLAG_HIDDEN);   // só depois do salto
     s_about_t0 = esp_timer_get_time();
-    s_about_tm = lv_timer_create(about_tick, 33, NULL);
+    s_about_until = ABOUT_SECS;
+    s_about_cred = anim_about_credits_at();
+    s_about_tm = lv_timer_create(about_tick, 15, NULL);
     about_tick(NULL);
+    screen_cover();
 }
 
 static void title_tap(lv_event_t *e)
@@ -2140,6 +2493,46 @@ static void shot_ev(lv_event_t *e)
         link_send_text(s_shot_line);
         s_shot_n++;
     }
+}
+
+// {"t":"perf"}: quadros por segundo e tempo de cada refresco desde o último pedido (testes de desempenho)
+static uint32_t s_pf_n;
+static int64_t s_pf_t0, s_pf_since, s_pf_busy, s_pf_w0, s_pf_wait;
+
+static void perf_ev(lv_event_t *e)
+{
+    int64_t now = esp_timer_get_time();
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_FLUSH_WAIT_START) s_pf_w0 = now;
+    else if (code == LV_EVENT_FLUSH_WAIT_FINISH) s_pf_wait += now - s_pf_w0;
+    else if (code == LV_EVENT_REFR_START) s_pf_t0 = now;
+    else if (s_pf_t0) {
+        s_pf_busy += now - s_pf_t0;
+        s_pf_n++;
+    }
+}
+
+static void perf_report(void)
+{
+    static bool hooked;
+    int64_t now = esp_timer_get_time();
+    if (!hooked) {
+        lv_display_add_event_cb(lv_display_get_default(), perf_ev, LV_EVENT_REFR_START, NULL);
+        lv_display_add_event_cb(lv_display_get_default(), perf_ev, LV_EVENT_REFR_READY, NULL);
+        lv_display_add_event_cb(lv_display_get_default(), perf_ev, LV_EVENT_FLUSH_WAIT_START, NULL);
+        lv_display_add_event_cb(lv_display_get_default(), perf_ev, LV_EVENT_FLUSH_WAIT_FINISH, NULL);
+        hooked = true;
+    } else {
+        char buf[128];
+        float secs = (now - s_pf_since) / 1e6f;
+        snprintf(buf, sizeof(buf), "{\"t\":\"perf\",\"fps\":%.1f,\"refr_ms\":%.1f,\"draw_ms\":%.1f,\"wait_ms\":%.1f,\"secs\":%.1f}",
+                 s_pf_n / secs, s_pf_n ? s_pf_busy / 1000.0f / s_pf_n : 0.0f,
+                 s_pf_dn ? s_pf_draw / 1000.0f / s_pf_dn : 0.0f, s_pf_n ? s_pf_wait / 1000.0f / s_pf_n : 0.0f, secs);
+        link_send_text(buf);
+    }
+    s_pf_n = s_pf_dn = 0;
+    s_pf_busy = s_pf_draw = s_pf_wait = 0;
+    s_pf_since = now;
 }
 
 static void shot_take(void)
@@ -2240,6 +2633,15 @@ void ui_handle(const cJSON *msg, link_via_t via)
     if (audio_handle(msg)) return;
     if (!strcmp(t, "bg")) { bg_handle(msg); return; }   // fundo do mapa ou do relógio (sem o LVGL)
 
+    if (!strcmp(t, "dbg")) {   // {"t":"dbg"}: estado dos quadros e do trinco do anim.c (sem o lock do LVGL)
+        char b[200];
+        TaskHandle_t h = anim_lock_holder();
+        snprintf(b, sizeof(b), "{\"t\":\"dbg\",\"fr\":[%d,%d,%d],\"anim\":\"%s\",\"frq\":%d,\"pf\":%u}",
+                 s_boot_fr.state, s_clk_fr.state, s_about_fr.state, h ? pcTaskGetName(h) : "",
+                 (int)uxQueueMessagesWaiting(s_frq), (unsigned)s_pf_dn);
+        link_send_text(b);
+        return;
+    }
     if (!bsp_display_lock(2000)) {
         ESP_LOGW(TAG, "lock do LVGL ocupado; '%s' descartada", t);
         return;
@@ -2247,6 +2649,7 @@ void ui_handle(const cJSON *msg, link_via_t via)
     if (!strcmp(t, "screen")) show_screen(msg);
     else if (!strcmp(t, "update")) update_screen(msg);
     else if (!strcmp(t, "shot")) shot_take();
+    else if (!strcmp(t, "perf")) perf_report();
     else if (!strcmp(t, "clkface")) {   // {"t":"clkface","v":n}: muda a face do relógio (testes e capturas)
         s_clk_face = ((jint(msg, "v", 0) % ANIM_CLOCK_FACES) + ANIM_CLOCK_FACES) % ANIM_CLOCK_FACES;
         store_set("clkface", s_clk_face);
@@ -2254,7 +2657,7 @@ void ui_handle(const cJSON *msg, link_via_t via)
     }
     else if (!strcmp(t, "pomo")) {   // {"t":"pomo","show":true|false,"z":PZ_*,"left":s}: testes sem girar o cubo
         const cJSON *sh = cJSON_GetObjectItem(msg, "show");
-        if (cJSON_IsTrue(sh)) pomo_show();
+        if (cJSON_IsTrue(sh)) { s_rot_test = true; pomo_show(); }
         if (cJSON_IsFalse(sh)) pomo_hide();
         int z = jint(msg, "z", PZ_NONE);
         if (z > PZ_NONE && z <= PZ_SKIP) pomo_zone(z);
@@ -2266,7 +2669,7 @@ void ui_handle(const cJSON *msg, link_via_t via)
         }
     }
     else if (!strcmp(t, "bootanim")) {   // {"t":"bootanim"}: repete a sequência de arranque (testes e capturas)
-        if (s_screen && !s_boot_buf) {
+        if (s_screen && !s_boot_cv) {
             s_boot_first = true;
             boot_show_mode(false);
             s_boot_exit = true;   // a tela atual volta no fim da sequência
@@ -2280,22 +2683,47 @@ void ui_handle(const cJSON *msg, link_via_t via)
     else if (!strcmp(t, "notify")) notify_show(msg);
     else if (!strcmp(t, "status")) strlcpy(s_status, jstr(msg, "text") ? jstr(msg, "text") : "", sizeof(s_status));
     else if (!strcmp(t, "bl")) {
-        s_bl = jint(msg, "v", s_bl);
-        if (s_bl < 2) s_bl = 2;   // 0 apagaria o ecrã sem forma de o ver; para apagar há o "idle"
-        if (s_bl > 100) s_bl = 100;
-        bsp_display_brightness_set(s_bl);
-        s_bl_state = 0;
-        store_set("bl", s_bl);
+        int v = jint(msg, "v", s_bl);
+        if (v <= 0) bl_off_nolock();   // 0% = desligado (o brilho guardado fica o anterior)
+        else {
+            s_bl = v < 2 ? 2 : v > 100 ? 100 : v;
+            if (s_wake_pane) {
+                lv_obj_delete(s_wake_pane);
+                s_wake_pane = NULL;
+            }
+            bl_set(s_bl);
+            s_bl_state = 0;
+            store_set("bl", s_bl);
+        }
     } else if (!strcmp(t, "idle")) {
         s_dim_s = jint(msg, "dim", s_dim_s);
         s_off_s = jint(msg, "off", s_off_s);
     } else if (!strcmp(t, "wake")) wake_nolock();
+    else if (!strcmp(t, "varanda")) {   // dados do dashd para a varanda; "reload": imagens novas no cartão
+        varanda_event_json(msg);
+        const cJSON *sh = cJSON_GetObjectItem(msg, "show");   // testes sem girar o cubo
+        if (cJSON_IsTrue(sh)) { s_var_want = true; s_rot_test = true; var_show(); }
+        if (cJSON_IsFalse(sh)) { s_var_want = false; var_hide(); }
+        const char *ev = jstr(msg, "ev");                      // testes: knock shake clap noise charge pet
+        if (ev && s_var) {
+            static const char *EVN[] = {"knock", "shake", "clap", "noise", "charge", "pet"};
+            static const int EVT[] = {VEV_KNOCK, VEV_SHAKE, VEV_CLAP, VEV_NOISE, VEV_CHARGE, VEV_PET};
+            for (int i = 0; i < 6; i++)
+                if (!strcmp(ev, EVN[i])) varanda_event(EVT[i], 0, 0, NULL, NULL);
+        }
+        if (cJSON_IsTrue(cJSON_GetObjectItem(msg, "reload")) && !s_var) {
+            ANIM(varanda_unload());
+            if (s_var_want) var_show();
+        }
+    }
     else if (!strcmp(t, "about")) {   // {"t":"about","lines":[...],"show":true}
         const cJSON *l = cJSON_GetObjectItem(msg, "lines");
         if (cJSON_IsArray(l)) {
             cJSON_Delete(s_about_lines);
             s_about_lines = cJSON_Duplicate(l, true);
         }
+        const char *hv = jstr(msg, "host");
+        if (hv) strlcpy(s_host_ver, hv, sizeof(s_host_ver));
         if (cJSON_IsTrue(cJSON_GetObjectItem(msg, "show"))) about_show();
     }
     else if (!strcmp(t, "rot")) {
@@ -2305,19 +2733,27 @@ void ui_handle(const cJSON *msg, link_via_t via)
     bsp_display_unlock();
 }
 
-// PWR sem host: alterna o brilho localmente (20/50/80/100) e guarda-o
+// PWR sem host: alterna o brilho localmente (0/25/50/75/100; 0 = desligado) e guarda-o
 void ui_local_bl_cycle(void)
 {
-    static const int lv[] = {20, 50, 80, 100};
-    int n = 0;
-    for (int i = 0; i < 4; i++) if (s_bl >= lv[i]) n = i + 1;
-    s_bl = lv[n % 4];
+    static const int lv[] = {0, 25, 50, 75, 100};   // como o bl_levels do dashd
+    int cur = s_bl_state == 3 ? 0 : s_bl, n = 0;
+    for (int i = 0; i < 5; i++) if (cur >= lv[i]) n = i + 1;
+    int v = lv[n % 5];
     if (!bsp_display_lock(500)) return;
-    bsp_display_brightness_set(s_bl);
-    s_bl_state = 0;
-    char t[24];
-    snprintf(t, sizeof(t), "Brilho %d%%", s_bl);
-    toast_nolock(t, "info");
+    if (v == 0) bl_off_nolock();
+    else {
+        s_bl = v;
+        if (s_wake_pane) {
+            lv_obj_delete(s_wake_pane);
+            s_wake_pane = NULL;
+        }
+        bl_set(s_bl);
+        s_bl_state = 0;
+        char t[24];
+        snprintf(t, sizeof(t), "Brilho %d%%", s_bl);
+        toast_nolock(t, "info");
+    }
     bsp_display_unlock();
     s_bl_dirty = true;   // gravado no tick (esta função corre na tarefa power, com stack na PSRAM)
 }
@@ -2392,6 +2828,9 @@ void ui_init(lv_display_t *disp)
     s_po.today = store_get("po_today", 0);
     s_po.yday = store_get("po_yday", -1);
     bsp_display_lock(0);   // 0 = esperar o tempo que for preciso
+    anim_init();
+    s_frq = xQueueCreate(4, sizeof(fr_t *));
+    xTaskCreatePinnedToCoreWithCaps(fr_task, "frames", 6144, NULL, 4, NULL, tskNO_AFFINITY, MALLOC_CAP_SPIRAM);   // stack na PSRAM
     s_scr = lv_screen_active();
     lv_obj_set_style_bg_color(s_scr, lv_color_hex(C_BG), 0);
     lv_obj_set_style_bg_opa(s_scr, LV_OPA_COVER, 0);
@@ -2468,7 +2907,8 @@ void ui_init(lv_display_t *disp)
 
     boot_show();
     lv_timer_create(tick_1s, 1000, NULL);
+    lv_timer_create(bl_apply_cb, 20, NULL);
     hdr_refresh();
     bsp_display_unlock();
-    bsp_display_brightness_set(s_bl);
+    bl_set(s_bl);
 }

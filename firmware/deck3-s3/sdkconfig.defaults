@@ -57,7 +57,7 @@ CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=512
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 
-# Bluetooth: desligado no firmware por agora (o controlador BLE come a RAM interna). Código em main/ble.c.
+# Sem Bluetooth (o projeto não o usa): CONFIG_BT_ENABLED fica desligado.
 
 # Mais RAM interna livre: buffers de TX do Wi-Fi dinâmicos (podem ir para a PSRAM) e menos RX estáticos
 CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER=y

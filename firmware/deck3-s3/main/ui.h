@@ -15,6 +15,9 @@ void ui_toast(const char *text, const char *level);   // level: ok, warn, err, i
 void ui_progress(const char *text, int pct);          // pct < 0 esconde
 void ui_wake(void);                                   // acende o ecrã (toque, botão, IMU)
 void ui_local_back(void);                             // BOOT sem host: fecha avisos/diálogos
-void ui_local_bl_cycle(void);                         // PWR sem host: alterna o brilho
-void ui_orient(bool right);                           // IMU: em pé e girado 90° à direita (Pomodoro) ou normal
+void ui_local_bl_cycle(void);
+bool ui_bl_off(void);                                 // ecrã desligado no botão de brilho (0%)                         // PWR sem host: alterna o brilho
+void ui_orient(int ori);                              // IMU, cubo em pé: 0 normal, 1 girado à direita (Pomodoro), 2 à esquerda (varanda)
+void ui_imu_event(int ev);
+bool ui_rotated_open(void);                           // Pomodoro ou varanda abertos pelo giro (não pelos testes)                            // IMU: 1 batida na mesa, 2 agitar
 bool ui_pomo_key(int key, int ev);                    // botão com o Pomodoro aberto (true = usado)

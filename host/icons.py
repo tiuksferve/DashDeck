@@ -64,9 +64,57 @@ def _emoji(ch: str, size: int) -> Image.Image | None:
     return out
 
 
+# Ícones em pixel art de 8 bits ("pix:<nome>:<#cor>"): no cubo, no lugar dos símbolos do LVGL do DashDeck,
+# na cor da box (ex.: o envelope verde do Meshtastic). o = contorno, w = claro, p = cor.
+PIX = {
+    "mail": ["oooooooooooooooo",
+             "owwppppppppppwwo",
+             "opwwppppppppwwpo",
+             "oppwwppppppwwppo",
+             "opppwwppppwwpppo",
+             "oppppwwppwwppppo",
+             "opppppwwwwpppppo",
+             "oppppppwwppppppo",
+             "oppppppppppppppo",
+             "oppppppppppppppo",
+             "oppppppppppppppo",
+             "oooooooooooooooo"],
+}
+
+
+def _pix(spec: str, size: int) -> Image.Image | None:
+    name, _, col = spec.partition(":")
+    rows = PIX.get(name)
+    if not rows:
+        return None
+    c = col.lstrip("#")
+    try:
+        r, g, b = (int(c[i:i + 2], 16) for i in (0, 2, 4))
+    except ValueError:
+        r, g, b = 0x67, 0xEA, 0x94
+
+    def mix(t: float, to: tuple[int, int, int]) -> tuple[int, int, int, int]:
+        return (round(r + (to[0] - r) * t), round(g + (to[1] - g) * t), round(b + (to[2] - b) * t), 255)
+    pal = {"o": mix(0.7, (0, 0, 0)), "w": mix(0.55, (255, 255, 255)), "p": (r, g, b, 255)}
+    h, w = len(rows), len(rows[0])
+    ps = max(1, int(size * 0.9) // w)   # píxel do desenho: inteiro, para ficar nítido
+    im = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    ox, oy = (size - w * ps) // 2, (size - h * ps) // 2
+    px = im.load()
+    for j, row in enumerate(rows):
+        for i, k in enumerate(row):
+            if k in pal:
+                for y in range(oy + j * ps, oy + (j + 1) * ps):
+                    for x in range(ox + i * ps, ox + (i + 1) * ps):
+                        px[x, y] = pal[k]
+    return im
+
+
 def _load(src: str, size: int) -> Image.Image | None:
     if src.startswith("emoji:"):
         return _emoji(src[6:], size)
+    if src.startswith("pix:"):
+        return _pix(src[4:], size)
     import gi
     gi.require_version("GdkPixbuf", "2.0")
     from gi.repository import GdkPixbuf

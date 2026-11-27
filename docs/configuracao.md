@@ -35,14 +35,15 @@ Os avisos (mensagens do Meshtastic, squawks, alarme) vão para os dois.
 | `port` | `8765` | WebSocket do aparelho, firmware da OTA (`/fw/`) e controlo local (`/ctl`, para o `deckctl.py`) |
 | `title` | `DashDeck³` | Título do menu principal do cubo |
 | `refresh`, `backlight` | `2.0`, `80` | Como no `[dashd]` (o cubo guarda o último brilho escolhido) |
-| `bl_levels` | `[20, 50, 80, 100]` | Níveis do botão de brilho |
+| `bl_levels` | `[0, 25, 50, 75, 100]` | Níveis do botão de brilho; 0 desliga o ecrã (um toque acorda no brilho anterior, sem abrir nada; o botão segue para o nível seguinte) |
 | `dim`, `off` | `60`, `300` | Segundos sem toques até escurecer e até apagar (AMOLED). Mudam-se também em Config › Ecrã e som |
 
 O token do cubo está em `~/.config/deck3/token` (gravado no aparelho pelo `setup/deck3/provision.py`).
 O menu do cubo é o mesmo `[[menu]]`; os itens do dock (menos Início e Brilho) aparecem no fim, porque
 o cubo não tem dock. `[keys]` diz o que fazem os botões físicos (`boot`, `user`, `pwr` × `short`, `long`,
 `double` = `back`, `home`, `bl`, `open:<id>`, `shell:<cmd>`, `launch:<cmd>`, `none`) e `[about]` as linhas
-da cena "Sobre o DashDeck³".
+da cena "Sobre o DashDeck³" (por baixo dos créditos). No cubo, os itens sem `img` mostram um emoji pelo `icon`;
+o `icon = "mail"` (Meshtastic) é um envelope de 8 bits na cor do item, como o símbolo do DashDeck.
 
 ## Itens de menu: `[[menu]]` e `[[menu.items]]`
 
@@ -53,7 +54,7 @@ Campos comuns (`devices = ["deck3"]` ou `["dashdeck"]` mostra o item só nesse e
 | `id` | Identificador único (obrigatório) |
 | `label` | Texto do box |
 | `sub` | Subtítulo fixo. Os providers e serviços põem aqui o seu estado |
-| `icon` | Símbolo: `home settings wifi gps play stop pause list bell power refresh eye charge battery usb bluetooth sd folder file mail audio video image warning bars keyboard call upload download loop edit trash ok close plus drive shuffle right volume` |
+| `icon` | Símbolo: `home settings wifi gps play stop pause list bell power refresh eye charge battery usb sd folder file mail audio video image warning bars keyboard call upload download loop edit trash ok close plus drive shuffle right volume` |
 | `img` | Imagem no lugar do símbolo: `"emoji:✈"`, um nome do tema de ícones (ex.: `"utilities-terminal"`) ou um caminho `.png` ou `.svg` |
 | `color` | Cor do símbolo, `"#RRGGBB"` |
 | `type` | Um dos tipos abaixo |

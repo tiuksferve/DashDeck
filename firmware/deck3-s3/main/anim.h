@@ -7,6 +7,18 @@
 #include <stdint.h>
 
 
+// Trinco do módulo (as funções abaixo usam estado partilhado): quem desenha noutra tarefa tem de o ter.
+void anim_init(void);
+void anim_lock(void);
+void anim_unlock(void);
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+TaskHandle_t anim_lock_holder(void);   // diagnóstico
+
+// Regista (on) ou retira um buffer de saída em RGB565: as funções abaixo que recebem esse buffer (uint32_t *
+// por compatibilidade) escrevem nele em RGB565, com o stride em píxeis de 16 bits.
+void anim_out16(const void *buf, bool on);
+
 // ---- fonte pixel 5x7 do DashDeck (maiúsculas, dígitos, pontuação; acentos viram a letra base; ³)
 int pfont_width(const char *s, int sc);
 // Desenha os primeiros `nchars` carateres (-1 = todos). outline: 0 = sem contorno, senão cor RGB888.
@@ -31,9 +43,13 @@ uint32_t anim_notify_color(int kind, int which);   // 0 principal, 1 claro, 2 es
 // ---- ícone de reserva das boxes (sem imagem do dashd): placa de 8 bits com a inicial
 void anim_badge(uint32_t *buf, int size, int stride, uint32_t col, const char *label);
 
-// ---- "Sobre o DashDeck³" (toque no título da tela inicial): salto no hiperespaço até ao cubo.
+// ---- "Sobre o DashDeck³" (toque no título da tela inicial): salto no hiperespaço até um planeta com anéis,
+// à resolução do ecrã; os créditos (no ui.c) aparecem depois do salto.
 void anim_about_start(int w, int h);
-void anim_about_draw(uint32_t *buf, int stride, float t, float tilt);
+void anim_about_draw(uint32_t *buf, int w, int h, int stride, float t);
+float anim_about_credits_at(void);
+// Toque em (x, y) no instante t: true se a cena o usou (então não fecha).
+bool anim_about_touch(int x, int y, float t);
 
 // ---- "fora de casa" (sem o uConsole): relógio grande, data, bateria, eventos guardados no cartão.
 // Desenho leve (o chamador refresca 4 vezes por segundo); a posição desloca-se a cada minuto (AMOLED).

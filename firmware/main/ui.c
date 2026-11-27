@@ -319,7 +319,7 @@ static const char *icon_symbol(const char *name)
         {"pause", LV_SYMBOL_PAUSE},     {"list", LV_SYMBOL_LIST},         {"bell", LV_SYMBOL_BELL},
         {"power", LV_SYMBOL_POWER},     {"refresh", LV_SYMBOL_REFRESH},   {"eye", LV_SYMBOL_EYE_OPEN},
         {"charge", LV_SYMBOL_CHARGE},   {"battery", LV_SYMBOL_BATTERY_FULL}, {"usb", LV_SYMBOL_USB},
-        {"bluetooth", LV_SYMBOL_BLUETOOTH}, {"sd", LV_SYMBOL_SD_CARD},    {"folder", LV_SYMBOL_DIRECTORY},
+        {"sd", LV_SYMBOL_SD_CARD},    {"folder", LV_SYMBOL_DIRECTORY},
         {"file", LV_SYMBOL_FILE},       {"mail", LV_SYMBOL_ENVELOPE},     {"audio", LV_SYMBOL_AUDIO},
         {"video", LV_SYMBOL_VIDEO},     {"image", LV_SYMBOL_IMAGE},       {"warning", LV_SYMBOL_WARNING},
         {"bars", LV_SYMBOL_BARS},       {"keyboard", LV_SYMBOL_KEYBOARD}, {"call", LV_SYMBOL_CALL},

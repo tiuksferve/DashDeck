@@ -46,7 +46,7 @@ partes próprias do cubo.
 | `camclient`, `clockscene`, `emojis`, `icons`, `maptiles`, `meshbridge`, `routes`, `stocks`, `wltop`, `xdgapps`, `sonderx` | cópias; só caminhos e nomes mudados | Não copiar |
 | `deckd.py` | do DashDeck³ | **Levar.** Tem `WsLink`, `Dev`, `DeckApp` (subclasse de `App`) e `Server` (WebSocket, `/fw/`, `/ctl`) |
 | `ws.py` | do DashDeck³, WebSocket em Python puro (sem dependências) | Levar |
-| `deckproviders.py` | do DashDeck³: box **Config** (Ecrã e som, Bateria, Wi-Fi, Bluetooth, Aparelho, Sensores) | Levar. Os providers usam `self.session` (o aparelho) |
+| `deckproviders.py` | do DashDeck³: box **Config** (Ecrã e som, Bateria, Wi-Fi, Aparelho, Sensores) | Levar. Os providers usam `self.session` (o aparelho) |
 | `deckctl.py` | do DashDeck³: controlo local por `POST /ctl` (`status`, `last`, `notify`, `send`, `ota`, `put`, `ls`, `rm`, `tap`, `swipe`, `back`, `home`) | Levar. Útil para testar telas sem tocar no ecrã, também no DashDeck |
 | `fakedeck.py` | do DashDeck³: aparelho falso por WebSocket, para testes | Levar |
 | `config.toml` | `[deckd]`, `[keys]`, `[about]` + o menu do DashDeck copiado | Juntar as secções novas ao config do DashDeck |
@@ -189,7 +189,7 @@ em pixel art com o `clockscene.py`), já no motor único.
 - **Memória do S3:** a RAM interna é muito justa. Medir com `deckctl.py send '{"t":"stats"}'` e
   depois `deckctl.py last stats`. Valor de referência: heap ~47 KB, maior bloco ~27 KB.
 - **AXP2101:** não mexer nas tensões. A corrente de carga é escolha do dono (botão em Config › Bateria).
-- **Bluetooth:** está fora do firmware (esgotava a RAM). O OTA por Wi-Fi existe mas fica para rever.
+- **Bluetooth:** removido do projeto a 27/11 (não é usado; já estava fora do firmware). O OTA por Wi-Fi existe mas fica para rever.
 - **Regras gerais:**
   - não pôr dados pessoais nos ficheiros (indicativo, utilizador, número de série); a exceção são os
     créditos do "Sobre", por decisão do dono;

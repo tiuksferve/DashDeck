@@ -438,7 +438,7 @@ esp_err_t bsp_display_new(const bsp_display_config_t *config, esp_lcd_panel_hand
     esp_lcd_panel_io_spi_config_t io_config = CO5300_PANEL_IO_QSPI_CONFIG(BSP_LCD_CS, NULL, NULL);
     io_config.trans_queue_depth = 3;
     // DashDeck³: DMA direto da PSRAM (os buffers do LVGL estão lá). Sem isto o driver SPI copia cada
-    // faixa (48 KB) para RAM interna a cada flush, e a RAM interna não chega com Wi-Fi + BLE.
+    // faixa (48 KB) para RAM interna a cada flush, e a RAM interna não chega com o Wi-Fi.
     // io_config.flags.psram_dma_direct = 1;   // testado: as transações SPI falham ("recycle spi transactions failed")
     co5300_vendor_config_t vendor_config = {
         .init_cmds = lcd_init_cmds,

@@ -276,13 +276,13 @@ IDLE_CHOICES = [(15, "15 s"), (30, "30 s"), (60, "1 min"), (120, "2 min"), (300,
 
 
 class ConfigProvider(DeckProvider):
-    """Box Config: ecrã e som, bateria, Wi-Fi, Bluetooth e o aparelho (estado + testes do hardware).
+    """Box Config: ecrã e som, bateria, Wi-Fi e o aparelho (estado + testes do hardware).
 
-    As definições do cubo (brilho, volume, Bluetooth, redes) ficam guardadas no próprio aparelho;
+    As definições do cubo (brilho, volume, redes) ficam guardadas no próprio aparelho;
     escurecer/apagar ficam no dashd (~/.config/dashd/deck3.json), por aparelho.
     """
 
-    PAGES = ["Ecrã e som", "Bateria", "Wi-Fi", "Bluetooth", "Aparelho", "Sensores"]
+    PAGES = ["Ecrã e som", "Bateria", "Wi-Fi", "Aparelho", "Sensores"]
 
     def __init__(self, node, app):
         super().__init__(node, app)
@@ -349,13 +349,10 @@ class ConfigProvider(DeckProvider):
                 self.session.send({"t": "toast", "text": f"Procura falhou: {msg['err']}", "level": "err"})
         elif msg.get("t") == "cfg" and msg.get("err") and self.session:
             self.session.send({"t": "toast", "text": msg["err"], "level": "err"})
-        elif msg.get("t") == "bt" and msg.get("err") and self.session:
-            self.session.send({"t": "toast", "text": f"Bluetooth: {msg['err']}", "level": "err"})
 
     def render(self, page: int = 0) -> dict:
         title = f"Config · {self.PAGES[page]}"
-        body = [self.page_display, self.page_battery, self.page_wifi, self.page_bt,
-                self.page_device, lambda: super(ConfigProvider, self).render(1)][page]()
+        body = [self.page_display, self.page_battery, self.page_wifi, self.page_device, lambda: super(ConfigProvider, self).render(1)][page]()
         return {"title": title, **body}
 
     # --- páginas
@@ -482,25 +479,6 @@ class ConfigProvider(DeckProvider):
                             {"id": "share", "label": "Copiar do uConsole", "color": "#2A323D",
                              "confirm": "Enviar para o DashDeck³ as redes Wi-Fi guardadas no uConsole (até 8)?"}]}
 
-    def page_bt(self) -> dict:
-        self.ask({"t": "bt?"}, 3)
-        b = self.last("bt")
-        if not b:
-            return {"tpl": "text", "text": "A ler o Bluetooth…"}
-        on = b.get("on")
-        rows = [["Estado", "ligado" if on else "desligado", "ok" if on else "sub"],
-                ["Nome", b.get("name", "")]]
-        if on:
-            rows += [["Endereço", b.get("addr", "") or "…"],
-                     ["Ligação", "telemóvel/PC ligado" if b.get("conn") else "à espera", "ok" if b.get("conn") else None],
-                     ["Serviços", "bateria, informação do aparelho"]]
-        if b.get("err"):
-            rows.append(["Erro", b["err"], "err"])
-        rows.append(["", "Ligado, o telemóvel ou o PC encontram o DashDeck³ e mostram a bateria dele. Gasta mais bateria."])
-        return {"tpl": "kv", "rows": rows,
-                "buttons": [{"id": "bt_off" if on else "bt_on", "label": "Desligar" if on else "Ligar",
-                             "color": "#2A323D" if on else None}]}
-
     def page_device(self) -> dict:
         body = super().render(0)
         self.ask({"t": "sd?"}, 30)
@@ -580,9 +558,6 @@ class ConfigProvider(DeckProvider):
                 n += 1
             self._asked.pop("cfg?", None)
             return f"{n} redes enviadas"
-        if btn_id in ("bt_on", "bt_off"):
-            s.send({"t": "bt", "on": btn_id == "bt_on"})
-            return "A ligar o Bluetooth…" if btn_id == "bt_on" else None
         if btn_id == "reboot":
             s.send({"t": "reboot"})
             return None

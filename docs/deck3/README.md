@@ -30,7 +30,7 @@ aparelho simulado. Nada foi ainda corrido no hardware: ver a lista de verificaç
 | Parte | Estado |
 |---|---|
 | Firmware: ecrã, toque, telas `menu` `list` `kv` `text`, botões, confirmações, avisos | compila |
-| Pixel art de 8 bits (arranque, avisos, "Sobre", fora de casa) | a funcionar no cubo |
+| Pixel art de 8 bits (arranque, avisos, "Sobre" com créditos, relógio, Pomodoro, fora de casa), telas inteiras em RGB565 desenhadas em segundo plano | a funcionar no cubo |
 | Wi-Fi (8 redes), mDNS, WebSocket com token, USB de reserva | compila |
 | Bateria/PWR (AXP2101), botões BOOT/IO18, IMU (face, agitar; girado à direita em pé abre o Pomodoro), som, microfone, OTA | compila |
 | deckd: navegação, providers Sistema e DashDeck³, botões configuráveis, OTA, deckctl | testado com o fakedeck |

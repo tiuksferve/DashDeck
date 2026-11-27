@@ -1,5 +1,6 @@
 // Imagens de fundo do dashd (ver bg.h).
 #include "bg.h"
+#include "anim.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -78,7 +79,9 @@ void bg_handle(const cJSON *msg)
         bgimg_t *slot = &s_slot[s_pend.bpp == 8 ? 1 : 0];
         uint8_t *old = slot->data;
         bsp_display_lock(0);   // o LVGL pode estar a desenhar com a anterior
+        anim_lock();           // e a tarefa dos quadros (ui.c) também
         *slot = s_pend;
+        anim_unlock();
         bsp_display_unlock();
         heap_caps_free(old);
         memset(&s_pend, 0, sizeof(s_pend));

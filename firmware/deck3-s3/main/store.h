@@ -1,5 +1,5 @@
 #pragma once
-// Definições do aparelho guardadas na NVS (namespace "deck3"): brilho, volume, Bluetooth...
+// Definições do aparelho guardadas na NVS (namespace "deck3"): brilho, volume, temporizador...
 // Ficam no cubo para valerem também sem o uConsole por perto.
 #include <stdint.h>
 

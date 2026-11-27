@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "main.c" "ui.c" "link.c" "net.c" "power.c" "keys.c" "imu.c" "audio.c" "ota.c" "store.c" "anim.c" "sd.c" "plot.c" "bg.c" "lv_mem_psram.c"
+    SRCS "main.c" "ui.c" "link.c" "net.c" "power.c" "keys.c" "imu.c" "audio.c" "ota.c" "store.c" "anim.c" "sd.c" "plot.c" "bg.c" "varanda.c" "lv_mem_psram.c"
          "fonts/deck_font_16.c" "fonts/deck_font_20.c" "fonts/deck_font_28.c" "fonts/deck_font_40.c"
     INCLUDE_DIRS "." "fonts"
     REQUIRES esp_driver_gpio esp_driver_i2c esp_driver_usb_serial_jtag esp_wifi esp_netif esp_event

@@ -30,11 +30,11 @@ tudo se faz aqui. A união com o DashDeck segue `docs/deck3/unificacao.md`.
 - **Exemplos da Waveshare** em `~/esp/ref/wsamoled216` (código descarregado: só ler, não compilar lá dentro).
 
 ## Estado no hardware (26/11/2026)
-- Placa a funcionar (firmware 0.6.0). Bluetooth **retirado** do build (o controlador BLE esgotava a RAM interna;
-  o código está em `main/ble.c`). O OTA por Wi-Fi funcionou com o 0.1/0.2, mas fica para rever (há rollback ativo).
+- Placa a funcionar (firmware 0.6.0). **Sem Bluetooth:** o projeto não o usa (código removido a 27/11; já estava
+  fora do build, porque o controlador BLE esgotava a RAM interna). Não voltar a ligar `CONFIG_BT_ENABLED`. O OTA por Wi-Fi funcionou com o 0.1/0.2, mas fica para rever (há rollback ativo).
 - BSP com correções locais em `components/waveshare__esp32_s3_touch_amoled_2_16/` (ver `DECK3.md` lá):
   o `bsp_display_lock()` original estava invertido (congelava o ecrã) e a faixa de desenho passou a 20 linhas.
-- Animações no estilo do DashDeck em `main/anim.c` (arranque, avisos, "Sobre").
+- Animações no estilo do DashDeck em `main/anim.c` (arranque, avisos, "Sobre", relógio, Pomodoro).
 - **UI (0.7.0, 27/11):** cabeçalho com o título numa linha ("Config · Ecrã e som" = título + subtítulo cinzento,
   `set_title`), a hora com o ponto da ligação e, por baixo, Wi-Fi e bateria; pontos das páginas desenhados em baixo.
   Ícones das boxes: o dashd desenha-os (emoji, tema, SVG; `host/icons.py lvgl_bin`) e grava-os no cartão
@@ -62,6 +62,38 @@ tudo se faz aqui. A união com o DashDeck segue `docs/deck3/unificacao.md`.
   giro a partir de em pé abre. 25/5/15 min, pausa longa a cada 4 focos; conta com o ecrã fechado
   (`pomo_check`) e avisa no fim de cada fase. Desenho em `anim_pomo_draw` (direito para quem olha) e rodado
   90° no `pomo_draw` (o topo de quem olha é o lado esquerdo do painel). BOOT curto = iniciar/pausar. Teste: `{"t":"pomo","show":true,"z":1,"left":5}`.
+- **Desempenho gráfico (0.13.0, 27/11):** medido com `{"t":"perf"}` (responde `fps`, `refr_ms`, `draw_ms`,
+  `wait_ms` desde o pedido anterior; o 1.º pedido só começa a contar). O LVGL leva ~45 ms a mandar um ecrã
+  inteiro ao painel (CPU, não o SPI: a 80 MHz ficava igual; `wait_ms` ≈ 0) e o refresco não é paralelo ao
+  desenho. Por isso: (1) as telas inteiras (arranque, relógio, Pomodoro, "Sobre") são canvas **RGB565** — o
+  `anim.c` escreve em RGB565 nos buffers registados com `anim_out16()` (o resto continua ARGB8888: `s_lo`,
+  avisos, ícones); (2) o arranque, o relógio e o "Sobre" desenham o quadro seguinte numa tarefa à parte
+  (`fr_task`, duplo buffer `fr_t`, `fr_step`/`fr_submit`) enquanto o LVGL manda o anterior; o `anim.c` tem um
+  trinco (`anim_lock`/`ANIM(...)`) porque o estado é partilhado com a tarefa do LVGL; (3) o "Sobre" e o Pomodoro
+  estão na camada de topo e a tela ativa passa a uma vazia enquanto estão abertos (`screen_cover`): o LVGL
+  redesenhava sempre a tela por baixo. As boxes já não têm animação de entrada (pesava). Resultado: "Sobre"
+  de 5,6 para ~16 qps; relógio de ~10 para 17–20. Faixas de 24 linhas davam +2 qps mas deixavam 11 KB de RAM
+  interna com o Wi-Fi: ficam 12. `{"t":"dbg"}` (sem o lock do LVGL) diz o estado dos quadros e quem tem o trinco.
+  O brilho só se muda na tarefa do LVGL (`bl_set` → `bl_apply_cb`): de outra tarefa, a meio de um envio ao
+  painel, o driver SPI dava "Cannot acquire bus when a polling transaction is in progress".
+- **"Sobre" (0.13.0):** hiperespaço do DashDeck (`aboutanim.c`) portado para 480×480 1:1 (`anim_about_*`): salto,
+  planeta com anéis, lua em órbita, nave, nome DASHDECK³ em pontilhado; créditos como no DashDeck (por CT7BRA,
+  endereço do projeto, versões do firmware e do host, linhas do `[about]`) numa faixa em baixo, depois do
+  salto, 7 s. Um toque fecha.
+- **Avisos (0.13.0):** sprites como os do DashDeck (`notify.c`), em blocos de 4 px montados numa grelha
+  (`sg_mail`, `sg_clock`, `sg_plane`): envelope verde com aba clara e selo, despertador, avião visto de cima.
+  Os blocos voam para o lugar; depois um brilho com a forma do sprite (`s_sglow`) pulsa por trás.
+- **Varanda do Romeu (0.13.0):** o cubo em pé girado 90° à esquerda (ax ≈ +9,6) abre a varanda (`varanda.c`,
+  `var_show` no ui.c); de volta ao normal, fecha. Cena pintada 480×480 com 256 cores e o Romeu em sprites, que o
+  dashd converte de `host/assets/varanda` (`host/varanda.py`) e envia para o cartão (`varanda/`, ~540 KB, uma vez
+  por versão: marca `v_<versão>.ok`). Dia, entardecer, noite e chuva são trocas de paleta (o fundo e os sprites);
+  nuvens, chuva, estrelas, aviões e barcos só no céu e no mar (máscara dos azuis da paleta). Desenho direito para
+  quem olha e rodado no `var_draw_fn` (o topo de quem olha é o lado direito do painel); toque: (y, W-1-x).
+  Comportamento e desenho na tarefa de quadros; os eventos entram por uma fila (`varanda_event`): toque, BOOT
+  (festas), batida na mesa e agitar (`imu.c`, `ui_imu_event`), palmas e barulho (nível local do microfone,
+  `audio_mic_local`), carregador, DMs (o `notify` sem `kind` vira o pombo), dados do dashd (`{"t":"varanda"}`).
+  Sem tarefas nem necessidades. Testes: `{"t":"varanda","show":true,"mode":"day","ev":"knock"}`. Falta: voz,
+  marcos com o tempo, afinar os limiares do microfone e o sentido da inclinação no cubo real.
 - **Mapas:** os tiles chegam por `bg` (`bg.c`, PSRAM) e o `plot.c` desenha-os por baixo. O dashd dá ao cubo uma
   área de 444×320 para o plot (cabe uma fila de botões por baixo).
 - **Captura do ecrã:** `host/deckctl.py shot [ficheiro.png]` (sem ficheiro: `~/Pictures/deck3-<data>.png`). Logo
@@ -70,6 +102,10 @@ tudo se faz aqui. A união com o DashDeck segue `docs/deck3/unificacao.md`.
   eventos de fora de casa (`log/pendentes.jsonl`). As escritas passam pela tarefa `sdw` (`sd_append`), com stack
   interno: tarefas com stack na PSRAM não escrevem no cartão diretamente. Enviar ficheiros:
   `deckctl.py put <local> <caminho>`.
+- **Gravar pela USB quando o `flash.sh` para** ("Connecting..." infinito ou "Packet content transfer stopped"
+  depois do stub; aconteceu a 27/11 depois de o cubo ser desligado e religado): gravar sem o stub, a partir da
+  pasta do build: `python -m esptool --chip esp32s3 -p /dev/ttyACM0 --no-stub write_flash @flash_args`
+  (mais lento, ~2 min). A OTA (`flash.sh ota`) não respondeu nesse dia.
 - Abrir a porta USB (monitor) reinicia o chip, mas nem sempre (a 27/11 não reiniciou). Pela USB o cubo também
   aceita mensagens JSON (manda `hello` com `"via":"usb"`); `{"t":"reboot"}` reinicia-o.
 - **Wi-Fi "zombie" (27/11):** o cubo ficou associado ao router (sinal verde, −50 dBm) mas sem tráfego: ligações

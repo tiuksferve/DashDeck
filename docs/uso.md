@@ -313,7 +313,7 @@ que arranca sozinho no boot):
 | meshtasticd, GPS mux, gpsd | `meshtasticd`, `meshdeck-gpsmux`, `gpsd` | Rádio LoRa e GPS |
 | DashDeck, CamDeck | `dashd`, `camd` (do utilizador) | Este ecrã (só **Reiniciar**, com confirmação) e o servidor da câmara |
 | SSH, VNC, Pi Connect | `ssh`, `wayvnc`, `rpi-connect` (do utilizador) | Acesso remoto |
-| Bluetooth, Modem 4G, Impressão | `bluetooth`, `ModemManager`, `cups` | Sistema |
+| Modem 4G, Impressão | `ModemManager`, `cups` | Sistema |
 | PostgreSQL, lighttpd | `postgresql`, `lighttpd` | Base de dados (Intercept) e servidor web (página do tar1090) |
 
 - O detalhe mostra a descrição, o estado, se arranca no boot, uma nota, desde quando, o PID e a memória, com **Ligar**, **Parar** (com confirmação) e **Reiniciar**, e **Auto no boot** / **Sem arranque** (com confirmação) para escolher se o serviço arranca sozinho.

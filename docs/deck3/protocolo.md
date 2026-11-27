@@ -32,10 +32,13 @@ funcionou → gateway da rede na porta 8765 (o uConsole em modo hotspot).
 | `bootanim` | — | Repete a sequência de arranque e volta à tela atual (testes e capturas) |
 | `pomo` | `show` (true/false), `z` (1 iniciar/pausar, 2 reiniciar, 3 pular), `left` (s) | Ecrã do Pomodoro sem girar o cubo (testes) |
 | `clkzone` | `v` (zona `CZ_*` de `anim.h`) | Simula um toque no temporizador ou no alarme do cubo (testes) |
+| `varanda` | `wx` (`rain` `storm` `snow` ou ""), `sun` ([nascer, pôr] em minutos), `planes` ([{`id`, `alt` m, `dist` km}]), `boats` ([{`name`, `dist` milhas}]), `reload` (imagens novas no cartão); testes: `show` (true/false), `mode` (`day` `dusk` `night` `storm` `auto`), `ev` (`knock` `shake` `clap` `noise` `charge` `pet`) | Varanda do Romeu (cubo em pé girado à esquerda). O dashd manda os dados a cada 8 s enquanto está aberta; o cubo avisa com `{"t":"varanda","open":"1"}` (`"need":"1"` se faltarem as imagens) e `"open":"0"` ao fechar |
+| `perf` | — | Desempenho do ecrã desde o pedido anterior: responde `{"t":"perf","fps","refr_ms","draw_ms","wait_ms","secs"}` (testes) |
+| `dbg` | — | Estado dos quadros desenhados em segundo plano e do trinco do `anim.c`; responde mesmo com o LVGL ocupado (diagnóstico) |
 | `shot` | | Captura do ecrã: o aparelho redesenha tudo e responde com `shotpx` (`x`, `y`, `w`, `h`, `d` = RGB565 em base64, por faixas) e `shotend` (`w`, `h`); o dashd monta o PNG (`deckctl.py shot [ficheiro]`) |
 | `notify` | `from`, `text`; `title`, `kind` (`alarm`, `squawk`), `sprite` (`mail` `clock` `plane`; sem ele, o do tipo), `dur` (s; sem ele, 6 a 20 s conforme o texto), `sound` (false = sem som) | Aviso por cima de tudo: sprite de 8 bits que cai e assenta e depois balança, abana ou pisca; som. Em fila: a seguinte só aparece quando a atual fecha. Um toque responde `{"t":"notify","act":"open"}` |
 | `time` | `epoch` (UTC), `tz` (regra POSIX, ex.: `WET0WEST,M3.5.0/1,M10.5.0`) | Acerta o relógio (há também SNTP quando há Internet) |
-| `bl` | `v` 2..100 | Brilho (fica guardado no aparelho) |
+| `bl` | `v` 0..100 | Brilho (fica guardado no aparelho); 0 desliga o ecrã até um toque, que o acende no brilho anterior e responde `{"t":"bl","v":n}` |
 | `idle` | `dim`, `off` (s; 0 = nunca) | Escurece e depois apaga sem toques. Um toque, um botão ou agitar acorda (esse toque não abre nada) |
 | `wake` | — | Acende o ecrã |
 | `beep` | `f` (Hz), `ms`, `vol` | Tom no altifalante |
@@ -43,10 +46,8 @@ funcionou → gateway da rede na porta 8765 (o uConsole em modo hotspot).
 | `vol` | `v` 0..100 | Volume (fica guardado no aparelho) |
 | `bat?` | `n` (pontos do histórico, 120) | Pede `bat` |
 | `bat_cfg` | `icc` (mA: 100, 200, 300, 400, 500) | Corrente de carga do AXP2101 (guardada; de fábrica 25 mA). Responde `bat` |
-| `bt` | `on` (bool) | Liga/desliga o Bluetooth LE (guardado). Responde `bt` |
-| `bt?` | — | Pede `bt` |
 | `reboot` | — | Reinicia o aparelho |
-| `about` | `lines` (créditos), `show` (abre já) | Linhas da cena "Sobre o DashDeck³" (toque no título da tela inicial). O deckd envia-as no `hello` a partir de `[about]` |
+| `about` | `lines` (créditos), `host` (versão do host: commit curto, "+" com alterações), `show` (abre já) | Cena "Sobre o DashDeck³" (toque no título da tela inicial): salto no hiperespaço até um planeta com anéis, com os créditos por cima (por CT7BRA, endereço do projeto, versões do firmware e do host e estas linhas), que aparecem depois do salto e somem ao fim de 7 s. O dashd envia-a no `hello` a partir de `[about]` |
 | `sd?` | — | Pede `sd` |
 | `ls` | `path` (relativo a `deck3/`) | Lista uma pasta do cartão; responde `ls` |
 | `file` | `path`, `data` (base64), `append` | Escreve no cartão (`deckctl.py put` parte os ficheiros em pedaços de 3 KB); responde `file` |
@@ -75,7 +76,7 @@ Resposta: `{"t":"cfg","ok":true,"nets":[...],"state":"...","ssid","ip","host","t
 
 | `tpl` | Dados |
 |---|---|
-| `menu` | `items`: `id`, `label`, `sub`, `color` (da placa de reserva), `img` (ícone do cartão: `icons/<id>.bin`, imagem do LVGL ARGB8888 84×84 que o dashd envia uma vez com `file` e o aparelho guarda na PSRAM; ou um PNG/JPG posto à mão; se o ficheiro não existir, usa o modelo), `icon` (nome do DashDeck → modelo), `color` (tinge a cor 1 do modelo), `badge`, `value`, `value_color`, `sub_color`, `dot`, `bg`, `confirm`. Boxes 140×164 em 3 colunas |
+| `menu` | `items`: `id`, `label`, `sub`, `color` (da placa de reserva), `img` (ícone do cartão: `icons/<id>.bin`, imagem do LVGL ARGB8888 84×84 que o dashd envia uma vez com `file` e o aparelho guarda na PSRAM; ou um PNG/JPG posto à mão; se o ficheiro não existir, usa o modelo), `icon` (nome do DashDeck: o dashd troca-o por um emoji ou, no `mail`, por um envelope de 8 bits na cor da box, `pix:mail:<cor>`), `color` (tinge a cor 1 do modelo), `badge` (selo vermelho no canto, texto ou número: ex. mensagens não lidas), `value`, `value_color`, `sub_color`, `dot`, `bg`, `confirm`. Boxes 140×164 em 3 colunas |
 | `list` | `items`: `id`, `label`, `sub`, `right`, `color`, `bg`, `confirm`; `empty` |
 | `kv` | `rows`: `[chave, valor, cor?]` (cor `#rrggbb`, `ok`, `warn`, `err`, `sub`, `accent`) |
 | `text` | `text` |
@@ -122,7 +123,6 @@ agitar) e `bat_low` que não tenham quem os ouça ficam no cartão e seguem no `
 | `bat` | `pct`, `mv`, `chg`, `usb`, `bat`, `stage`, `state` (texto), `vbus`, `vsys` (mV), `temp` (°C do PMU), `icc` (mA), `cv` (mV), `up` (s), `hist` `[[idade s, %, mV, flags], ...]` (1/min, até 12 h; flags: 1 a carregar, 2 USB) | Resposta a `bat?` |
 | `offline_log` | `events` (os eventos guardados, cada um com `ts`), `last` | Ao voltar a ligar: o que aconteceu fora de casa (lotes de 40). O deckd grava em `~/.local/state/deck3/eventos-<id>.jsonl` e não executa as ações |
 | `bat_low` | `pct` | A bateria desceu a 20%, 10% ou 5% sem carregar (o cubo também avisa com som) |
-| `bt` | `on`, `conn`, `name`, `addr`, `err` | Resposta a `bt`/`bt?` |
 | `sd` | `ok`, `name`, `total_mb`, `free_mb`, `mhz` · `err` | Resposta a `sd?` |
 | `ls` | `ok`, `path`, `items` `[[nome, bytes, pasta?], ...]` | Resposta a `ls` |
 | `file` / `rm` | `ok`, `path`, `size` · `err` | Respostas |

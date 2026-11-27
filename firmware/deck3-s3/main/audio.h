@@ -12,3 +12,5 @@ void audio_init(void);
 bool audio_handle(const cJSON *msg);   // true se a mensagem era de som
 void audio_tone(int freq, int ms, int vol);
 int audio_get_vol(void);
+void audio_mic_local(bool on);             // ler o microfone só para o cubo (varanda), sem enviar ao host
+float audio_mic_db(void);                  // último nível (dBFS); -120 sem leitura

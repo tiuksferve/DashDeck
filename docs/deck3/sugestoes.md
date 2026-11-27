@@ -43,7 +43,7 @@ dois microfones, IMU, três botões e forma de cubo. Ideias por ordem de valor/e
 
 | Tema | Ideia |
 |---|---|
-| **Primeira configuração sem USB** | Portal cativo: sem redes guardadas, o cubo cria o Wi-Fi "DashDeck3-XXXX" com uma página para escolher a rede (ou provisioning por BLE, que o S3 tem) |
+| **Primeira configuração sem USB** | Portal cativo: sem redes guardadas, o cubo cria o Wi-Fi "DashDeck3-XXXX" com uma página para escolher a rede |
 | **Wi-Fi partilhado** | O deckd envia ao cubo as redes que o uConsole conhece (já aceite pelo firmware: `wifi` pela rede) |
 | **Ícones e cenas no cartão SD** | Ícones e imagens guardados no SD do cubo, sem reenvio |
 | **Poupança de bateria** | Light sleep com o ecrã apagado, acordar por toque/IMU/botão; Wi-Fi em power save máximo quando ocioso; medir o consumo (o AXP2101 mede a corrente) |

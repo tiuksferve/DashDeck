@@ -56,6 +56,7 @@ static void imu_task(void *arg)
     const char *stable = NULL, *cand = NULL;
     int64_t cand_t = 0, last_stream = 0, last_shake = 0;
     int shake_hits = 0;
+    int64_t last_knock = 0, last_move = 0, quiet_from = 0, last_up = 0;
     int64_t shake_win = 0;
     while (true) {
         qmi8658_data_t d;
@@ -79,11 +80,28 @@ static void imu_task(void *arg)
             float gyro = fabsf(d.gyroX) + fabsf(d.gyroY) + fabsf(d.gyroZ);
             int o = upright_pose(d.accelX, d.accelY, d.accelZ, g, gyro);
             if (o != ori_cand) { ori_cand = o; ori_t = now; }
+            // em pé estável com o Pomodoro ou a varanda abertos (por exemplo, abertos sem passar por "em pé"): fecha
+            else if (o == ORI_UP && now - ori_t > 800 && ui_rotated_open() && now - last_up > 1500) {
+                last_up = now;
+                ui_orient(0);
+            }
             else if (o != ORI_NONE && o != ori && now - ori_t > 800) {
-                bool turn = (ori == ORI_UP && o == ORI_RIGHT) || o == ORI_UP;   // só o giro a partir de em pé abre
-                if (turn && (o == ORI_RIGHT || ori == ORI_RIGHT)) ui_orient(o == ORI_RIGHT);
+                // só o giro a partir de em pé abre: à direita o Pomodoro, à esquerda a varanda do Romeu
+                if (ori == ORI_UP && (o == ORI_RIGHT || o == ORI_LEFT)) ui_orient(o == ORI_RIGHT ? 1 : 2);
+                else if (o == ORI_UP && (ori == ORI_RIGHT || ori == ORI_LEFT)) ui_orient(0);
+                static const char *ON[] = {"none", "up", "left", "right"};
+                link_send_event("imu", "ori", ON[o], NULL, NULL);   // diagnóstico: a posição que o IMU viu
                 ori = o;
             }
+            // batida na mesa: um pico curto com o cubo parado antes (a varanda reage)
+            float dev = fabsf(g - 9.81f);
+            if (dev > 1.2f) last_move = now;
+            if (dev > 2.5f && dev < 14 && quiet_from && now - quiet_from > 400 && now - last_knock > 800 && gyro < 80) {
+                last_knock = now;
+                ui_imu_event(1);
+            }
+            if (dev < 0.6f && now - last_move > 400) quiet_from = quiet_from ? quiet_from : now;
+            else if (dev >= 0.6f) quiet_from = 0;
             // agitar: 4 picos acima de 2,2 g em menos de 800 ms
             if (g > 2.2f * 9.81f) {
                 if (now - shake_win > 800) { shake_win = now; shake_hits = 0; }
@@ -92,6 +110,7 @@ static void imu_task(void *arg)
                     shake_hits = 0;
                     ui_wake();
                     link_send_event("imu", "ev", "shake", NULL, NULL);
+                    ui_imu_event(2);
                 }
             }
             int hz = s_stream_hz;

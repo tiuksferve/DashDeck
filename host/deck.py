@@ -28,6 +28,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import icons
 import paths
+import varanda
 import ws
 from session import Session, SessionEvents
 
@@ -100,6 +101,10 @@ class Dev:
         self.icon_queue: list[tuple[str, str]] = []
         self.icon_failed: set[str] = set()
         self.icon_busy = False
+        # varanda do Romeu: imagens no cartão (varanda/), envio em curso, aberta no cubo
+        self.var_files: set[str] | None = None
+        self.var_busy = False
+        self.var_open = False
 
     def send(self, msg: dict) -> None:
         self.sess.link.send(msg)
@@ -114,8 +119,9 @@ class Dev:
 
 
 ICON_PX = 84   # tamanho dos ícones das boxes no cubo
-# ícones das boxes sem imagem no config (o DashDeck usa os símbolos do LVGL pelo "icon"; no cubo, um emoji)
-DECK_ICON = {"mail": "emoji:💬", "gps": "emoji:🛰️", "wifi": "emoji:📶", "list": "emoji:🗂️", "power": "emoji:🔧",
+# ícones das boxes sem imagem no config (o DashDeck usa os símbolos do LVGL pelo "icon"; no cubo, um emoji
+# ou pixel art na cor da box, "pix:")
+DECK_ICON = {"mail": "pix:mail", "gps": "emoji:🛰️", "wifi": "emoji:📶", "list": "emoji:🗂️", "power": "emoji:🔧",
              "settings": "emoji:🖥️", "bars": "emoji:📊", "folder": "emoji:📁", "bell": "emoji:🔔",
              "audio": "emoji:🔊", "image": "emoji:🖼️", "home": "emoji:🏠", "eye": "emoji:👁️"}
 
@@ -123,7 +129,7 @@ DECK_ICON = {"mail": "emoji:💬", "gps": "emoji:🛰️", "wifi": "emoji:📶",
 class DeckMixin:
     """O que é do DashDeck³ no motor. Cada método só muda o comportamento quando a sessão atual é a do cubo
     (self.session.kind == "deck3"); para o DashDeck passa ao motor (super())."""
-    DECK_MSGS = {"key", "imu", "mic", "bat", "bt", "wifi_scan", "bat_low", "offline_log", "cfg", "sd", "ls",
+    DECK_MSGS = {"key", "imu", "mic", "bat", "wifi_scan", "varanda", "bat_low", "offline_log", "cfg", "sd", "ls",
                  "file", "rm", "slider", "ota", "pong"}
 
     def __init__(self, cfg: dict):
@@ -154,7 +160,7 @@ class DeckMixin:
         self.tz = posix_tz()
         self.keys = {"boot_short": "back", "boot_long": "home", "user_short": "open:config", "pwr_short": "bl",
                      **cfg.get("keys", {})}
-        self.bl_levels = d.get("bl_levels", [20, 50, 80, 100])
+        self.bl_levels = d.get("bl_levels", [0, 25, 50, 75, 100])   # 0 = ecrã desligado (um toque acorda)
         self.fw_path: Path | None = None
         self._offline_n = 0
         self._bat_logged = 0.0
@@ -227,7 +233,10 @@ class DeckMixin:
 
     def item_view(self, it: dict) -> dict:
         if self.is_deck() and not it.get("img") and it.get("type") != "launch" and it.get("icon") in DECK_ICON:
-            it = {**it, "img": DECK_ICON[it["icon"]]}
+            img = DECK_ICON[it["icon"]]
+            if img.startswith("pix:"):   # pixel art na cor da box, como o símbolo do DashDeck
+                img += ":" + str(it.get("color") or "#67EA94")
+            it = {**it, "img": img}
         return super().item_view(it)
 
     # --- ícones das boxes: imagens do LVGL no cartão do cubo, enviadas uma vez (em segundo plano)
@@ -274,8 +283,57 @@ class DeckMixin:
         finally:
             dev.icon_busy = False
 
+    # --- varanda do Romeu: imagens para o cartão (uma vez por versão) e dados da vista enquanto está aberta
+    def _varanda_upload(self, sess: Session) -> None:
+        dev = sess.dev
+        if dev.var_busy or not dev.hello.get("sd"):
+            return
+        dev.var_busy = True
+
+        def work():
+            try:
+                ver, files = varanda.build()
+                t0 = time.monotonic()
+                for path, data in files.items():
+                    if not self._upload(sess.link, path, data):
+                        log.warning("varanda: %s não foi para o cartão do DashDeck³", path)
+                        return
+                self._upload(sess.link, "varanda/" + varanda.marker(), b"ok")
+                log.info("varanda: %d ficheiros enviados em %.0f s (versão %s)", len(files), time.monotonic() - t0, ver)
+                sess.link.send({"t": "varanda", "reload": True})
+            except Exception as e:
+                log.warning("varanda: envio falhou: %s", e)
+            finally:
+                dev.var_busy = False
+        self.run_bg(work)
+
+    def _varanda_view(self, sess: Session) -> None:
+        dev = sess.dev
+        if getattr(dev, "var_thread", False):
+            return
+        dev.var_thread = True
+
+        def loop():
+            try:
+                while dev.var_open:
+                    try:
+                        sess.link.send(varanda.view(self))
+                    except Exception as e:
+                        log.debug("varanda: vista: %s", e)
+                    time.sleep(varanda.VIEW_S)
+            finally:
+                dev.var_thread = False
+        self.run_bg(loop)
+
+    _upload_lock = threading.Lock()   # ícones e varanda partilham a fila de confirmações do link
+
     @staticmethod
     def _upload(link, path: str, data: bytes, chunk: int = 3072) -> bool:
+        with DeckMixin._upload_lock:
+            return DeckMixin._upload_nolock(link, path, data, chunk)
+
+    @staticmethod
+    def _upload_nolock(link, path: str, data: bytes, chunk: int = 3072) -> bool:
         while not link.acks.empty():
             link.acks.get_nowait()
         for off in range(0, len(data), chunk):
@@ -318,7 +376,8 @@ class DeckMixin:
             cur = dev.hello.get("bl", self.backlight)
             nxt = next((x for x in self.bl_levels if x > cur), self.bl_levels[0])
             dev.set_bl(nxt)
-            self.toast(f"Brilho {nxt}%", "info")
+            if nxt > 0:
+                self.toast(f"Brilho {nxt}%", "info")
         elif act.startswith("open:"):
             child = next((i for i in self.root.get("items", []) if i.get("id") == act[5:]), None)
             if child:
@@ -362,9 +421,26 @@ class DeckMixin:
                 self.link.send({"t": "idle", "dim": int(st.get("dim", self.cfg_deck.get("dim", 60))),
                                 "off": int(st.get("off", self.cfg_deck.get("off", 300)))})
                 ab = self.cfg.get("about", {})
-                self.link.send({"t": "about", "lines": ab.get("lines", [])})
+                from dashd import host_version
+                self.link.send({"t": "about", "lines": ab.get("lines", []), "host": host_version()})
                 self.link.send({"t": "bat?", "n": 2})
                 self.link.send({"t": "ls", "path": "icons"})   # ícones que o cartão já tem
+                self.link.send({"t": "ls", "path": "varanda"})   # imagens da varanda do Romeu
+            return
+        if t == "ls" and data.get("path") == "varanda":
+            dev.var_files = {n for n, _size, _d in data.get("items", [])} if data.get("ok") else set()
+            if varanda.marker() not in dev.var_files:
+                self._varanda_upload(self.session)
+            return
+        if t == "bl":   # o cubo acordou do 0% (toque): o ciclo do botão segue a partir deste brilho
+            dev.hello["bl"] = int(data.get("v", dev.hello.get("bl", 50)))
+            return
+        if t == "varanda":
+            dev.var_open = str(data.get("open")) == "1"
+            if dev.var_open and data.get("need"):
+                self._varanda_upload(self.session)
+            if dev.var_open:
+                self._varanda_view(self.session)
             return
         if t == "ls" and data.get("path") == "icons":
             dev.icons = {n[:-4] for n, _size, is_dir in data.get("items", []) if n.endswith(".bin") and not is_dir}

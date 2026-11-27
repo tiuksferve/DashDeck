@@ -2,7 +2,7 @@
 
 ## Hardware (Waveshare ESP32-S3-Touch-AMOLED-2.16)
 
-ESP32-S3R8 (240 MHz, 2 núcleos, FPU), 16 MB de flash, 8 MB de PSRAM octal, Wi-Fi 2,4 GHz e BLE.
+ESP32-S3R8 (240 MHz, 2 núcleos, FPU), 16 MB de flash, 8 MB de PSRAM octal, Wi-Fi 2,4 GHz (o chip tem BLE, mas o projeto não usa Bluetooth).
 Fontes: wiki `docs.waveshare.com/ESP32-S3-Touch-AMOLED-2.16`, BSP `waveshare/esp32_s3_touch_amoled_2_16`
 2.0.1 e o esquema em `~/esp/ref/wsamoled216/schematic/`.
 
