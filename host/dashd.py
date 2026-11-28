@@ -39,8 +39,8 @@ HERE = Path(__file__).resolve().parent
 # Exatamente o que está nas fontes (o • não está: vira ·; o hífen invisível U+00AD não tem desenho).
 _EXTRA = set("–—…€←↑→↓−≤≥")
 _CHAR_MAP = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"', "×": "x", "•": "·", "­": ""})
-# Emojis: cada sequência que o ESP já tem como imagem vai como o código privado dela (ver emojis.py).
-EMOJI = emojis.Registry()
+# Emojis: cada sequência que o ESP já tem como imagem vai como o código privado dela (ver emojis.py). Cada
+# ecrã tem o seu registo (Session.emoji): os códigos de um não valem no outro.
 
 
 def _glyph_ok(ch: str) -> bool:
@@ -68,13 +68,13 @@ def _plain(s: str) -> str:
     return "".join(out)
 
 
-def lcd_text(s: str) -> str:
+def lcd_text(s: str, reg: emojis.Registry | None = None) -> str:
     if all(_glyph_ok(c) for c in s):
         return s
     out = []
     for is_emoji, part in emojis.split(s, _in_font):
         if is_emoji:
-            cp = EMOJI.cp.get(part)
+            cp = reg.cp.get(part) if reg else None
             if cp:
                 out.append(chr(cp))   # sem imagem no ESP, o emoji é removido
         else:
@@ -98,13 +98,14 @@ def emoji_seqs(v, acc: list[str]) -> list[str]:
     return acc
 
 
-def lcd_safe(v):
+def lcd_safe(v, reg: emojis.Registry | None = None):
+    """Texto adaptado às fontes do ESP; os emojis que o ecrã já tem (reg) vão como o código privado."""
     if isinstance(v, str):
-        return lcd_text(v)
+        return lcd_text(v, reg)
     if isinstance(v, list):
-        return [lcd_safe(x) for x in v]
+        return [lcd_safe(x, reg) for x in v]
     if isinstance(v, dict):
-        return {k: lcd_safe(x) for k, x in v.items()}
+        return {k: lcd_safe(x, reg) for k, x in v.items()}
     return v
 
 
@@ -246,7 +247,9 @@ class Engine:
         d = self.cfg.get("dashd", {})
         if not d.get("serial", True):
             return NullLink()
-        return SerialLink(d.get("port", "/dev/esp-dash"), SessionEvents(self.events, self.session), prepare=lcd_safe)
+        sess = self.session
+        return SerialLink(d.get("port", "/dev/esp-dash"), SessionEvents(self.events, sess),
+                          prepare=lambda v: lcd_safe(v, sess.emoji))
 
     # ---- várias sessões
     def each_session(self, ready: bool = True):
@@ -389,16 +392,19 @@ class Engine:
     def send_emojis(self, scr: dict) -> None:
         """Envia (com confirmação) as imagens dos emojis desta tela que o ESP ainda não tem."""
         import base64
+        if not self.session.emojis:
+            return
+        reg = self.session.emoji
         seqs = emoji_seqs(scr, [])[:emojis.MAX]
         keep = set(seqs)
         for seq in seqs:
-            if seq in EMOJI.cp:
-                EMOJI.touch(seq)
+            if seq in reg.cp:
+                reg.touch(seq)
                 continue
-            img = emojis.rgb565a8(seq)
+            img = emojis.rgb565a8(seq, self.session.emoji_px)
             if not img:
                 continue
-            cp = EMOJI.slot_for(seq, keep)
+            cp = reg.slot_for(seq, keep)
             if cp < 0:
                 break
             w, h, data = img
@@ -408,7 +414,7 @@ class Engine:
             try:
                 ack = self.link.acks.get(timeout=1.5)
                 if ack.get("cp") == cp and ack.get("ok"):
-                    EMOJI.set(seq, cp)
+                    reg.set(seq, cp)
                     continue
             except queue.Empty:
                 pass
@@ -976,8 +982,7 @@ class Engine:
                 self.esp_sd = data.get("sd", -1) >= 0   # cartão SD no ESP (ícones guardados entre arranques)
                 self.bg_sent = None
                 self.icons_sent.clear()
-                if self.session.emojis:
-                    EMOJI.clear()
+                self.session.emoji.clear()   # o ESP reiniciou: não tem imagens
                 self.esp_ready = True
                 self.link.send({"t": "bl", "v": self.backlight})
                 self.link.send({"t": "about", "host": host_version()})   # para o "Sobre o DashDeck"
@@ -1027,7 +1032,7 @@ class Engine:
                 self.icons_sent.discard(data.get("id"))
             elif t == "iconsfreed":   # o relógio precisou da memória dos ícones
                 self.icons_sent.clear()
-                EMOJI.clear()
+                self.session.emoji.clear()
                 self.dock_lost = True
             elif t == "clock":   # gesto no relógio (mostrador ou brilho), já aplicado pelo ESP
                 cur = self.node()

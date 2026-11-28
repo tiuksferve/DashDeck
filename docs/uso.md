@@ -55,7 +55,7 @@ Precisa do MeshDeckWeb a correr, ligado ao nó e com `--local-api on` (ver [inst
 - **Mensagem direta:** no detalhe de um nó, o botão **Mensagem direta** abre as mesmas frases para esse nó (e, se tiver posição, **Seguir no mapa**).
 - **Aviso de mensagem direta:** quando chega uma mensagem direta (só as recebidas, não as de canal), aparece por cima de qualquer tela, também no relógio, uma animação: ondas de rádio fecham-se no centro, os pixels juntam-se num envelope verde que pulsa e o nome do remetente escreve-se por baixo. Depois sobe uma faixa com "Mensagem de …" e o texto. Se o ecrã estiver apagado ou o relógio escurecido, acende. Some ao fim de 5,5 s; um toque abre essa conversa e a mensagem, já com o **Responder**.
 - **Escrever:** o card "Escrever para …" no topo de cada conversa abre as frases para esse canal ou nó, mesmo sem responder a uma mensagem.
-- No menu principal, o box Meshtastic mostra "N ativos · M nós" e um **selo vermelho** com o número de mensagens não lidas.
+- No menu principal, o box MeshDeck (Meshtastic) mostra "N ativos · M nós" e um **selo vermelho** com o número de mensagens não lidas.
 - A contagem é a mesma do MeshDeckWeb: ler no navegador também apaga o selo.
 - Se o MeshDeckWeb estiver parado, a tela avisa e mostra um botão **Iniciar MeshDeckWeb**.
 

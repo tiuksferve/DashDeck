@@ -79,7 +79,11 @@ tudo se faz aqui. A união com o DashDeck segue `docs/deck3/unificacao.md`.
 - **"Sobre" (0.13.0):** hiperespaço do DashDeck (`aboutanim.c`) portado para 480×480 1:1 (`anim_about_*`): salto,
   planeta com anéis, lua em órbita, nave, nome DASHDECK³ em pontilhado; créditos como no DashDeck (por CT7BRA,
   endereço do projeto, versões do firmware e do host, linhas do `[about]`) numa faixa em baixo, depois do
-  salto, 7 s. Um toque fecha.
+  salto, 7 s. Um toque fecha. Desde 0.13.3 alterna com a aurora boreal do DashDeck, recomposta para o ecrã quadrado
+  (`about_aurora`, 240×240 ampliada 2x): céu alto com as cortinas a subir da serra até ao nome, picos com neve,
+  cabana na colina e o lago no terço de baixo, onde ficam os créditos. **O ecrã é 1:1: cenas do C6 (largas) não se
+  portam tal e qual, recompõem-se para o quadrado.** O `s_lo` é partilhado (arranque, relógio, "Sobre"): a serra da aurora
+  inicializa-se com marca própria em `lo_ensure()`.
 - **Avisos (0.13.0):** sprites como os do DashDeck (`notify.c`), em blocos de 4 px montados numa grelha
   (`sg_mail`, `sg_clock`, `sg_plane`): envelope verde com aba clara e selo, despertador, avião visto de cima.
   Os blocos voam para o lugar; depois um brilho com a forma do sprite (`s_sglow`) pulsa por trás.
@@ -96,6 +100,17 @@ tudo se faz aqui. A união com o DashDeck segue `docs/deck3/unificacao.md`.
   marcos com o tempo, afinar os limiares do microfone e o sentido da inclinação no cubo real.
 - **Mapas:** os tiles chegam por `bg` (`bg.c`, PSRAM) e o `plot.c` desenha-os por baixo. O dashd dá ao cubo uma
   área de 444×320 para o plot (cabe uma fila de botões por baixo).
+- **Câmara (box do CamDeck):** quadros `jpg` desenhados no canvas `live` do `plot.c` (buffer próprio, que fica entre
+  `update`s) com o TJpgDec **do LVGL** (`LV_USE_TJPGD`): tem os mesmos nomes do da ROM e é ele que o linker usa, por isso
+  o header é `src/libs/tjpgd/tjpgd.h` (sem redução de escala; entrega B, G, R). ~70 ms por quadro de 444×250.
+  Atenção: `/dev/ttyACM0` costuma ser a XIAO da câmara (o cubo é `/dev/deck3`); um esptool na porta errada deixa-a
+  sem resposta até `systemctl --user restart camd`.
+- **Emojis no texto:** como no C6 (imgfont no fallback das `deck_font_*`, imagens de 18 px na PSRAM). O registo de que
+  emojis cada ecrã tem é por sessão no dashd (`Session.emoji`): os códigos privados do C6 não valem no cubo.
+- **Teclado (`input`):** `lv_keyboard` com mapas PT próprios; o `lv_keyboard_def_event_cb` é trocado por `input_kb`
+  (tecla "áé" e ✓). Meshtastic: no cubo, "Escrever para" abre o teclado; o C6 fica com as respostas rápidas.
+- **OTA e RAM interna:** a tarefa do OTA precisa de 8 KB seguidos de RAM interna (escreve na flash, não pode ter a stack
+  na PSRAM). Com pouca RAM livre o OTA falha e o cubo responde `{"t":"ota","err":...}`; aí, gravar pela USB.
 - **Captura do ecrã:** `host/deckctl.py shot [ficheiro.png]` (sem ficheiro: `~/Pictures/deck3-<data>.png`). Logo
   depois de arrancar pode falhar (o LVGL está ocupado): repetir.
 - Cartão SD (SDMMC 1 bit) em `/sdcard/deck3/` (`main/sd.c`): imagens PNG/JPG em `icons/` e `scenes/` (no LVGL: `S:icons/x.png`), histórico da bateria (`log/bat.bin`) e

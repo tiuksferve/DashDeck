@@ -510,6 +510,8 @@ class GpsProvider(Provider):
         return "#3FB950" if snr >= 30 else ("#D29922" if snr >= 20 else "#F85149")
 
     def render_sky(self) -> dict:
+        if getattr(getattr(self.app, "session", None), "kind", "") == "deck3":
+            return self._render_sky_deck()
         W, H = self.app.canvas_area()
         S = min(W, H)
         c, R = S // 2, S // 2 - 3
@@ -541,6 +543,39 @@ class GpsProvider(Provider):
         if not plot["pts"]:
             plot["msg"] = "Nenhum satélite com sinal" if sky else "Nenhum satélite visível"
         out["rows"] = [[SYSTEMS.get(t, (t,))[0], f"{u}/{v} em uso"] for t, (u, v) in sorted(per.items())]
+        return out
+
+    def _render_sky_deck(self) -> dict:
+        """Céu no DashDeck³: o cubo desenha o disco ("sky") a partir de azimute, elevação e SNR; as constelações
+        ficam ao lado, numa coluna estreita."""
+        plot = {"w": 300, "h": 300, "sky": True, "sats": []}
+        out = {"tpl": "plot", "title": "GPS · Céu", "plot": plot}
+        if self.source() == "meshtastic":
+            plot["msg"] = "GPS do meshtasticd"
+            out["rows"] = [["Fonte", "Meshtastic"], ["Satélites", "sem dados", "sub"]]
+            return out
+        r = self._live()
+        if not r.alive():
+            plot["msg"] = "Sem NMEA"
+            out["rows"] = [["Fonte", self.tty]]
+            return out
+        sky = r.sky()
+        per: dict[str, list[int]] = {}
+        for talker, prn, d, used in sky:
+            cnt = per.setdefault(talker, [0, 0])
+            cnt[1] += 1
+            cnt[0] += used
+            if d["el"] is None or d["az"] is None or d["snr"] is None:
+                continue
+            letter = SYSTEMS.get(talker, (talker, "?"))[1]
+            plot["sats"].append([d["az"], d["el"], d["snr"], f"{letter}{prn}", 1 if used else 0])
+        if not plot["sats"]:
+            plot["msg"] = "Nenhum satélite com sinal" if sky else "Nenhum satélite visível"
+        used = sum(u for u, _ in per.values())
+        rows = [["Em uso", f"{used} de {len(sky)}", "ok" if used >= 4 else "warn" if used else "err"]]
+        for t, (u, v) in sorted(per.items()):
+            rows.append([SYSTEMS.get(t, (t,))[0], f"{u}/{v}"] + ([] if u else ["sub"]))
+        out["rows"] = rows
         return out
 
     def render(self, page: int = 0) -> dict:
@@ -691,7 +726,7 @@ class MeshtasticProvider(Provider):
 
     def render(self, page: int = 0) -> dict:
         d = self.br.dash()
-        title = f"Meshtastic · {self.PAGES[page]}"
+        title = f"{self.node.get('label', 'Meshtastic')} · {self.PAGES[page]}"
         if d is None or not d.get("connected"):
             return {"title": title, **self._offline(d)}
         out = [self._painel, self._nos, self._mensagens, lambda _d: self.map.render_map()][page](d)
@@ -793,7 +828,8 @@ class MeshtasticProvider(Provider):
         d = self.br.dash() or {}
         now = time.time()
         k = self._conv_key
-        items = [{"id": "write", "label": f"Escrever para {self._conv_name(d, k)}", "sub": "Respostas rápidas",
+        items = [{"id": "write", "label": f"Escrever para {self._conv_name(d, k)}",
+                  "sub": "Teclado" if self._deck() else "Respostas rápidas",
                   "right": "Escrever", "color": "#58A6FF", "bg": self.BG_DEST}]
         self._msgs = {}
         for i, m in enumerate([m for m in d.get("messages", []) if m["key"] == k]):
@@ -831,6 +867,12 @@ class MeshtasticProvider(Provider):
         return {"id": "mesh_reply", "label": "Responder" if about else "Nova mensagem", "dynamic": "reply",
                 "owner": self.node["id"], **self.render_detail("reply")}
 
+    MAX_BYTES = 200   # texto de uma mensagem (o Meshtastic aceita pouco mais de 200 bytes)
+
+    def _deck(self) -> bool:
+        """O ecrã atual é o DashDeck³ (tem teclado); o DashDeck (C6) fica com as respostas rápidas."""
+        return getattr(getattr(self.app, "session", None), "kind", "") == "deck3"
+
     def render_detail(self, kind: str) -> dict:
         """Telas de detalhe refeitas a cada atualização (conversa aberta; resposta, que muda com o destino)."""
         if kind == "conv":
@@ -839,6 +881,10 @@ class MeshtasticProvider(Provider):
         name = self._dest_name(d)
         kind_, v = self.dest
         about = getattr(self, "_reply_about", "")
+        if self._deck():   # teclado no cubo: o card do destino (toque para mudar) e a caixa de texto
+            return {"tpl": "input", "to": f"Para: {name}",
+                    "to_sub": ("Canal " + str(v) if kind_ == "ch" else "Mensagem direta") + (f" · {about}" if about else ""),
+                    "placeholder": "Escreva a mensagem", "max": self.MAX_BYTES}
         items = [{"id": "dest", "label": f"Para: {name}",
                   "sub": (f"Canal {v}" if kind_ == "ch" else "Mensagem direta") + (f" · {about}" if about else "")
                   + " · toque para mudar", "right": "Mudar", "color": "#58A6FF", "bg": self.BG_DEST}]
@@ -889,6 +935,18 @@ class MeshtasticProvider(Provider):
                 "owner": self.node["id"]}
 
     # ---- ações
+    def on_input(self, text: str):
+        """Texto escrito no teclado do cubo (✓): envia para o destino e volta à conversa."""
+        text = text.strip()
+        if not text:
+            return None
+        if len(text.encode()) > self.MAX_BYTES:
+            return (f"Mensagem longa demais ({len(text.encode())} de {self.MAX_BYTES} bytes)", "err")
+        res = self._send(text)
+        if res[1] == "ok":
+            return ("back", f"Enviada para {self._dest_name(self.br.dash() or {})}")
+        return res
+
     def _send(self, text: str):
         kind, v = self.dest
         ok, err = (self.br.send(text, channel=v) if kind == "ch" else self.br.send(text, dest=v))
@@ -3448,7 +3506,7 @@ class CameraProvider(Provider):
     VIDEO_SIZES = ["VGA", "SVGA", "XGA", "HD"]
     PHOTO_SIZES = ["HD", "UXGA", "QXGA"]
     CHUNK = 5400                 # bytes por linha (base64 ~7,2 KB; o ESP aceita linhas até 8 KB)
-    JPG_MAX = 24000              # o ESP guarda JPEG até 24 KB
+    JPG_MAX = 24000              # o C6 guarda JPEG até 24 KB (o DashDeck³ até 64 KB: 60 KB em _compose)
     REC = "#DA3633"
     P_VISOR, P_GALLERY, P_INFO = 0, 1, 2
 
@@ -3465,6 +3523,9 @@ class CameraProvider(Provider):
         self.dec_ms = 0
         self._font = None
         self._frame_n = -1
+        # ecrã que mostra a câmara: os providers são partilhados e app.session muda a cada evento, por isso as
+        # threads usam a sessão guardada no último render (não a "atual" do motor)
+        self._sess = None
         # galeria
         self._gl: tuple[float, list[dict]] = (0.0, [])
         self._gname = ""                                 # ficheiro mostrado
@@ -3506,6 +3567,7 @@ class CameraProvider(Provider):
 
     # ---- telas
     def _canvas(self, title: str) -> tuple[dict, dict, bool]:
+        self._sess = getattr(self.app, "session", None)
         W, H = self.app.canvas_area()
         portrait = W < H
         if portrait:
@@ -3707,7 +3769,7 @@ class CameraProvider(Provider):
                         play["frame"] = (n, buf[:end + 2])
                         buf = buf[end + 2:]
             except (camclient.CamError, OSError) as e:
-                self.app.toast(f"Vídeo falhou: {str(e)[:50]}", "err")
+                self._toast(f"Vídeo falhou: {str(e)[:50]}", "err")
             finally:
                 play["done"] = True
 
@@ -3742,8 +3804,8 @@ class CameraProvider(Provider):
 
     # ---- envio das imagens
     def _page_shown(self) -> int | None:
-        a = self.app
-        if not a.esp_ready or a.node().get("id") != self.node["id"]:
+        a = self._sess or self.app
+        if not a.esp_ready or not a.stack or a.stack[-1].get("id") != self.node["id"]:
             return None
         pg = a.page.get(self.node["id"], 0)
         return pg if pg in (self.P_VISOR, self.P_GALLERY) else None
@@ -3805,10 +3867,11 @@ class CameraProvider(Provider):
             img = img.resize((max(16, round(img.width * k)), max(16, round(img.height * k))), Image.BILINEAR)
         if deco:
             deco(ImageDraw.Draw(img), img.width, img.height)
+        jmax = 60000 if getattr(self._sess, "kind", "") == "deck3" else self.JPG_MAX
         for q in (self.quality, 50, 35):
             buf = io.BytesIO()
             img.save(buf, "JPEG", quality=q)
-            if buf.tell() <= self.JPG_MAX:
+            if buf.tell() <= jmax:
                 return buf.getvalue()
         return b""
 
@@ -3842,7 +3905,7 @@ class CameraProvider(Provider):
         d.text((x, y), text, font=self._font, fill=col)
 
     def _send(self, data: bytes) -> bool:
-        link, nid = self.app.link, self.node["id"]
+        link, nid = (self._sess or self.app).link, self.node["id"]
         q = link.jpg_acks
         while not q.empty():
             q.get_nowait()
@@ -3860,6 +3923,14 @@ class CameraProvider(Provider):
         self.dec_ms = int(ack.get("ms", 0))
         return bool(ack.get("ok"))
 
+    def _toast(self, text: str, level: str) -> None:
+        """Aviso a partir de uma thread: vai pela fila do motor, para o ecrã que mostra a câmara."""
+        ev = getattr(getattr(self._sess, "link", None), "events", None)
+        if ev is not None:
+            ev.put(("toast", (text, level)))
+        else:
+            self.app.events.put(("toast", (text, level)))
+
     # ---- botões
     def _snap(self) -> None:
         try:
@@ -3869,9 +3940,9 @@ class CameraProvider(Provider):
                 self._flash = (time.monotonic() + 1.5, self.cam.thumb("photos", r["name"]))
             except camclient.CamError:
                 pass
-            self.app.toast(f"Foto guardada ({r.get('bytes', 0) // 1024} KB)", "ok")
+            self._toast(f"Foto guardada ({r.get('bytes', 0) // 1024} KB)", "ok")
         except camclient.CamError as e:
-            self.app.toast(f"Foto falhou: {str(e)[:50]}", "err")
+            self._toast(f"Foto falhou: {str(e)[:50]}", "err")
         finally:
             self._busy = False
 
@@ -4039,7 +4110,7 @@ class StocksProvider(Provider):
                 it.update(label=name, value="—", value_color=self.FLAT, mark="", dot="",
                           sub="sem dados" if err else "a carregar...", sub_color=self.FLAT)
             items.append(it)
-        return {"tpl": "menu", "layout": "grid", "items": items}
+        return {"tpl": "menu", "layout": "grid", "items": items, "icon_size": 60}   # logotipos mais pequenos (cubo)
 
     def on_tap(self, item_id: str):
         if not item_id.startswith("q:"):

@@ -35,6 +35,8 @@
 #include "sd.h"
 #include "store.h"
 #include "varanda.h"
+#include "src/misc/cache/instance/lv_image_cache.h"   // lv_image_cache_drop (emojis)
+#include "src/misc/lv_text_private.h"                // lv_text_get_encoded_length (contador do teclado)
 
 static const char *TAG = "ui";
 
@@ -159,6 +161,77 @@ static uint32_t color_of(const char *s, uint32_t def)
     return def;
 }
 
+// ------------------------------------------------------------------------------------------ emojis
+// Como no DashDeck: o dashd troca cada emoji (ou sequência: bandeira, tom de pele, ZWJ) por um código privado
+// U+100000+i e envia antes a imagem ({"t":"emoji"}, RGB565A8). Uma imgfont do LVGL no fallback das fontes
+// deck_font_* desenha esses códigos com a imagem guardada aqui (PSRAM).
+#define EMOJI_MAX 48
+#define EMOJI_CP0 0x100000
+typedef struct {
+    uint32_t cp;
+    lv_image_dsc_t dsc;
+    uint8_t *data;
+} emoji_t;
+static emoji_t s_emoji[EMOJI_MAX];
+
+static const void *emoji_cb(const lv_font_t *font, uint32_t unicode, uint32_t next, int32_t *offset_y, void *ud)
+{
+    (void)font, (void)next;
+    if (unicode < EMOJI_CP0 || unicode >= EMOJI_CP0 + EMOJI_MAX) return NULL;
+    emoji_t *e = &s_emoji[unicode - EMOJI_CP0];
+    if (!e->data || e->cp != unicode) return NULL;
+    *offset_y = (int32_t)(intptr_t)ud;   // assenta na linha de base da fonte
+    return &e->dsc;
+}
+
+static void emoji_fonts_init(void)
+{
+    // a imagem tem 18 px; a deslocação acerta-a à linha de base de cada tamanho
+    static const struct { lv_font_t *f; int8_t dy; } fonts[] = {
+        {&deck_font_16, -3}, {&deck_font_20, -4}, {&deck_font_28, -5}, {&deck_font_40, -8}};
+    for (size_t i = 0; i < sizeof(fonts) / sizeof(fonts[0]); i++) {
+        lv_font_t *im = lv_imgfont_create(18, emoji_cb, (void *)(intptr_t)fonts[i].dy);
+        if (!im) continue;
+        im->fallback = fonts[i].f->fallback;   // depois dos emojis, os símbolos LV_SYMBOL_*
+        fonts[i].f->fallback = im;
+    }
+}
+
+// {"t":"emoji","cp":0x100000+i,"w","h","d":base64 RGB565A8} -> {"t":"emojiack","cp","ok"}. Com o lock do LVGL.
+static void handle_emoji(const cJSON *msg)
+{
+    int cp = jint(msg, "cp", 0), w = jint(msg, "w", 0), h = jint(msg, "h", 0);
+    bool ok = false;
+    if (cp >= EMOJI_CP0 && cp < EMOJI_CP0 + EMOJI_MAX && w > 0 && h > 0 && w <= 32 && h <= 32) {
+        size_t size = (size_t)w * h * 3, olen = 0;
+        uint8_t *buf = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+        const char *d = jstr(msg, "d") ? jstr(msg, "d") : "";
+        if (buf && mbedtls_base64_decode(buf, size, &olen, (const unsigned char *)d, strlen(d)) == 0 && olen == size) {
+            emoji_t *e = &s_emoji[cp - EMOJI_CP0];
+            if (e->data) {
+                lv_image_cache_drop(&e->dsc);
+                heap_caps_free(e->data);
+            }
+            memset(&e->dsc, 0, sizeof(e->dsc));
+            e->dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+            e->dsc.header.cf = LV_COLOR_FORMAT_RGB565A8;
+            e->dsc.header.w = w;
+            e->dsc.header.h = h;
+            e->dsc.header.stride = w * 2;
+            e->dsc.data_size = size;
+            e->dsc.data = buf;
+            e->data = buf;
+            e->cp = (uint32_t)cp;
+            ok = true;
+        } else {
+            heap_caps_free(buf);
+        }
+    }
+    char b[64];
+    snprintf(b, sizeof(b), "{\"t\":\"emojiack\",\"cp\":%d,\"ok\":%s}", cp, ok ? "true" : "false");
+    link_send_text(b);
+}
+
 static char *ref_add(char kind, const char *id)
 {
     if (s_nrefs >= MAX_REFS || !id) return NULL;
@@ -191,6 +264,7 @@ static void body_free(void)
 {
     for (int i = 0; i < s_nrefs; i++) free(s_refs[i]);
     s_nrefs = 0;
+    plot_detach();
     lv_obj_clean(s_body);   // os canvas saem antes dos buffers
     for (int i = 0; i < s_nbufs; i++) heap_caps_free(s_bufs[i]);
     s_nbufs = 0;
@@ -989,8 +1063,29 @@ static void intro_start(const char *tpl, int slide_dir)
 // cores das placas de reserva quando o item não diz a sua (ciano, violeta, rosa, laranja, verde, âmbar)
 static const uint32_t PAL_BADGE[6] = {0x2DB8E0, 0x7C6BFF, 0xE8508F, 0xF07A3A, 0x3FBF6A, 0xE0A020};
 
+// seta da variação (Stocks: "mark" up/down) num canvas pequeno: triângulo cheio
+static void mark_arrow(lv_obj_t *parent, bool up, uint32_t col)
+{
+    enum { MW = 22, MH = 16 };
+    uint32_t *px = buf_add(MW * MH * 4);
+    if (!px) return;
+    for (int y = 0; y < MH; y++) {
+        int r = up ? y : MH - 1 - y;          // linha a contar da ponta
+        int half = (r * (MW / 2)) / (MH - 1);
+        for (int x = 0; x < MW; x++)
+            px[y * MW + x] = (x >= MW / 2 - 1 - half && x <= MW / 2 + half) ? (0xFF000000u | col) : 0;
+    }
+    lv_obj_t *cv = lv_canvas_create(parent);
+    lv_canvas_set_buffer(cv, px, MW, MH, LV_COLOR_FORMAT_ARGB8888);
+    lv_obj_align(cv, LV_ALIGN_TOP_LEFT, 12, 12);
+    lv_obj_remove_flag(cv, LV_OBJ_FLAG_CLICKABLE);
+}
+
 static void build_menu(const cJSON *scr)
 {
+    // "icon_size": ícones mais pequenos numa tela (ex.: logotipos das Stocks); centrados no mesmo lugar
+    int isz = jint(scr, "icon_size", 84);
+    if (isz < 24 || isz > 84) isz = 84;
     lv_obj_set_flex_flow(s_body, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_flex_align(s_body, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     const cJSON *it;
@@ -1022,12 +1117,12 @@ static void build_menu(const cJSON *scr)
             cv = lv_image_create(t);
             if (ic) lv_image_set_src(cv, ic);
             else lv_image_set_src(cv, src);
-            lv_obj_set_size(cv, 84, 84);
+            lv_obj_set_size(cv, isz, isz);
             lv_image_set_inner_align(cv, LV_IMAGE_ALIGN_CONTAIN);
         } else {
-            cv = badge_icon(t, jstr(it, "label"), tint, 84);
+            cv = badge_icon(t, jstr(it, "label"), tint, isz);
         }
-        lv_obj_align(cv, LV_ALIGN_TOP_MID, 0, 8);
+        lv_obj_align(cv, LV_ALIGN_TOP_MID, 0, 8 + (84 - isz) / 2);
         lv_obj_remove_flag(cv, LV_OBJ_FLAG_CLICKABLE);
         const char *val = jstr(it, "value");
         lv_obj_t *l = label(t, jstr(it, "label"), &deck_font_20, C_TEXT);
@@ -1067,8 +1162,11 @@ static void build_menu(const cJSON *scr)
             lv_obj_t *bl = label(b, btxt, &deck_font_16, 0xFFFFFF);
             lv_obj_center(bl);
         }
+        const char *mark = jstr(it, "mark");
+        if (mark && (!strcmp(mark, "up") || !strcmp(mark, "down")))
+            mark_arrow(t, mark[0] == 'u', color_of(jstr(it, "mark_color"), mark[0] == 'u' ? C_OK : C_ERR));
         const char *dot = jstr(it, "dot");
-        if (dot) {
+        if (dot && *dot) {
             lv_obj_t *d = box(t, color_of(dot, C_OK), LV_RADIUS_CIRCLE);
             lv_obj_set_size(d, 12, 12);
             lv_obj_align(d, LV_ALIGN_TOP_RIGHT, -12, 12);
@@ -1187,12 +1285,181 @@ static void build_plot(const cJSON *scr)
     const cJSON *p = cJSON_GetObjectItem(scr, "plot");
     int32_t pw = cJSON_IsNumber(cJSON_GetObjectItem(p, "w")) ? cJSON_GetObjectItem(p, "w")->valueint : 160;
     int32_t rest = 444 - pw - 10;
-    bool beside = rest >= 150 && cJSON_GetArraySize(cJSON_GetObjectItem(scr, "rows")) > 0;
+    bool beside = rest >= 130 && cJSON_GetArraySize(cJSON_GetObjectItem(scr, "rows")) > 0;
     lv_obj_set_flex_flow(s_body, beside ? LV_FLEX_FLOW_ROW : LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_gap(s_body, 10, 0);
     plot_create(s_body, p, &env);
     if (beside) build_kv_in(s_body, scr, rest);
     else build_kv_in(s_body, scr, lv_pct(100));
+}
+
+
+// ---- "input": escrever texto com o teclado (Meshtastic). "to"/"to_sub": card do destino (toque: tap "dest");
+// "placeholder", "max" (caracteres), "text". Enviar (✓) manda {"t":"input","id","text"}. O texto escrito fica
+// num rascunho da tela: sobrevive a um update, ao seletor do destino e ao voltar.
+#define INPUT_MAX 240
+static lv_obj_t *s_in_ta, *s_in_cnt, *s_in_kb;
+static char s_draft_id[48];
+static char s_draft[INPUT_MAX * 4 + 1];   // UTF-8
+static int s_in_max = 200;
+
+#define KB_ACC "áé"
+static const char *const KB_LOWER[] = {
+    "q", "w", "e", "r", "t", "y", "u", "i", "o", "p", "\n",
+    "a", "s", "d", "f", "g", "h", "j", "k", "l", "ç", "\n",
+    "ABC", "z", "x", "c", "v", "b", "n", "m", LV_SYMBOL_BACKSPACE, "\n",
+    "1#", KB_ACC, ",", " ", ".", LV_SYMBOL_OK, ""};
+static const char *const KB_UPPER[] = {
+    "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "\n",
+    "A", "S", "D", "F", "G", "H", "J", "K", "L", "Ç", "\n",
+    "abc", "Z", "X", "C", "V", "B", "N", "M", LV_SYMBOL_BACKSPACE, "\n",
+    "1#", KB_ACC, ",", " ", ".", LV_SYMBOL_OK, ""};
+static const char *const KB_SPECIAL[] = {
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "\n",
+    "@", "#", "€", "%", "&", "-", "+", "(", ")", "/", "\n",
+    "abc", "!", "?", ":", ";", "'", "\"", "*", LV_SYMBOL_BACKSPACE, "\n",
+    "abc", KB_ACC, ",", " ", ".", LV_SYMBOL_OK, ""};
+static const char *const KB_ACCENT[] = {
+    "á", "à", "â", "ã", "é", "ê", "í", "ó", "ô", "õ", "\n",
+    "ú", "ü", "Á", "À", "Â", "Ã", "É", "Ê", "Í", "Ó", "\n",
+    "abc", "Ô", "Õ", "Ú", "ª", "º", "¿", "¡", LV_SYMBOL_BACKSPACE, "\n",
+    "1#", "abc", ",", " ", ".", LV_SYMBOL_OK, ""};
+#define KB_K  (LV_BUTTONMATRIX_CTRL_NO_REPEAT | LV_BUTTONMATRIX_CTRL_CLICK_TRIG)
+#define KB_M  (KB_K | LV_BUTTONMATRIX_CTRL_CHECKED | 3)   // teclas de modo (mais largas e a outra cor)
+#define KB_M5 (KB_K | LV_BUTTONMATRIX_CTRL_CHECKED | 5)   // "ABC" e ⌫ na 3.ª fila (cabem o texto)
+#define KB_BS (LV_BUTTONMATRIX_CTRL_CHECKED | 5)
+static const lv_buttonmatrix_ctrl_t KB_CTRL_ABC[] = {
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    KB_M5, 4, 4, 4, 4, 4, 4, 4, KB_BS,
+    KB_M, KB_M, 2, 6 | KB_K, 2, KB_M};
+static const lv_buttonmatrix_ctrl_t KB_CTRL_SPEC[] = {
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    KB_M5, 4, 4, 4, 4, 4, 4, 4, KB_BS,
+    KB_M, KB_M, 2, 6 | KB_K, 2, KB_M};
+
+static void input_count(void)
+{
+    if (!s_in_ta || !s_in_cnt) return;
+    const char *t = lv_textarea_get_text(s_in_ta);
+    lv_label_set_text_fmt(s_in_cnt, "%d/%d", (int)lv_text_get_encoded_length(t), s_in_max);
+}
+
+static void input_changed(lv_event_t *e)
+{
+    (void)e;
+    if (!s_in_ta) return;
+    strlcpy(s_draft, lv_textarea_get_text(s_in_ta), sizeof(s_draft));
+    strlcpy(s_draft_id, s_id, sizeof(s_draft_id));
+    input_count();
+}
+
+static void input_kb(lv_event_t *e)
+{
+    lv_obj_t *kb = lv_event_get_target(e);
+    uint32_t b = lv_buttonmatrix_get_selected_button(kb);
+    const char *txt = b == LV_BUTTONMATRIX_BUTTON_NONE ? NULL : lv_buttonmatrix_get_button_text(kb, b);
+    if (txt && !strcmp(txt, KB_ACC)) {
+        lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_USER_1);
+        return;
+    }
+    if (txt && !strcmp(txt, LV_SYMBOL_OK)) {
+        const char *t = s_in_ta ? lv_textarea_get_text(s_in_ta) : "";
+        if (!t[0]) return;
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddStringToObject(o, "t", "input");
+        cJSON_AddStringToObject(o, "id", s_id);
+        cJSON_AddStringToObject(o, "text", t);
+        link_send(o);
+        cJSON_Delete(o);
+        s_draft[0] = '\0';   // enviado: a próxima mensagem começa vazia (o texto fica à vista até o dashd responder)
+        s_draft_id[0] = '\0';
+        return;
+    }
+    lv_keyboard_def_event_cb(e);
+    if (lv_keyboard_get_mode(kb) == LV_KEYBOARD_MODE_TEXT_UPPER && txt && strlen(txt) == 1 && txt[0] >= 'A' && txt[0] <= 'Z')
+        lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_TEXT_LOWER);   // maiúscula só para uma letra (como nos telemóveis)
+}
+
+static void build_input(const cJSON *scr)
+{
+    lv_obj_set_style_pad_gap(s_body, 8, 0);
+    lv_obj_set_style_pad_bottom(s_body, 6, 0);
+    lv_obj_remove_flag(s_body, LV_OBJ_FLAG_SCROLLABLE);
+    const cJSON *jm = cJSON_GetObjectItem(scr, "max");
+    s_in_max = cJSON_IsNumber(jm) && jm->valueint > 0 && jm->valueint <= INPUT_MAX ? jm->valueint : 200;
+    if (jstr(scr, "to")) {   // destino: toque para mudar
+        lv_obj_t *c = box(s_body, C_CARD, 16);
+        lv_obj_set_style_bg_color(c, lv_color_hex(0x172638), 0);
+        lv_obj_set_size(c, lv_pct(100), 52);
+        lv_obj_set_style_pad_hor(c, 14, 0);
+        make_clickable(c, 'i', "dest", NULL);
+        lv_obj_t *l = label(c, jstr(scr, "to"), &deck_font_20, C_TEXT);
+        lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
+        lv_obj_set_width(l, 300);
+        lv_obj_align(l, LV_ALIGN_LEFT_MID, 0, jstr(scr, "to_sub") ? -9 : 0);
+        if (jstr(scr, "to_sub")) {
+            lv_obj_t *s2 = label(c, jstr(scr, "to_sub"), &deck_font_16, C_SUB);
+            lv_label_set_long_mode(s2, LV_LABEL_LONG_DOT);
+            lv_obj_set_width(s2, 300);
+            lv_obj_align(s2, LV_ALIGN_LEFT_MID, 0, 12);
+        }
+        lv_obj_t *m = label(c, "Mudar", &deck_font_20, 0x58A6FF);
+        lv_obj_align(m, LV_ALIGN_RIGHT_MID, 0, 0);
+    }
+    lv_obj_t *wrap = box(s_body, C_CARD, 16);
+    lv_obj_set_size(wrap, lv_pct(100), 88);
+    lv_obj_remove_flag(wrap, LV_OBJ_FLAG_SCROLLABLE);
+    s_in_ta = lv_textarea_create(wrap);
+    lv_obj_set_size(s_in_ta, lv_pct(100), 88);
+    lv_obj_set_style_bg_opa(s_in_ta, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_in_ta, 0, 0);
+    lv_obj_set_style_pad_all(s_in_ta, 10, 0);
+    lv_obj_set_style_pad_bottom(s_in_ta, 22, 0);
+    lv_obj_set_style_text_font(s_in_ta, &deck_font_20, 0);
+    lv_obj_set_style_text_color(s_in_ta, lv_color_hex(C_TEXT), 0);
+    lv_obj_set_style_text_color(s_in_ta, lv_color_hex(C_SUB), LV_PART_TEXTAREA_PLACEHOLDER);
+    lv_obj_set_style_bg_color(s_in_ta, lv_color_hex(C_ACCENT), LV_PART_CURSOR);
+    lv_obj_set_style_border_color(s_in_ta, lv_color_hex(C_ACCENT), LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_textarea_set_max_length(s_in_ta, s_in_max);
+    lv_textarea_set_placeholder_text(s_in_ta, jstr(scr, "placeholder") ? jstr(scr, "placeholder") : "Mensagem");
+    const char *init = !strcmp(s_draft_id, s_id) ? s_draft : (jstr(scr, "text") ? jstr(scr, "text") : "");
+    lv_textarea_set_text(s_in_ta, init);
+    lv_obj_add_state(s_in_ta, LV_STATE_FOCUSED);   // cursor à vista
+    lv_obj_add_event_cb(s_in_ta, input_changed, LV_EVENT_VALUE_CHANGED, NULL);
+    s_in_cnt = label(wrap, "", &deck_font_16, C_SUB);
+    lv_obj_align(s_in_cnt, LV_ALIGN_BOTTOM_RIGHT, -10, -4);
+    input_count();
+
+    s_in_kb = lv_keyboard_create(s_body);
+    lv_obj_set_size(s_in_kb, lv_pct(100), LV_PCT(100));
+    lv_obj_set_flex_grow(s_in_kb, 1);
+    lv_keyboard_set_map(s_in_kb, LV_KEYBOARD_MODE_TEXT_LOWER, (const char **)KB_LOWER, KB_CTRL_ABC);
+    lv_keyboard_set_map(s_in_kb, LV_KEYBOARD_MODE_TEXT_UPPER, (const char **)KB_UPPER, KB_CTRL_ABC);
+    lv_keyboard_set_map(s_in_kb, LV_KEYBOARD_MODE_SPECIAL, (const char **)KB_SPECIAL, KB_CTRL_SPEC);
+    lv_keyboard_set_map(s_in_kb, LV_KEYBOARD_MODE_USER_1, (const char **)KB_ACCENT, KB_CTRL_SPEC);
+    lv_keyboard_set_mode(s_in_kb, LV_KEYBOARD_MODE_TEXT_LOWER);
+    lv_keyboard_set_popovers(s_in_kb, false);
+    lv_keyboard_set_textarea(s_in_kb, s_in_ta);
+    lv_obj_remove_event_cb(s_in_kb, lv_keyboard_def_event_cb);
+    lv_obj_add_event_cb(s_in_kb, input_kb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_flag(s_in_kb, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_set_style_bg_color(s_in_kb, lv_color_hex(C_BG), 0);
+    lv_obj_set_style_bg_opa(s_in_kb, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_in_kb, 0, 0);
+    lv_obj_set_style_pad_all(s_in_kb, 0, 0);
+    lv_obj_set_style_pad_gap(s_in_kb, 5, 0);
+    lv_obj_set_style_bg_color(s_in_kb, lv_color_hex(0x1F2833), LV_PART_ITEMS);
+    lv_obj_set_style_bg_opa(s_in_kb, LV_OPA_COVER, LV_PART_ITEMS);
+    lv_obj_set_style_bg_color(s_in_kb, lv_color_hex(0x2A3442), LV_PART_ITEMS | LV_STATE_CHECKED);
+    lv_obj_set_style_bg_color(s_in_kb, lv_color_hex(C_ACCENT), LV_PART_ITEMS | LV_STATE_PRESSED);
+    lv_obj_set_style_text_color(s_in_kb, lv_color_hex(C_TEXT), LV_PART_ITEMS);
+    lv_obj_set_style_text_color(s_in_kb, lv_color_hex(C_TEXT), LV_PART_ITEMS | LV_STATE_CHECKED);
+    lv_obj_set_style_text_font(s_in_kb, &deck_font_20, LV_PART_ITEMS);
+    lv_obj_set_style_radius(s_in_kb, 8, LV_PART_ITEMS);
+    lv_obj_set_style_border_width(s_in_kb, 0, LV_PART_ITEMS);
+    lv_obj_set_style_shadow_width(s_in_kb, 0, LV_PART_ITEMS);
 }
 
 // ---- "log": linhas de texto (as mais recentes em baixo); num update, "append" acrescenta
@@ -1462,6 +1729,9 @@ static void build_image(const cJSON *scr)
 static void build_body(const cJSON *scr)
 {
     body_free();
+    s_in_ta = s_in_cnt = s_in_kb = NULL;
+    lv_obj_set_style_pad_bottom(s_body, 28, 0);   // o "input" ocupa o fundo todo
+    lv_obj_add_flag(s_body, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(s_body, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_gap(s_body, 12, 0);
     const char *tpl = jstr(scr, "tpl");
@@ -1469,11 +1739,13 @@ static void build_body(const cJSON *scr)
     build_sliders(scr);   // extras de qualquer template: sliders e gráficos antes do corpo
     build_charts(scr);
     if (strcmp(tpl, "clock") != 0) clock_hide();
+    if (strcmp(tpl, "plot") != 0) plot_release();   // o buffer da câmara só vive nas telas "plot"
     if (!strcmp(tpl, "panel")) { /* só os extras */ }
     else if (!strcmp(tpl, "clock")) clock_apply(scr);
     else if (!strcmp(tpl, "menu")) build_menu(scr);
     else if (!strcmp(tpl, "image")) build_image(scr);
     else if (!strcmp(tpl, "plot")) build_plot(scr);
+    else if (!strcmp(tpl, "input")) build_input(scr);
     else if (!strcmp(tpl, "log")) build_log(scr);
     else if (!strcmp(tpl, "list")) build_list(scr);
     else if (!strcmp(tpl, "kv")) build_kv(scr);
@@ -1518,6 +1790,7 @@ static void apply_screen(bool fresh)
 
 static void show_screen(const cJSON *msg)
 {
+    plot_live_forget();   // tela nova (ou outra página): a imagem antiga da câmara não fica
     cJSON_Delete(s_screen);
     s_screen = cJSON_Duplicate(msg, true);
     if (s_boot_cv) {   // ecrã de arranque: a tela entra quando a sequência acabar
@@ -2342,8 +2615,8 @@ bool ui_pomo_key(int key, int ev)
 }
 
 // ------------------------------------------------------------------------------------ "Sobre"
-// Hiperespaço (anim.c) com os créditos numa faixa escura em baixo, como no DashDeck: aparecem depois do salto
-// e somem ao fim de 7 s. Um toque fecha (se a cena não o usar); fecha sozinha ao fim de ABOUT_SECS.
+// Aurora boreal ou hiperespaço (anim.c, alternam a cada toque no nome) com os créditos numa faixa escura em
+// baixo, como no DashDeck: aparecem depois do nome (aurora) ou do salto, e somem ao fim de 7 s. Um toque fecha (se a cena não o usar); fecha sozinha ao fim de ABOUT_SECS.
 #define ABOUT_SECS 45
 #define ABOUT_CREDITS_S 7.0f
 static fr_t s_about_fr;
@@ -2417,7 +2690,8 @@ static void about_show(void)
     lv_obj_add_flag(s_about, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_flag(s_about, LV_OBJ_FLAG_GESTURE_BUBBLE);
     lv_obj_add_event_cb(s_about, about_tap, LV_EVENT_PRESSED, NULL);
-    ANIM(anim_about_start(W, H));
+    static int about_n;   // cada toque no nome mostra a outra cena (aurora, hiperespaço, ...)
+    ANIM(anim_about_start(about_n++ & 1, W, H));
     if (!fr_open(&s_about_fr, s_about, W, H, about_draw_fn)) {
         lv_obj_delete(s_about);
         s_about = NULL;
@@ -2444,7 +2718,7 @@ static void about_show(void)
         if (cJSON_IsString(ln)) label(s_about_txt, ln->valuestring, &deck_font_16, 0x8A94A8);
     }
     lv_obj_align(s_about_txt, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_obj_add_flag(s_about_txt, LV_OBJ_FLAG_HIDDEN);   // só depois do salto
+    lv_obj_add_flag(s_about_txt, LV_OBJ_FLAG_HIDDEN);   // só depois do nome ou do salto
     s_about_t0 = esp_timer_get_time();
     s_about_until = ABOUT_SECS;
     s_about_cred = anim_about_credits_at();
@@ -2606,6 +2880,64 @@ static void send_stats(void)
     cJSON_Delete(o);
 }
 
+// ---------------------------------------------------------------------------- JPEG (câmara)
+// {"t":"jpg","id":tela,"off":n,"size":total,"d":"base64","last":bool}: o dashd envia um JPEG do tamanho do
+// canvas do plot "live" em pedaços; no último, é desenhado (plot_jpg) e o cubo responde
+// {"t":"jpgack","ok":bool,"ms":tempo}. O dashd só envia o quadro seguinte depois da resposta.
+#define JPG_MAX (64 * 1024)
+static uint8_t *s_jpg;          // JPEG a receber (PSRAM; os pedaços chegam na tarefa do link)
+static size_t s_jpg_len, s_jpg_cap, s_jpg_pos;
+
+static void jpg_ack(bool ok, int ms)
+{
+    char b[64];
+    snprintf(b, sizeof(b), "{\"t\":\"jpgack\",\"ok\":%s,\"ms\":%d}", ok ? "true" : "false", ms);
+    link_send_text(b);
+}
+
+static void handle_jpg(const cJSON *msg)
+{
+    const cJSON *jo = cJSON_GetObjectItem(msg, "off"), *js = cJSON_GetObjectItem(msg, "size");
+    int32_t off = cJSON_IsNumber(jo) ? (int32_t)jo->valuedouble : 0;
+    if (off == 0) {
+        int32_t size = cJSON_IsNumber(js) ? (int32_t)js->valuedouble : 0;
+        if (size <= 0 || size > JPG_MAX) {
+            jpg_ack(false, 0);
+            return;
+        }
+        if ((size_t)size > s_jpg_cap) {
+            heap_caps_free(s_jpg);
+            s_jpg = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+            s_jpg_cap = s_jpg ? (size_t)size : 0;
+            if (!s_jpg) {
+                jpg_ack(false, 0);
+                return;
+            }
+        }
+        s_jpg_len = size;
+        s_jpg_pos = 0;
+    }
+    const char *d = jstr(msg, "d") ? jstr(msg, "d") : "";
+    size_t olen = 0;
+    if (!s_jpg || off < 0 || (size_t)off != s_jpg_pos || (size_t)off >= s_jpg_len ||
+        mbedtls_base64_decode(s_jpg + off, s_jpg_len - off, &olen, (const unsigned char *)d, strlen(d)) != 0) {
+        s_jpg_pos = 0;
+        jpg_ack(false, 0);
+        return;
+    }
+    s_jpg_pos = off + olen;
+    if (!cJSON_IsTrue(cJSON_GetObjectItem(msg, "last"))) return;   // os pedaços do meio não têm resposta
+    bool ok = false;
+    int64_t t0 = esp_timer_get_time();
+    if (s_jpg_pos == s_jpg_len && bsp_display_lock(1000)) {
+        const char *id = jstr(msg, "id");
+        if (id && !strcmp(id, s_id)) ok = plot_jpg(id, s_jpg, s_jpg_len);
+        bsp_display_unlock();
+    }
+    s_jpg_pos = 0;
+    jpg_ack(ok, (int)((esp_timer_get_time() - t0) / 1000));
+}
+
 void ui_handle(const cJSON *msg, link_via_t via)
 {
     const char *t = jstr(msg, "t");
@@ -2632,6 +2964,7 @@ void ui_handle(const cJSON *msg, link_via_t via)
     }
     if (audio_handle(msg)) return;
     if (!strcmp(t, "bg")) { bg_handle(msg); return; }   // fundo do mapa ou do relógio (sem o LVGL)
+    if (!strcmp(t, "jpg")) { handle_jpg(msg); return; }   // quadros da câmara (o lock só no fim)
 
     if (!strcmp(t, "dbg")) {   // {"t":"dbg"}: estado dos quadros e do trinco do anim.c (sem o lock do LVGL)
         char b[200];
@@ -2646,7 +2979,8 @@ void ui_handle(const cJSON *msg, link_via_t via)
         ESP_LOGW(TAG, "lock do LVGL ocupado; '%s' descartada", t);
         return;
     }
-    if (!strcmp(t, "screen")) show_screen(msg);
+    if (!strcmp(t, "emoji")) handle_emoji(msg);
+    else if (!strcmp(t, "screen")) show_screen(msg);
     else if (!strcmp(t, "update")) update_screen(msg);
     else if (!strcmp(t, "shot")) shot_take();
     else if (!strcmp(t, "perf")) perf_report();
@@ -2829,6 +3163,7 @@ void ui_init(lv_display_t *disp)
     s_po.yday = store_get("po_yday", -1);
     bsp_display_lock(0);   // 0 = esperar o tempo que for preciso
     anim_init();
+    emoji_fonts_init();
     s_frq = xQueueCreate(4, sizeof(fr_t *));
     xTaskCreatePinnedToCoreWithCaps(fr_task, "frames", 6144, NULL, 4, NULL, tskNO_AFFINITY, MALLOC_CAP_SPIRAM);   // stack na PSRAM
     s_scr = lv_screen_active();

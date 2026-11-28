@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 
+import emojis as _emojis   # o campo "emojis" abaixo taparia o nome do módulo
+
 
 @dataclass
 class Session:
@@ -21,6 +23,8 @@ class Session:
     screen_off: int = 0                 # s sem toques na tela inicial até apagar (0 = nunca)
     refresh: float = 2.0                # s entre atualizações da tela aberta
     emojis: bool = True                 # o ecrã recebe imagens de emojis
+    emoji: object = field(default_factory=_emojis.Registry)   # que emojis este ecrã já tem (e em que código)
+    emoji_px: int = _emojis.SIZE         # altura das imagens dos emojis (C6 14 px, DashDeck³ 18 px)
     dev: object = None                  # o aparelho, visto pelos providers do DashDeck³ (deck.Dev)
     last_ping: float = 0.0
     last_refresh: float = 0.0

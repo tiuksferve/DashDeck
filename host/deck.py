@@ -121,16 +121,51 @@ class Dev:
 ICON_PX = 84   # tamanho dos ícones das boxes no cubo
 # ícones das boxes sem imagem no config (o DashDeck usa os símbolos do LVGL pelo "icon"; no cubo, um emoji
 # ou pixel art na cor da box, "pix:")
-DECK_ICON = {"mail": "pix:mail", "gps": "emoji:🛰️", "wifi": "emoji:📶", "list": "emoji:🗂️", "power": "emoji:🔧",
+DECK_ICON = {"mail": "meshdeckweb.svg",   # o símbolo do MeshDeckWeb com relevo (host/icons)
+              "gps": "emoji:🛰️", "wifi": "emoji:📶", "list": "emoji:🗂️", "power": "emoji:🔧",
              "settings": "emoji:🖥️", "bars": "emoji:📊", "folder": "emoji:📁", "bell": "emoji:🔔",
              "audio": "emoji:🔊", "image": "emoji:🖼️", "home": "emoji:🏠", "eye": "emoji:👁️"}
+
+
+def _find_path(node: dict, nid: str) -> list[dict] | None:
+    """Caminho (sem a raiz) até à box nid no menu, procurando dentro das boxes que são menus."""
+    for it in node.get("items", []):
+        if it.get("id") == nid:
+            return [it]
+        if it.get("type") == "submenu":
+            sub = _find_path(it, nid)
+            if sub:
+                return [it] + sub
+    return None
+
+
+def group_uconsole(items: list[dict], ids: list[str]) -> list[dict]:
+    """Tela inicial do cubo: as boxes de ids (Partilhas, Aplicações, Serviços, Sistema, Captura, Som, Bloquear...)
+    passam para dentro de uma box "uConsole", posta onde estava a primeira delas. O resumo da box é o do Sistema."""
+    inside = [next(i for i in items if i.get("id") == k) for k in ids if any(i.get("id") == k for i in items)]
+    if not inside:
+        return items
+    box = {"id": "uconsole", "label": "uConsole", "img": "uconsole.png",   # host/icons/uconsole.png
+           "type": "submenu", "items": inside}
+    sysn = next((i for i in inside if i.get("type") == "provider" and i.get("provider") == "system"), None)
+    if sysn:
+        box["summary_of"] = sysn
+    out, placed = [], False
+    for it in items:
+        if it in inside:
+            if not placed:
+                out.append(box)
+                placed = True
+            continue
+        out.append(it)
+    return out
 
 
 class DeckMixin:
     """O que é do DashDeck³ no motor. Cada método só muda o comportamento quando a sessão atual é a do cubo
     (self.session.kind == "deck3"); para o DashDeck passa ao motor (super())."""
     DECK_MSGS = {"key", "imu", "mic", "bat", "wifi_scan", "varanda", "bat_low", "offline_log", "cfg", "sd", "ls",
-                 "file", "rm", "slider", "ota", "pong"}
+                 "file", "rm", "slider", "input", "ota", "pong"}
 
     def __init__(self, cfg: dict):
         super().__init__(cfg)
@@ -147,12 +182,13 @@ class DeckMixin:
         menu = cfg.get("menu", [])
         ids = {i.get("id") for i in menu}
         extra = [i for i in cfg.get("dock", []) if i.get("type") not in ("home", "backlight") and i.get("id") not in ids]
-        sess = Session(kind="deck3", emojis=False, layout="grid", dock_screens=set(), screen_off=0,
+        items = group_uconsole(menu + extra, d.get("uconsole", []))
+        sess = Session(kind="deck3", emojis=True, emoji_px=18, layout="grid", dock_screens=set(), screen_off=0,
                        refresh=float(d.get("refresh", 2.0)), backlight=int(d.get("backlight", 80)), rotation=0)
-        sess.root = {"id": "home", "type": "submenu", "label": d.get("title", "DashDeck³"), "items": menu + extra}
+        sess.root = {"id": "home", "type": "submenu", "label": d.get("title", "DashDeck³"), "items": items}
         sess.stack = [sess.root]
         sess.link = WsLink(SessionEvents(self.events, sess))
-        sess.link.safe = lcd_safe
+        sess.link.safe = lambda v, s=sess: lcd_safe(v, s.emoji)
         sess.dev = Dev(self, sess)
         self.sessions.append(sess)
         self.deck_session = sess
@@ -232,6 +268,13 @@ class DeckMixin:
         self.last_time = time.monotonic()
 
     def item_view(self, it: dict) -> dict:
+        if self.is_deck() and it.get("summary_of"):   # box uConsole: o resumo do Sistema (temperatura, RAM)
+            v = super().item_view(it)
+            try:
+                v["sub"] = self.provider(it["summary_of"]).summary() or v.get("sub", "")
+            except Exception as e:
+                log.debug("summary %s: %s", it["id"], e)
+            return v
         if self.is_deck() and not it.get("img") and it.get("type") != "launch" and it.get("icon") in DECK_ICON:
             img = DECK_ICON[it["icon"]]
             if img.startswith("pix:"):   # pixel art na cor da box, como o símbolo do DashDeck
@@ -347,11 +390,7 @@ class DeckMixin:
                 return False
         return True
 
-    # o que o firmware do DashDeck³ ainda não tem (emojis no texto, dock, cabeçalho)
-
-    def send_emojis(self, scr: dict) -> None:
-        if not self.is_deck():
-            super().send_emojis(scr)
+    # o que o firmware do DashDeck³ ainda não tem (dock, cabeçalho)
 
     def send_dock(self) -> None:
         if not self.is_deck():
@@ -379,10 +418,10 @@ class DeckMixin:
             if nxt > 0:
                 self.toast(f"Brilho {nxt}%", "info")
         elif act.startswith("open:"):
-            child = next((i for i in self.root.get("items", []) if i.get("id") == act[5:]), None)
-            if child:
-                self.stack = [self.root]
-                self.activate(child)
+            path = _find_path(self.root, act[5:])   # também dentro de uma box (ex.: o Sistema no uConsole)
+            if path:
+                self.stack = [self.root] + [p for p in path[:-1] if p.get("type") == "submenu"]
+                self.activate(path[-1])
         elif act.startswith("shell:"):
             self.run_bg(lambda: self._shell({"cmd": act[6:]}))
         elif act.startswith("launch:"):
@@ -455,6 +494,9 @@ class DeckMixin:
             if prov and hasattr(prov, "on_event") and isinstance(prov, deckproviders.Provider):
                 prov.on_event(data)
             self.key_action(data.get("k", ""), data.get("ev", ""))
+        elif t == "input":   # texto do teclado (tela "input"), para o provider da tela
+            if prov and hasattr(prov, "on_input"):
+                self.handle_result(prov.on_input(str(data.get("text", ""))))
         elif t == "slider":
             if prov and hasattr(prov, "on_slider"):
                 self.handle_result(prov.on_slider(data.get("item", ""), int(data.get("v", 0))))
@@ -579,6 +621,8 @@ class Server:
                     link.acks.put(m)
                 elif m.get("t") == "jpgack":
                     link.jpg_acks.put(m)
+                    if self.app.deck_session and self.app.deck_session.dev:
+                        self.app.deck_session.dev.last["jpgack"] = m   # deckctl.py last jpgack
                 else:
                     link.events.put(("msg", m))
         except (ws.Closed, asyncio.IncompleteReadError, ConnectionError):

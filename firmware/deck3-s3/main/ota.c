@@ -2,6 +2,9 @@
 
 #include <string.h>
 
+#include <stdio.h>
+
+#include "esp_heap_caps.h"
 #include "esp_https_ota.h"
 #include "esp_log.h"
 #include "esp_system.h"
@@ -72,6 +75,14 @@ bool ota_handle(const cJSON *msg)
     }
     strlcpy(s_url, url, sizeof(s_url));
     s_busy = true;
-    xTaskCreate(ota_task, "ota", 8192, NULL, 5, NULL);
+    // a stack tem de ser interna (a tarefa escreve na flash); com a RAM interna apertada pode não haver 8 KB
+    // seguidos: avisa em vez de ficar calado
+    if (xTaskCreate(ota_task, "ota", 8192, NULL, 5, NULL) != pdPASS) {
+        s_busy = false;
+        char e[64];
+        snprintf(e, sizeof(e), "sem RAM interna para o OTA (maior bloco %u B)",
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        report(-1, e, false);
+    }
     return true;
 }

@@ -43,9 +43,10 @@ uint32_t anim_notify_color(int kind, int which);   // 0 principal, 1 claro, 2 es
 // ---- ícone de reserva das boxes (sem imagem do dashd): placa de 8 bits com a inicial
 void anim_badge(uint32_t *buf, int size, int stride, uint32_t col, const char *label);
 
-// ---- "Sobre o DashDeck³" (toque no título da tela inicial): salto no hiperespaço até um planeta com anéis,
-// à resolução do ecrã; os créditos (no ui.c) aparecem depois do salto.
-void anim_about_start(int w, int h);
+// ---- "Sobre o DashDeck³" (toque no título da tela inicial), duas cenas que alternam a cada toque, como no
+// DashDeck: 0 aurora boreal (serra à noite, cabana e lago; o nome aparece por cima) e 1 salto no hiperespaço até
+// um planeta com anéis. Os créditos (no ui.c) aparecem em anim_about_credits_at().
+void anim_about_start(int variant, int w, int h);
 void anim_about_draw(uint32_t *buf, int w, int h, int stride, float t);
 float anim_about_credits_at(void);
 // Toque em (x, y) no instante t: true se a cena o usou (então não fecha).

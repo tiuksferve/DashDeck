@@ -3,7 +3,7 @@
 // RGB565 com anéis, cruz, pontos cardeais, pontos com rumo e ícones (avião, navio, balão), trajetos
 // (base64url, desenhados direto no buffer), textos soltos, etiqueta do alvo seguido, aviso ao centro,
 // botões por cima ("ctrl") e arrasto do mapa ("drag": pan, toque, duplo toque). Protocolo: o do DashDeck
-// (docs/protocolo.md).
+// (docs/protocolo.md). Canvas "live": imagens JPEG da câmara ({"t":"jpg"}).
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -21,3 +21,10 @@ typedef struct {
 
 // Cria o plot (canvas + botões) dentro de parent e devolve o contentor.
 lv_obj_t *plot_create(lv_obj_t *parent, const cJSON *plot, const plot_env_t *env);
+
+// Canvas "live" (câmara): {"live":true} no plot. Os updates da mesma tela mantêm a imagem; plot_jpg desenha
+// um JPEG (centrado; se for maior que o canvas, fica cortado). Chamar com o lock do LVGL.
+bool plot_jpg(const char *screen_id, const uint8_t *jpg, size_t len);
+void plot_detach(void);        // o corpo da tela vai ser apagado (o buffer "live" fica)
+void plot_release(void);       // liberta o buffer "live" (o corpo da tela já foi apagado)
+void plot_live_forget(void);   // tela nova: o próximo plot "live" começa limpo

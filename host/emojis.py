@@ -94,7 +94,7 @@ def _font():
 
 
 @functools.lru_cache(maxsize=256)
-def rgb565a8(seq: str) -> tuple[int, int, bytes] | None:
+def rgb565a8(seq: str, size: int = SIZE) -> tuple[int, int, bytes] | None:
     """Imagem do emoji em RGB565A8 (w, h, dados). A fonte só existe a 109 px; reduz-se."""
     font = _font()
     if font is None:
@@ -107,10 +107,10 @@ def rgb565a8(seq: str) -> tuple[int, int, bytes] | None:
     im = im.crop(bbox)
     if im.width > im.height * 1.6:     # a fonte não juntou a sequência (ex.: ZWJ sem glifo): só o 1.º
         im = im.crop((0, 0, im.height, im.height))
-    im.thumbnail((SIZE, SIZE), Image.LANCZOS)
-    w, h = SIZE + 1, SIZE
+    im.thumbnail((size, size), Image.LANCZOS)
+    w, h = size + 1, size
     out = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    out.paste(im, ((SIZE - im.width) // 2, (h - im.height) // 2), im)
+    out.paste(im, ((size - im.width) // 2, (h - im.height) // 2), im)
     rgb, alpha = bytearray(), bytearray()
     for r, g, b, a in out.getdata():
         v = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)

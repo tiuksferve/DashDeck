@@ -40,6 +40,9 @@ backlight = 80       # 0..100 (o aparelho guarda o último brilho escolhido)
 bl_levels = [0, 25, 50, 75, 100]   # 0 = ecrã desligado (um toque no ecrã acorda)
 dim = 60             # escurece após N s sem toques (AMOLED: evita marcas); 0 = nunca
 off = 300            # apaga após N s; um toque, um botão ou agitar o cubo acorda
+# Box "uConsole" na tela inicial do cubo: estas boxes (do menu e do dock) passam para dentro dela, que mostra
+# o resumo do Sistema (temperatura e RAM). O DashDeck (C6) não muda.
+uconsole = ["shares", "apps", "services", "system", "shot", "console", "lock"]
 
 # Botões do DashDeck³: <botão>_<gesto> = ação
 #   botões: boot (BOOT), user (IO18), pwr (PWR, pelo AXP2101; o toque longo de vários segundos desliga)
@@ -113,7 +116,7 @@ provider = "aio"
 
 [[menu]]
 id = "mesh"
-label = "Meshtastic"
+label = "MeshDeck"
 icon = "mail"
 color = "#67EA94"
 type = "provider"

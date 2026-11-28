@@ -28,6 +28,8 @@ funcionou → gateway da rede na porta 8765 (o uConsole em modo hotspot).
 | `update` | `id` + os campos que mudaram | Junta à tela aberta (se o `id` for o mesmo) e redesenha mantendo o scroll |
 | `toast` | `text`, `level` (`ok` `warn` `err` `info`) | Aviso em fila, um de cada vez (2,5 a 7 s, conforme o tamanho do texto); repetidos são ignorados e esperam enquanto houver uma notificação |
 | `bg` | `key`, `off`, `d` (base64); no 1.º pedaço `w`, `h`, `pal` (16 ou 256 cores), `bpp` (8; senão 4); no último `last` | Imagem de fundo, como no DashDeck: os tiles dos mapas (4 bpp, usados pelo `plot` com o mesmo `bg`) e a paisagem do relógio (8 bpp, 240×240). Cada pedaço é confirmado com `{"t":"bgack","off":n,"ok":bool}`; fica na PSRAM (uma por profundidade) |
+| `emoji` | `cp` (U+100000+i, até 48), `w`, `h` (≤ 32), `d` (base64 RGB565A8) | Imagem de um emoji: no texto, o dashd troca cada emoji pelo código `cp` (imgfont no fallback das fontes `deck_font_*`). Responde `emojiack` (`cp`, `ok`). O cubo recebe imagens de 18 px |
+| `jpg` | `id` (tela), `off`, `d` (base64); no 1.º pedaço `size` (até 64 KB), no último `last` | Quadro da câmara (box Câmara: visor e galeria) desenhado no canvas do `plot` com `live`, centrado (maior que o canvas fica cortado). O dashd só envia o seguinte depois do `jpgack` |
 | `clkface` | `v` | Muda a face do relógio (testes e capturas; normalmente é o swipe) |
 | `bootanim` | — | Repete a sequência de arranque e volta à tela atual (testes e capturas) |
 | `pomo` | `show` (true/false), `z` (1 iniciar/pausar, 2 reiniciar, 3 pular), `left` (s) | Ecrã do Pomodoro sem girar o cubo (testes) |
@@ -47,7 +49,7 @@ funcionou → gateway da rede na porta 8765 (o uConsole em modo hotspot).
 | `bat?` | `n` (pontos do histórico, 120) | Pede `bat` |
 | `bat_cfg` | `icc` (mA: 100, 200, 300, 400, 500) | Corrente de carga do AXP2101 (guardada; de fábrica 25 mA). Responde `bat` |
 | `reboot` | — | Reinicia o aparelho |
-| `about` | `lines` (créditos), `host` (versão do host: commit curto, "+" com alterações), `show` (abre já) | Cena "Sobre o DashDeck³" (toque no título da tela inicial): salto no hiperespaço até um planeta com anéis, com os créditos por cima (por CT7BRA, endereço do projeto, versões do firmware e do host e estas linhas), que aparecem depois do salto e somem ao fim de 7 s. O dashd envia-a no `hello` a partir de `[about]` |
+| `about` | `lines` (créditos), `host` (versão do host: commit curto, "+" com alterações), `show` (abre já) | Cena "Sobre o DashDeck³" (toque no título da tela inicial), como no DashDeck alterna a cada toque: aurora boreal (serra à noite, cabana e lago) ou salto no hiperespaço até um planeta com anéis. Os créditos (por CT7BRA, endereço do projeto, versões do firmware e do host e estas linhas) aparecem depois do nome (aurora) ou do salto e somem ao fim de 7 s. O dashd envia-a no `hello` a partir de `[about]` |
 | `sd?` | — | Pede `sd` |
 | `ls` | `path` (relativo a `deck3/`) | Lista uma pasta do cartão; responde `ls` |
 | `file` | `path`, `data` (base64), `append` | Escreve no cartão (`deckctl.py put` parte os ficheiros em pedaços de 3 KB); responde `file` |
@@ -76,10 +78,11 @@ Resposta: `{"t":"cfg","ok":true,"nets":[...],"state":"...","ssid","ip","host","t
 
 | `tpl` | Dados |
 |---|---|
-| `menu` | `items`: `id`, `label`, `sub`, `color` (da placa de reserva), `img` (ícone do cartão: `icons/<id>.bin`, imagem do LVGL ARGB8888 84×84 que o dashd envia uma vez com `file` e o aparelho guarda na PSRAM; ou um PNG/JPG posto à mão; se o ficheiro não existir, usa o modelo), `icon` (nome do DashDeck: o dashd troca-o por um emoji ou, no `mail`, por um envelope de 8 bits na cor da box, `pix:mail:<cor>`), `color` (tinge a cor 1 do modelo), `badge` (selo vermelho no canto, texto ou número: ex. mensagens não lidas), `value`, `value_color`, `sub_color`, `dot`, `bg`, `confirm`. Boxes 140×164 em 3 colunas |
+| `menu` | `items`: `id`, `label`, `sub`, `color` (da placa de reserva), `img` (ícone do cartão: `icons/<id>.bin`, imagem do LVGL ARGB8888 84×84 que o dashd envia uma vez com `file` e o aparelho guarda na PSRAM; ou um PNG/JPG posto à mão; se o ficheiro não existir, usa o modelo), `icon` (nome do DashDeck: o dashd troca-o por um emoji ou, no `mail`, por um envelope de 8 bits na cor da box, `pix:mail:<cor>`), `color` (tinge a cor 1 do modelo), `badge` (selo vermelho no canto, texto ou número: ex. mensagens não lidas), `value`, `value_color`, `sub_color`, `dot`, `mark` (`up`/`down`: seta no canto superior esquerdo, cor `mark_color`), `bg`, `confirm`. Na tela, `icon_size` (24 a 84) encolhe os ícones (ex.: logotipos das Stocks). Boxes 140×164 em 3 colunas |
 | `list` | `items`: `id`, `label`, `sub`, `right`, `color`, `bg`, `confirm`; `empty` |
 | `kv` | `rows`: `[chave, valor, cor?]` (cor `#rrggbb`, `ok`, `warn`, `err`, `sub`, `accent`) |
 | `text` | `text` |
+| `input` | `to`, `to_sub` (card do destino; toque: `tap` com `item:"dest"`), `placeholder`, `max` (caracteres), `text`. Caixa de texto e teclado PT (minúsculas/maiúsculas, números e símbolos, acentos). ✓ envia `input`. O texto escrito fica num rascunho da tela (sobrevive a um `update`, ao seletor do destino e ao voltar) |
 | `clock` | `clock`: o do DashDeck (`wx`, `icon`, `bg`, `anim`, `night`, `pet`). Ecrã inteiro com as faces do cubo: paisagem (a cena `bg` com chuva/neve e o cão), aurora boreal, o cubo, temporizador e alarme. Swipe troca a face (fica no cubo); um toque volta, menos nas zonas do temporizador e alarme. O temporizador e o alarme são só do cubo (guardados na NVS, contados mesmo sem uConsole e tocados na coluna do cubo); os do DashDeck tocam só no C6 e no uConsole |
 | `panel` | só os extras abaixo |
 | `image` | `src` (ficheiro do cartão, PNG ou JPG, ex. `scenes/praia.jpg`), `h` (altura, 320), `caption` |
@@ -90,7 +93,11 @@ Resposta: `{"t":"cfg","ok":true,"nets":[...],"state":"...","ssid","ip","host","t
 
 Ordem no ecrã: sliders → gráficos → corpo do template → botões.
 
-Ainda não portados do DashDeck: `plot` (mapas, céu do GPS, gráficos), `log`, `clock`, `jpg`, `bg`, `icon`, `emoji`, `dock`.
+`plot` com `sky: true` (céu do GPS): `sats` `[[az, el, snr, rótulo, usado], ...]`; o cubo desenha o disco, os pontos cardeais, os satélites pela cor do sinal (cheios = em uso; os rótulos evitam-se) e a legenda; `msg` vai num rótulo pequeno.
+
+`plot` com `live: true` (câmara): os `update` da mesma tela não apagam a imagem; um `screen` (outra tela ou página) começa limpo.
+
+Ainda não portados do DashDeck: `icon`, `dock`.
 
 **Cartão SD:** montado em `/sdcard`; os ficheiros do DashDeck³ ficam em `deck3/`. Enviar um ficheiro:
 `host/deckctl.py put <local> <caminho em deck3/>`.
@@ -127,4 +134,6 @@ agitar) e `bat_low` que não tenham quem os ouça ficam no cartão e seguem no `
 | `ls` | `ok`, `path`, `items` `[[nome, bytes, pasta?], ...]` | Resposta a `ls` |
 | `file` / `rm` | `ok`, `path`, `size` · `err` | Respostas |
 | `wifi_scan` | `aps` `[{ssid, rssi, ch, lock, saved}]` · `err` | Resposta a `wifi` `scan` |
+| `jpgack` | `ok`, `ms` (tempo a descodificar e desenhar) | Depois do último pedaço de um `jpg` (`deckctl.py last jpgack`) |
+| `input` | `id`, `text` | ✓ no teclado de uma tela `input` (o dashd chama `on_input` do provider) |
 | `pong` | — | — |

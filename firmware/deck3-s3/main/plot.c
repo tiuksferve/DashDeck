@@ -9,6 +9,8 @@
 #include <string.h>
 
 #include "deck_fonts.h"
+#include "src/libs/tjpgd/tjpgd.h"   // o TJpgDec do LVGL (o da ROM tem os mesmos nomes e fica escondido)
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
 
 #define C_PLOT_BG 0x05070A
@@ -23,13 +25,14 @@
 #define CTRL_MAX  10
 #define MAP_EDGE  30
 #define FONT      (&deck_font_16)
+#define PLOT_JD_POOL 4096   // memória de trabalho do TJpgDec (a mesma do lv_tjpgd)
 
 static const plot_env_t *E;
 
 // buffer RGB565 do canvas atual (para os desenhos diretos)
 static uint16_t *s_px;
 static int32_t s_w, s_h, s_stride;   // stride em píxeis
-static lv_obj_t *s_wrap, *s_cv;
+static lv_obj_t *s_wrap, *s_cv;   // NULL depois de plot_detach (corpo da tela apagado)
 static char s_ctrl_ids[CTRL_MAX][24];
 
 static const char *jstr(const cJSON *o, const char *k)
@@ -293,8 +296,171 @@ static void draw_tag(lv_layer_t *layer, const cJSON *tag, int32_t w, int32_t h)
         text(layer, ln[i], bx + 7, by + 4 + 10 + i * 20, bw - 10, i ? lv_color_hex(C_TEXT) : c, LV_TEXT_ALIGN_LEFT);
 }
 
+
+// ---------------------------------------------------------------------------------------- céu do GPS
+// "sky": true + "sats": [[az, el, snr, rótulo, usado], ...]: disco do céu (horizonte, 30°, 60°), pontos cardeais
+// dentro do disco, satélites pela cor do sinal (cheios = em uso), legenda e o aviso num rótulo pequeno.
+static uint32_t snr_col(int snr)
+{
+    return snr >= 30 ? 0x3FB950 : snr >= 20 ? 0xD29922 : 0xF85149;
+}
+
+static void dot(lv_layer_t *layer, int32_t x, int32_t y, int32_t r, lv_color_t c, bool fill, int32_t bw)
+{
+    lv_draw_rect_dsc_t rd;
+    lv_draw_rect_dsc_init(&rd);
+    rd.radius = LV_RADIUS_CIRCLE;
+    rd.bg_color = fill ? c : lv_color_hex(0x0B1622);
+    rd.bg_opa = LV_OPA_COVER;
+    rd.border_color = c;
+    rd.border_width = fill ? 0 : bw;
+    lv_area_t ar = {x - r, y - r, x + r, y + r};
+    lv_draw_rect(layer, &rd, &ar);
+}
+
+static void draw_sky(const cJSON *p, int32_t w, int32_t h)
+{
+    const int32_t cx = w / 2, cy = h / 2, R = (w < h ? w : h) / 2 - 4;
+    // fundo: disco com um gradiente suave (mais claro junto ao horizonte)
+    const uint16_t out = rgb565(C_PLOT_BG);
+    for (int32_t y = 0; y < h; y++) {
+        for (int32_t x = 0; x < w; x++) {
+            int32_t dx = x - cx, dy = y - cy, d2 = dx * dx + dy * dy;
+            uint16_t c = out;
+            if (d2 <= R * R) {
+                int k = (int)(d2 * 32 / (R * R));            // 0 no zénite .. 32 no horizonte
+                c = rgb565(((8 + k / 3) << 16) | ((16 + k / 2) << 8) | (28 + k * 3 / 4));
+            }
+            s_px[y * s_stride + x] = c;
+        }
+    }
+    lv_layer_t layer;
+    lv_canvas_init_layer(s_cv, &layer);
+    const lv_color_t grid = lv_color_hex(0x24384C), sub = lv_color_hex(C_SUB);
+    lv_draw_arc_dsc_t a;
+    lv_draw_arc_dsc_init(&a);
+    a.center.x = cx;
+    a.center.y = cy;
+    a.start_angle = 0;
+    a.end_angle = 360;
+    a.color = grid;
+    a.width = 1;
+    a.radius = R / 3;            // 60°
+    lv_draw_arc(&layer, &a);
+    a.radius = 2 * R / 3;        // 30°
+    lv_draw_arc(&layer, &a);
+    a.radius = R;                // horizonte
+    a.width = 2;
+    a.color = lv_color_hex(0x3A5A78);
+    lv_draw_arc(&layer, &a);
+    line(&layer, cx, cy - R + 26, cx, cy + R - 26, grid, 1);
+    line(&layer, cx - R + 26, cy, cx + R - 26, cy, grid, 1);
+    for (int deg = 0; deg < 360; deg += 30) {   // marcas no horizonte
+        if (deg % 90 == 0) continue;
+        float r = deg * (float)M_PI / 180.0f, sn = sinf(r), cs = cosf(r);
+        line(&layer, cx + (int32_t)lroundf((R - 8) * sn), cy - (int32_t)lroundf((R - 8) * cs),
+             cx + (int32_t)lroundf(R * sn), cy - (int32_t)lroundf(R * cs), lv_color_hex(0x3A5A78), 2);
+    }
+    const lv_color_t dim = lv_color_hex(0x4E6378);   // elevações discretas (os satélites passam por cima)
+    text(&layer, "60°", cx - R / 3, cy + 11, 40, dim, LV_TEXT_ALIGN_CENTER);
+    text(&layer, "30°", cx - 2 * R / 3, cy + 11, 40, dim, LV_TEXT_ALIGN_CENTER);
+    text(&layer, "N", cx, cy - R + 14, 20, lv_color_hex(C_ERR), LV_TEXT_ALIGN_CENTER);
+    text(&layer, "S", cx, cy + R - 13, 20, sub, LV_TEXT_ALIGN_CENTER);
+    text(&layer, "E", cx + R - 13, cy, 20, sub, LV_TEXT_ALIGN_CENTER);
+    text(&layer, "W", cx - R + 14, cy, 24, sub, LV_TEXT_ALIGN_CENTER);
+    // satélites: posições primeiro (os rótulos evitam os pontos e os outros rótulos), depois o desenho
+    enum { SKY_MAX = 40 };
+    static struct { int16_t x, y, lx, ly; } sp[SKY_MAX];
+    int ns = 0;
+    {
+        const cJSON *st;
+        cJSON_ArrayForEach(st, cJSON_GetObjectItemCaseSensitive(p, "sats")) {
+            if (ns >= SKY_MAX) break;
+            const cJSON *jaz = cJSON_GetArrayItem(st, 0), *jel = cJSON_GetArrayItem(st, 1);
+            if (!cJSON_IsNumber(jaz) || !cJSON_IsNumber(jel)) { sp[ns].x = INT16_MIN; ns++; continue; }
+            float el = (float)jel->valuedouble, az = (float)jaz->valuedouble * (float)M_PI / 180.0f;
+            el = el < 0 ? 0 : el > 90 ? 90 : el;
+            float rr = (90 - el) / 90 * (R - 14);
+            sp[ns].x = (int16_t)(cx + lroundf(rr * sinf(az)));
+            sp[ns].y = (int16_t)(cy - lroundf(rr * cosf(az)));
+            ns++;
+        }
+        static const int8_t CAND[4][2] = {{0, 19}, {0, -19}, {26, 0}, {-26, 0}};   // baixo, cima, direita, esquerda
+        for (int i = 0; i < ns; i++) {
+            if (sp[i].x == INT16_MIN) continue;
+            int best = 0, best_hits = 1 << 30;
+            for (int c = 0; c < 4 && best_hits; c++) {
+                int lx = sp[i].x + CAND[c][0], ly = sp[i].y + CAND[c][1], hits = 0;
+                for (int j = 0; j < ns; j++) {
+                    if (j == i || sp[j].x == INT16_MIN) continue;
+                    if (LV_ABS(sp[j].x - lx) < 22 && LV_ABS(sp[j].y - ly) < 16) hits += 2;   // em cima de um ponto
+                    if (j < i && LV_ABS(sp[j].lx - lx) < 36 && LV_ABS(sp[j].ly - ly) < 18) hits += 3;   // outro rótulo
+                }
+                if (lx < 18 || lx > w - 18 || ly < 10 || ly > h - 10) hits += 1;
+                if (hits < best_hits) best_hits = hits, best = c;
+            }
+            sp[i].lx = (int16_t)(sp[i].x + CAND[best][0]);
+            sp[i].ly = (int16_t)(sp[i].y + CAND[best][1]);
+        }
+    }
+    // os sem uso primeiro, os usados por cima
+    for (int pass = 0; pass < 2; pass++) {
+        int n = 0;
+        const cJSON *st;
+        cJSON_ArrayForEach(st, cJSON_GetObjectItemCaseSensitive(p, "sats")) {
+            int i = n++;
+            if (i >= ns) break;
+            const cJSON *jsn = cJSON_GetArrayItem(st, 2), *jl = cJSON_GetArrayItem(st, 3), *ju = cJSON_GetArrayItem(st, 4);
+            if (sp[i].x == INT16_MIN) continue;
+            bool used = cJSON_IsTrue(ju) || (cJSON_IsNumber(ju) && ju->valueint);
+            if (used != (pass == 1)) continue;
+            int32_t x = sp[i].x, y = sp[i].y;
+            lv_color_t c = lv_color_hex(snr_col(cJSON_IsNumber(jsn) ? jsn->valueint : 0));
+            if (used) {
+                dot(&layer, x, y, 10, lv_color_hex(0x0B1622), true, 0);   // aro escuro: separa dos vizinhos
+                dot(&layer, x, y, 8, c, true, 0);
+            } else {
+                dot(&layer, x, y, 7, c, false, 2);
+            }
+            if (cJSON_IsString(jl) && jl->valuestring[0])
+                text(&layer, jl->valuestring, sp[i].lx, sp[i].ly, 50, used ? lv_color_hex(C_TEXT) : sub, LV_TEXT_ALIGN_CENTER);
+        }
+    }
+    // legenda (cantos de baixo, fora do disco)
+    static const struct { uint32_t c; const char *t; } LEG[] = {{0x3FB950, "30+"}, {0xD29922, "20+"}, {0xF85149, "<20"}};
+    for (int i = 0; i < 3; i++) {
+        int32_t y = h - 12 - (2 - i) * 22;
+        dot(&layer, 8, y, 5, lv_color_hex(LEG[i].c), true, 0);
+        text(&layer, LEG[i].t, 18, y, 40, sub, LV_TEXT_ALIGN_LEFT);
+    }
+    text(&layer, "dB", 4, h - 12 - 3 * 22, 30, sub, LV_TEXT_ALIGN_LEFT);
+    dot(&layer, w - 44, h - 34, 6, lv_color_hex(C_TEXT), true, 0);
+    text(&layer, "uso", w - 34, h - 34, 40, sub, LV_TEXT_ALIGN_LEFT);
+    dot(&layer, w - 44, h - 12, 5, sub, false, 2);
+    text(&layer, "sem", w - 34, h - 12, 40, sub, LV_TEXT_ALIGN_LEFT);
+    const char *msg = jstr(p, "msg");
+    if (msg && msg[0]) {   // aviso num rótulo por baixo do centro (o disco continua à vista)
+        lv_draw_rect_dsc_t bgd;
+        lv_draw_rect_dsc_init(&bgd);
+        bgd.bg_color = lv_color_hex(C_BAR);
+        bgd.bg_opa = LV_OPA_90;
+        bgd.radius = 14;
+        bgd.border_color = lv_color_hex(0x3A5A78);
+        bgd.border_width = 1;
+        int32_t y0 = cy + R / 3 + 4;
+        lv_area_t ba = {cx - R + 30, y0, cx + R - 30, y0 + 30};
+        lv_draw_rect(&layer, &bgd, &ba);
+        text(&layer, msg, cx, y0 + 15, 2 * R - 70, lv_color_hex(C_WARN), LV_TEXT_ALIGN_CENTER);
+    }
+    lv_canvas_finish_layer(s_cv, &layer);
+}
+
 static void draw(const cJSON *p, int32_t w, int32_t h)
 {
+    if (jbool(p, "sky", false)) {
+        draw_sky(p, w, h);
+        return;
+    }
     const int32_t cx = jint(p, "cx", w / 2), cy = jint(p, "cy", h / 2);
     const int32_t R = jint(p, "R", (w < h ? w : h) / 2 - 3);
     const lv_color_t grid = lv_color_hex(C_GRID), sub = lv_color_hex(C_SUB);
@@ -578,6 +744,88 @@ static void map_ev(lv_event_t *e)
     }
 }
 
+// ---------------------------------------------------------------------------------------- JPEG ("live")
+
+static uint8_t *s_live_mem;          // buffer do canvas "live" (PSRAM, do plot.c)
+static int32_t s_live_w, s_live_h;
+static char s_live_id[32];           // tela dona do buffer ("" = não reaproveitar)
+static bool s_live;                  // o plot atual é "live" e está no ecrã
+static const uint8_t *s_jd_src;
+static size_t s_jd_len, s_jd_pos;
+static int32_t s_jd_ox, s_jd_oy;
+
+void plot_release(void)
+{
+    s_live = false;
+    heap_caps_free(s_live_mem);
+    s_live_mem = NULL;
+    s_live_id[0] = '\0';
+}
+
+void plot_detach(void)
+{
+    s_live = false;
+    s_cv = NULL;
+    s_px = NULL;
+}
+
+void plot_live_forget(void)
+{
+    s_live_id[0] = '\0';
+}
+
+static size_t jd_in(JDEC *jd, uint8_t *buf, size_t n)
+{
+    (void)jd;
+    if (s_jd_pos + n > s_jd_len) n = s_jd_len - s_jd_pos;
+    if (buf) memcpy(buf, s_jd_src + s_jd_pos, n);
+    s_jd_pos += n;
+    return n;
+}
+
+static int jd_out(JDEC *jd, void *bitmap, JRECT *r)
+{
+    (void)jd;
+    const uint8_t *src = bitmap;   // JD_FORMAT 0: o TJpgDec do LVGL entrega B, G, R
+    const int rw = r->right - r->left + 1;
+    for (int y = r->top; y <= r->bottom; y++, src += 3 * rw) {
+        int32_t dy = y + s_jd_oy;
+        if (dy < 0 || dy >= s_h) continue;
+        uint16_t *row = s_px + dy * s_stride;
+        const uint8_t *q = src;
+        for (int x = r->left; x <= r->right; x++, q += 3) {
+            int32_t dx = x + s_jd_ox;
+            if (dx >= 0 && dx < s_w) row[dx] = (uint16_t)(((q[2] & 0xF8) << 8) | ((q[1] & 0xFC) << 3) | (q[0] >> 3));
+        }
+    }
+    return 1;
+}
+
+bool plot_jpg(const char *screen_id, const uint8_t *jpg, size_t len)
+{
+    if (!s_live || !s_cv || !s_px || s_px != (uint16_t *)s_live_mem || strcmp(s_live_id, screen_id ? screen_id : ""))
+        return false;
+    void *pool = malloc(PLOT_JD_POOL);
+    if (!pool) return false;
+    JDEC jd;
+    bool ok = false;
+    s_jd_src = jpg;
+    s_jd_len = len;
+    s_jd_pos = 0;
+    if (jd_prepare(&jd, jd_in, pool, PLOT_JD_POOL, NULL) == JDR_OK) {
+        // sem redução (o TJpgDec do LVGL não a tem): o dashd já envia do tamanho do canvas; maior fica cortado
+        int32_t iw = jd.width, ih = jd.height;
+        if (iw < s_w || ih < s_h) memset(s_px, 0, (size_t)s_stride * 2 * s_h);   // margens a preto
+        s_jd_ox = (s_w - iw) / 2;
+        s_jd_oy = (s_h - ih) / 2;
+        ok = jd_decomp(&jd, jd_out, 0) == JDR_OK;
+        lv_obj_invalidate(s_cv);
+    }
+    free(pool);
+    s_jd_src = NULL;
+    return ok;
+}
+
 // ---------------------------------------------------------------------------------------- criação
 
 lv_obj_t *plot_create(lv_obj_t *parent, const cJSON *p, const plot_env_t *env)
@@ -589,7 +837,24 @@ lv_obj_t *plot_create(lv_obj_t *parent, const cJSON *p, const plot_env_t *env)
     if (w > 480) w = 480;
     if (h > 480) h = 480;
     uint32_t stride = lv_draw_buf_width_to_stride(w, LV_COLOR_FORMAT_RGB565);
-    uint8_t *mem = E->alloc(stride * h);
+    // "live" (câmara): o buffer é do plot.c e fica entre updates da mesma tela, para a imagem não piscar
+    bool live = jbool(p, "live", false), keep = false;
+    uint8_t *mem;
+    if (live) {
+        const char *id = E->screen_id();
+        keep = s_live_mem && s_live_w == w && s_live_h == h && s_live_id[0] && !strcmp(s_live_id, id);
+        if (!keep) {
+            plot_release();
+            s_live_mem = heap_caps_calloc(1, stride * h, MALLOC_CAP_SPIRAM);
+            s_live_w = w;
+            s_live_h = h;
+            strlcpy(s_live_id, id, sizeof(s_live_id));
+        }
+        mem = s_live_mem;
+    } else {
+        plot_release();
+        mem = E->alloc(stride * h);
+    }
     s_wrap = lv_obj_create(parent);
     lv_obj_remove_style_all(s_wrap);
     lv_obj_set_size(s_wrap, w, h);
@@ -601,7 +866,8 @@ lv_obj_t *plot_create(lv_obj_t *parent, const cJSON *p, const plot_env_t *env)
     s_w = w;
     s_h = h;
     s_stride = stride / 2;
-    draw(p, w, h);
+    s_live = live;
+    if (!keep) draw(p, w, h);
     s_drag_on = jbool(p, "drag", false);
     if (s_drag_on) {
         lv_obj_add_flag(s_cv, LV_OBJ_FLAG_CLICKABLE);
