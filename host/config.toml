@@ -43,6 +43,8 @@ off = 300            # apaga após N s; um toque, um botão ou agitar o cubo aco
 # Box "uConsole" na tela inicial do cubo: estas boxes (do menu e do dock) passam para dentro dela, que mostra
 # o resumo do Sistema (temperatura e RAM). O DashDeck (C6) não muda.
 uconsole = ["shares", "apps", "services", "system", "shot", "console", "lock"]
+# Ordem das boxes na tela inicial do cubo (ids; as que faltarem ficam no fim, pela ordem do menu). O C6 não muda.
+order = ["aio", "config", "net", "uconsole", "mesh", "gps", "adsb", "ais", "sonde", "sdr", "camera", "stocks", "relogio"]
 
 # Botões do DashDeck³: <botão>_<gesto> = ação
 #   botões: boot (BOOT), user (IO18), pwr (PWR, pelo AXP2101; o toque longo de vários segundos desliga)

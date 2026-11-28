@@ -1,5 +1,6 @@
 // Imagens de fundo do dashd (ver bg.h).
 #include "bg.h"
+#include "esp_attr.h"   // EXT_RAM_BSS_ATTR: tabelas grandes na PSRAM (a RAM interna é pouca)
 #include "anim.h"
 
 #include <stdio.h>
@@ -15,7 +16,7 @@
 static const char *TAG = "bg";
 
 // slots[0] = 4 bpp (mapas), slots[1] = 8 bpp (relógio); "pend" = a que está a chegar
-static bgimg_t s_slot[2], s_pend;
+EXT_RAM_BSS_ATTR static bgimg_t s_slot[2], s_pend;
 static size_t s_pend_size;
 static bool s_pend_ok;
 

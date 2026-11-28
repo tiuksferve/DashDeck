@@ -37,6 +37,7 @@ Os avisos (mensagens do Meshtastic, squawks, alarme) vão para os dois.
 | `refresh`, `backlight` | `2.0`, `80` | Como no `[dashd]` (o cubo guarda o último brilho escolhido) |
 | `bl_levels` | `[0, 25, 50, 75, 100]` | Níveis do botão de brilho; 0 desliga o ecrã (um toque acorda no brilho anterior, sem abrir nada; o botão segue para o nível seguinte) |
 | `uconsole` | `["shares", "apps", "services", "system", "shot", "console", "lock"]` | Boxes (do menu e do dock) que passam para dentro de uma box "uConsole" na tela inicial do cubo, que mostra o resumo do Sistema (temperatura e RAM). `[]` deixa-as todas na tela inicial. O DashDeck (C6) não muda |
+| `order` | `["aio", "config", "net", "uconsole", "mesh", ...]` | Ordem das boxes na tela inicial do cubo (ids, incluindo `uconsole`); as que não estiverem na lista ficam no fim, pela ordem do menu. O DashDeck (C6) não muda |
 | `dim`, `off` | `60`, `300` | Segundos sem toques até escurecer e até apagar (AMOLED). Mudam-se também em Config › Ecrã e som |
 
 O token do cubo está em `~/.config/deck3/token` (gravado no aparelho pelo `setup/deck3/provision.py`).

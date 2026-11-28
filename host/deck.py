@@ -139,6 +139,13 @@ def _find_path(node: dict, nid: str) -> list[dict] | None:
     return None
 
 
+def order_items(items: list[dict], ids: list[str]) -> list[dict]:
+    """Ordem das boxes na tela inicial do cubo ([deckd] order): primeiro as de ids, por essa ordem; as que não estão
+    na lista ficam depois, na ordem do config."""
+    pos = {k: i for i, k in enumerate(ids)}
+    return sorted(items, key=lambda it: pos.get(it.get("id"), len(ids)))   # sorted é estável
+
+
 def group_uconsole(items: list[dict], ids: list[str]) -> list[dict]:
     """Tela inicial do cubo: as boxes de ids (Partilhas, Aplicações, Serviços, Sistema, Captura, Som, Bloquear...)
     passam para dentro de uma box "uConsole", posta onde estava a primeira delas. O resumo da box é o do Sistema."""
@@ -182,7 +189,7 @@ class DeckMixin:
         menu = cfg.get("menu", [])
         ids = {i.get("id") for i in menu}
         extra = [i for i in cfg.get("dock", []) if i.get("type") not in ("home", "backlight") and i.get("id") not in ids]
-        items = group_uconsole(menu + extra, d.get("uconsole", []))
+        items = order_items(group_uconsole(menu + extra, d.get("uconsole", [])), d.get("order", []))
         sess = Session(kind="deck3", emojis=True, emoji_px=18, layout="grid", dock_screens=set(), screen_off=0,
                        refresh=float(d.get("refresh", 2.0)), backlight=int(d.get("backlight", 80)), rotation=0)
         sess.root = {"id": "home", "type": "submenu", "label": d.get("title", "DashDeck³"), "items": items}

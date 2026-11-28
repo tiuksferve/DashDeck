@@ -1,4 +1,5 @@
 #include "net.h"
+#include "esp_attr.h"   // EXT_RAM_BSS_ATTR: tabelas grandes na PSRAM (a RAM interna é pouca)
 
 #include <stdio.h>
 #include <string.h>
@@ -36,7 +37,7 @@ typedef struct {
     char pass[65];
 } cred_t;
 
-static cred_t s_nets[MAX_NETS];
+EXT_RAM_BSS_ATTR static cred_t s_nets[MAX_NETS];
 static int s_nnets;
 static char s_token[65];
 static char s_host_cfg[64];    // "ip:porta" fixo, ou vazio = automático
@@ -274,7 +275,7 @@ static bool ws_try(const char *hostport)
     esp_websocket_client_config_t cfg = {
         .uri = uri,
         .buffer_size = 8192,
-        .task_stack = 6144,
+        .task_stack = 4096,   // medido ({"t":"mem"}): usa ~1,8 KB
         .disable_auto_reconnect = true,
         .network_timeout_ms = 5000,
         .ping_interval_sec = 5,
@@ -296,6 +297,27 @@ static bool ws_try(const char *hostport)
     return false;
 }
 
+// mDNS só para encontrar o deckd: liga-se antes de procurar e desliga-se depois de ligado (liberta a tarefa e a
+// memória interna dele enquanto o cubo está em uso)
+static bool s_mdns_on;
+static char s_mdns_hn[32];
+
+static void mdns_on(void)
+{
+    if (s_mdns_on) return;
+    if (mdns_init() == ESP_OK) {
+        mdns_hostname_set(s_mdns_hn);
+        s_mdns_on = true;
+    }
+}
+
+static void mdns_off(void)
+{
+    if (!s_mdns_on) return;
+    mdns_free();
+    s_mdns_on = false;
+}
+
 // Lista de candidatos, por ordem. Devolve quantos.
 static int discover(char out[][64], int max)
 {
@@ -304,8 +326,9 @@ static int discover(char out[][64], int max)
         strlcpy(out[n++], s_host_cfg, 64);
         return n;
     }
+    mdns_on();
     mdns_result_t *res = NULL;
-    if (mdns_query_ptr("_deck3", "_tcp", 2500, 4, &res) == ESP_OK) {
+    if (s_mdns_on && mdns_query_ptr("_deck3", "_tcp", 2500, 4, &res) == ESP_OK) {
         for (mdns_result_t *r = res; r && n < max; r = r->next) {
             for (mdns_ip_addr_t *a = r->addr; a && n < max; a = a->next) {
                 if (a->addr.type == ESP_IPADDR_TYPE_V4) {
@@ -360,6 +383,7 @@ static void net_task(void *arg)
             continue;
         }
         set_state(NET_ONLINE);
+        mdns_off();
         // Rollback: um firmware novo só fica "válido" depois de chegar ao deckd. Se reiniciar antes
         // (crash, sem memória...), o bootloader volta à versão anterior sozinho.
         esp_ota_mark_app_valid_cancel_rollback();
@@ -539,8 +563,6 @@ void net_init(void)
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_set_ps(WIFI_PS_MIN_MODEM);       // poupança com latência aceitável
     ESP_ERROR_CHECK(esp_wifi_start());
-    if (mdns_init() == ESP_OK) {
-        mdns_hostname_set(hn);
-    }
+    strlcpy(s_mdns_hn, hn, sizeof(s_mdns_hn));   // o mDNS liga-se só para procurar o deckd (discover)
     xTaskCreate(net_task, "net", 6144, NULL, 4, NULL);
 }

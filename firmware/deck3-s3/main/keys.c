@@ -83,5 +83,5 @@ void keys_init(void)
         .pull_up_en = GPIO_PULLUP_ENABLE,
     };
     gpio_config(&io);
-    xTaskCreate(keys_task, "keys", 3072, NULL, 4, NULL);
+    xTaskCreate(keys_task, "keys", 2048, NULL, 4, NULL);   // medido: usa ~0,9 KB
 }

@@ -4,6 +4,7 @@
 //   varanda/poses.json  {"sit":["c0_17"], "walk":[...], ...}
 // O fundo desenha-se pela paleta do modo (dia, entardecer, noite, chuva): a noite é uma troca de paleta.
 #include "varanda.h"
+#include "esp_attr.h"   // EXT_RAM_BSS_ATTR: tabelas grandes na PSRAM (a RAM interna é pouca)
 
 #include <math.h>
 #include <stdio.h>
@@ -38,16 +39,16 @@ static const char *POSE_NAME[NPOSE] = {"sit", "wag", "front", "bark", "alert", "
                                        "drink"};
 #define MAXSPR 48
 #define MAXF 4
-static spr_t s_spr[MAXSPR];
-static char s_sprname[MAXSPR][16];
+EXT_RAM_BSS_ATTR static spr_t s_spr[MAXSPR];
+EXT_RAM_BSS_ATTR static char s_sprname[MAXSPR][16];
 static int s_nspr;
 static int8_t s_pose[NPOSE][MAXF];   // índices em s_spr; -1 = nenhum
 static int s_nfr[NPOSE];
 static int s_bowl = -1;
 static uint8_t *s_bg;                // índices
 static uint8_t *s_bgraw, *s_sprraw[MAXSPR];
-static uint8_t s_pal[256][3];
-static uint16_t s_lut[4][256];       // paleta por modo, já em RGB565
+EXT_RAM_BSS_ATTR static uint8_t s_pal[256][3];
+EXT_RAM_BSS_ATTR static uint16_t s_lut[4][256];       // paleta por modo, já em RGB565
 static uint8_t *s_out;               // 1 = céu ou mar (onde aparecem nuvens, aviões, barcos, chuva)
 static bool s_loaded;
 

@@ -3,6 +3,7 @@
 //   corpo: tela do host (menu em boxes com ícones, list, kv, text, botões) ou o ecrã de arranque
 //   camada de cima: avisos (toast), confirmações, notificações em pixel art, progresso, painel de acordar
 #include "ui.h"
+#include "esp_attr.h"   // EXT_RAM_BSS_ATTR: tabelas grandes na PSRAM (a RAM interna é pouca)
 
 #include <math.h>
 #include <stdio.h>
@@ -20,6 +21,7 @@
 #include "deck.h"
 #include "deck_fonts.h"
 #include "esp_heap_caps.h"
+#include "esp_memory_utils.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -61,7 +63,7 @@ static lv_obj_t *s_scr, *s_hdr, *s_back, *s_title, *s_dots, *s_clock, *s_wifi, *
 static lv_obj_t *s_tbox, *s_tsub;   // título: "Config · Ecrã e som" = s_title (28) + s_tsub (20, cinzento)
 static char s_id[48];             // id da tela do host aberta ("" = arranque/offline)
 static cJSON *s_screen;           // cópia da última "screen" (as "update" juntam-se a ela)
-static char *s_refs[MAX_REFS];    // ids dos itens/botões (user_data dos eventos)
+EXT_RAM_BSS_ATTR static char *s_refs[MAX_REFS];    // ids dos itens/botões (user_data dos eventos)
 static int s_nrefs;
 static void *s_bufs[MAX_BUFS];    // buffers dos canvas do corpo
 static int s_nbufs;
@@ -172,7 +174,7 @@ typedef struct {
     lv_image_dsc_t dsc;
     uint8_t *data;
 } emoji_t;
-static emoji_t s_emoji[EMOJI_MAX];
+EXT_RAM_BSS_ATTR static emoji_t s_emoji[EMOJI_MAX];
 
 static const void *emoji_cb(const lv_font_t *font, uint32_t unicode, uint32_t next, int32_t *offset_y, void *ud)
 {
@@ -441,7 +443,7 @@ typedef struct {
     char rel[48];
     lv_image_dsc_t dsc;
 } icon_cache_t;
-static icon_cache_t s_icache[ICON_CACHE];
+EXT_RAM_BSS_ATTR static icon_cache_t s_icache[ICON_CACHE];
 static int s_nicache;
 
 static const lv_image_dsc_t *icon_cached(const char *rel)
@@ -592,7 +594,7 @@ typedef struct {
     char text[120];
     char level[8];
 } toast_q_t;
-static toast_q_t s_tq[TOAST_Q];
+EXT_RAM_BSS_ATTR static toast_q_t s_tq[TOAST_Q];
 static int s_tq_n;
 static lv_obj_t *s_toast, *s_toast_l;
 static lv_timer_t *s_toast_tm;
@@ -1300,7 +1302,7 @@ static void build_plot(const cJSON *scr)
 #define INPUT_MAX 240
 static lv_obj_t *s_in_ta, *s_in_cnt, *s_in_kb;
 static char s_draft_id[48];
-static char s_draft[INPUT_MAX * 4 + 1];   // UTF-8
+EXT_RAM_BSS_ATTR static char s_draft[INPUT_MAX * 4 + 1];   // UTF-8
 static int s_in_max = 200;
 
 #define KB_ACC "áé"
@@ -2019,7 +2021,7 @@ static fr_t s_clk_fr;
 static lv_timer_t *s_clk_tm;
 static int64_t s_clk_t0, s_clk_name_until;
 static int s_clk_face;
-static clock3_t s_clk_data;
+EXT_RAM_BSS_ATTR static clock3_t s_clk_data;
 static char s_clk_bg[48];
 
 static void clock_hide(void)
@@ -2748,7 +2750,7 @@ static void title_tap(lv_event_t *e)
 // {"t":"shotpx","x","y","w","h","d"}; no fim {"t":"shotend","w","h"}. O dashd monta o PNG (deckctl.py shot).
 static bool s_shot_on;
 static int s_shot_n;
-static char s_shot_line[2600];
+EXT_RAM_BSS_ATTR static char s_shot_line[2600];
 
 static void shot_ev(lv_event_t *e)
 {
@@ -2760,7 +2762,7 @@ static void shot_ev(lv_event_t *e)
     uint32_t stride = b->header.stride ? b->header.stride : (uint32_t)w * 2;
     int rows = 1800 / (w * 2);
     if (rows < 1) rows = 1;
-    static uint8_t raw[1800];
+    EXT_RAM_BSS_ATTR static uint8_t raw[1800];
     for (int y = 0; y < h; y += rows) {
         int n = h - y < rows ? h - y : rows;
         int k = snprintf(s_shot_line, sizeof(s_shot_line), "{\"t\":\"shotpx\",\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"d\":\"",
@@ -2948,6 +2950,38 @@ static void handle_jpg(const cJSON *msg)
     jpg_ack(ok, (int)((esp_timer_get_time() - t0) / 1000));
 }
 
+// {"t":"mem"}: memória (interna, DMA, PSRAM: livre, maior bloco, mínimo de sempre) e, por tarefa, a folga mínima
+// da stack e se está na PSRAM. Para medir antes de cortar stacks.
+static void mem_report(void)
+{
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "t", "mem");
+    const uint32_t caps[3] = {MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT, MALLOC_CAP_DMA, MALLOC_CAP_SPIRAM};
+    const char *nm[3] = {"int", "dma", "psram"};
+    for (int i = 0; i < 3; i++) {
+        cJSON *a = cJSON_AddArrayToObject(o, nm[i]);   // [livre, maior bloco, mínimo de sempre]
+        cJSON_AddItemToArray(a, cJSON_CreateNumber(heap_caps_get_free_size(caps[i])));
+        cJSON_AddItemToArray(a, cJSON_CreateNumber(heap_caps_get_largest_free_block(caps[i])));
+        cJSON_AddItemToArray(a, cJSON_CreateNumber(heap_caps_get_minimum_free_size(caps[i])));
+    }
+    UBaseType_t n = uxTaskGetNumberOfTasks();
+    TaskStatus_t *ts = heap_caps_malloc(sizeof(TaskStatus_t) * (n + 4), MALLOC_CAP_SPIRAM);
+    if (ts) {
+        n = uxTaskGetSystemState(ts, n + 4, NULL);
+        cJSON *a = cJSON_AddArrayToObject(o, "tasks");   // [nome, folga mínima (bytes), stack na PSRAM]
+        for (UBaseType_t i = 0; i < n; i++) {
+            cJSON *e = cJSON_CreateArray();
+            cJSON_AddItemToArray(e, cJSON_CreateString(ts[i].pcTaskName));
+            cJSON_AddItemToArray(e, cJSON_CreateNumber(ts[i].usStackHighWaterMark));
+            cJSON_AddItemToArray(e, cJSON_CreateNumber(esp_ptr_external_ram(ts[i].pxStackBase) ? 1 : 0));
+            cJSON_AddItemToArray(a, e);
+        }
+        heap_caps_free(ts);
+    }
+    link_send(o);
+    cJSON_Delete(o);
+}
+
 void ui_handle(const cJSON *msg, link_via_t via)
 {
     const char *t = jstr(msg, "t");
@@ -2976,6 +3010,7 @@ void ui_handle(const cJSON *msg, link_via_t via)
     if (!strcmp(t, "bg")) { bg_handle(msg); return; }   // fundo do mapa ou do relógio (sem o LVGL)
     if (!strcmp(t, "jpg")) { handle_jpg(msg); return; }   // quadros da câmara (o lock só no fim)
 
+    if (!strcmp(t, "mem")) { mem_report(); return; }   // memória e folga das stacks (sem o lock do LVGL)
     if (!strcmp(t, "dbg")) {   // {"t":"dbg"}: estado dos quadros e do trinco do anim.c (sem o lock do LVGL)
         char b[200];
         TaskHandle_t h = anim_lock_holder();

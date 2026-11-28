@@ -108,9 +108,17 @@ tudo se faz aqui. A união com o DashDeck segue `docs/deck3/unificacao.md`.
 - **Relógio (0.13.4):** o céu das faces segue a hora e o tempo reais (`clock.sky` do dashd). Aurora: a cena do
   "Sobre" (`about_aurora(t, &sky)`) com céu de dia/crepúsculo/noite, sol e lua no arco, nuvens e chuva/neve; de dia
   não há aurora, ao crepúsculo e com nuvens fica mais fraca. As montanhas, o prado, os pinheiros e a casa são os da
-  paisagem do lago (as mesmas fórmulas e cores de `clockscene.render_scene`), para as duas cenas combinarem. Paisagem e aurora: scrim redondo (`scrim_lo`) atrás da
+  paisagem do lago (as mesmas fórmulas e cores de `clockscene.render_scene`), para as duas cenas combinarem.
+  Paisagem: o dashd envia só o chão (`render_scene(sky=False)`: céu na cor-chave magenta, reflexo do lago com a cor
+  do céu de cada linha); o cubo desenha por trás o mesmo céu animado da aurora (`sky_layer`, sem as cortinas). Paisagem e aurora: scrim redondo (`scrim_lo`) atrás da
   hora e da previsão, e as nuvens ficam por baixo da zona da hora (no dashd, `render_scene` com w == h). Colorida:
   fundo com o céu de agora (azul fundo de dia, brilho ao crepúsculo, estrelas de noite) e a bateria numa pilha.
+- **Memória interna (0.13.5):** a RAM interna é o recurso escasso (a PSRAM tem MB livres). Tabelas e buffers
+  estáticos grandes levam `EXT_RAM_BSS_ATTR` (vão para a PSRAM; `SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY`): nunca os que
+  são usados por DMA, ISR ou objetos do FreeRTOS. O mDNS só está ligado enquanto procura o deckd. Stacks cortadas pela
+  folga medida com `{"t":"mem"}` (threads de desenho do LVGL 4 KB, WebSocket 4 KB, `keys` 2 KB): antes de cortar uma
+  stack, medir a folga nas telas pesadas (câmara, teclado, mapas, relógio, "Sobre", varanda). Resultado: interna livre
+  ~19 KB → ~86 KB, maior bloco ~8 KB → ~62 KB, mesmos fps.
 - **Emojis no texto:** como no C6 (imgfont no fallback das `deck_font_*`, imagens de 18 px na PSRAM). O registo de que
   emojis cada ecrã tem é por sessão no dashd (`Session.emoji`): os códigos privados do C6 não valem no cubo.
 - **Teclado (`input`):** `lv_keyboard` com mapas PT próprios; o `lv_keyboard_def_event_cb` é trocado por `input_kb`

@@ -398,10 +398,15 @@ def sky_state(minute: int, kind: str, sr: int, ss: int, epoch: float) -> dict:
             "sun": sun, "moon": moon, "ph": round(moon_phase(epoch) * 100) % 100}
 
 
+SKY_KEY = (255, 0, 255)   # céu "vazio": o DashDeck³ desenha por trás o céu animado (estrelas, nuvens, sol, lua)
+
+
 def render_scene(w: int, h: int, minute: int, kind: str, sr: int, ss: int, epoch: float,
-                 scene: str = "lago", winter: bool = False) -> Image.Image:
+                 scene: str = "lago", winter: bool = False, sky: bool = True) -> Image.Image:
     """Paisagem sem a hora nem as partículas (essas são do ESP). Devolve uma imagem RGB w x h.
-    scene: "lago", "costa" ou "cidade". winter: terra com neve mesmo sem nevar (dezembro a fevereiro)."""
+    scene: "lago", "costa" ou "cidade". winter: terra com neve mesmo sem nevar (dezembro a fevereiro).
+    sky=False (DashDeck³): o céu fica na cor SKY_KEY, sem estrelas, sol, lua nem nuvens (o cubo anima-o); o reflexo
+    no lago usa a cor do céu de cada linha."""
     cv = _Canvas(w, h)
     shift = int(epoch / 300)
     # linha da água: o lago fica em baixo; na costa o mar começa a meio (a faixa da previsão fica por cima)
@@ -435,16 +440,21 @@ def render_scene(w: int, h: int, minute: int, kind: str, sr: int, ss: int, epoch
             if bi < NB - 1 and ((fr > .75 and (x + y) % 2 == 0) or (fr > .5 and x % 2 == 0 and y % 2 == 0)):
                 bi += 1
             cv.p[row + x] = bands[bi]
+    sky_rows = [cv.p[y * w] for y in range(HZ)]   # para o reflexo quando o céu fica para o cubo
+    if not sky:
+        cv.p[:HZ * w] = [SKY_KEY] * (HZ * w)
 
     rnd = random.Random(42)
-    if L < .35 and cf < .65:
+    if sky and L < .35 and cf < .65:
         for _ in range(int(46 * w / 320)):
             sx, sy, ph = rnd.random() * w, rnd.random() * (HZ - 54), rnd.random() * 6
             cv.bl(sx, sy, (255, 255, 240), (1 - L / .35) * (1 - cf) * (.55 + .45 * math.sin(ph)))
 
     amp = HZ - 22 - (26 if w > h else 140)   # o arco do sol/lua não sobe para a zona da previsão
     sun_x = -99.0
-    if e > -.08:
+    if e > -.08 and not sky:
+        sun_x = 16 + (w - 32) * _clamp((minute - sr) / (ss - sr))   # o brilho do sol no lago (o disco é do cubo)
+    elif e > -.08:
         p = _clamp((minute - sr) / (ss - sr))
         sun_x = 16 + (w - 32) * p
         sy = HZ - 22 - amp * max(e, 0)
@@ -452,7 +462,7 @@ def render_scene(w: int, h: int, minute: int, kind: str, sr: int, ss: int, epoch
         vis = 1 - cf * .85
         cv.disc(sun_x, sy, 11, col, .18 * vis)
         cv.disc(sun_x, sy, 7, col, vis)
-    if e < .05:
+    if e < .05 and sky:
         nl = 1440 - (ss - sr)
         p = ((minute - ss + 1440) % 1440) / nl
         if p <= 1:
@@ -477,7 +487,7 @@ def render_scene(w: int, h: int, minute: int, kind: str, sr: int, ss: int, epoch
     cs = _mul(cl, .82)
     rc = random.Random(9)
     drift = epoch / 60
-    for _ in range(n_cl):
+    for _ in range(n_cl if sky else 0):
         x0, y0 = rc.random() * (w + 80), (12 + rc.random() * 62) * HZ / 150
         if w == h:   # DashDeck³ (quadrado): a hora e a previsão ocupam o cimo; as nuvens ficam por baixo delas
             y0 = 74 + (y0 * 150 / HZ - 12) / 62 * 48
@@ -520,7 +530,10 @@ def render_scene(w: int, h: int, minute: int, kind: str, sr: int, ss: int, epoch
             for y in range(fh, h):
                 if y >= HZ:
                     off = round(math.sin(y * .9 + shift))
-                    c0 = _mix(_mul(cv.get(x + off, HZ - 1 - (y - HZ) * 2), .62), water_tint, .18)
+                    src = cv.get(x + off, HZ - 1 - (y - HZ) * 2)
+                    if src == SKY_KEY:
+                        src = sky_rows[int(_clamp(HZ - 1 - (y - HZ) * 2, 0, HZ - 1))]
+                    c0 = _mix(_mul(src, .62), water_tint, .18)
                     if (x * 7 + y * 13 + shift * 3) % 29 == 0:
                         c0 = _mix(c0, (255, 255, 255), .25)
                     if abs(x - sun_x) < 3 - (y - HZ) / 9 and (y + shift) % 3 and e > -.05:
@@ -567,6 +580,8 @@ def render_scene(w: int, h: int, minute: int, kind: str, sr: int, ss: int, epoch
         y0 = max(0, HZ - 90)
         for y in range(y0, h):
             for x in range(w):
+                if cv.p[y * w + x] == SKY_KEY:
+                    continue   # o céu do cubo já vem acinzentado
                 a = _clamp(.18 + .42 * (y - y0) / 110 + .1 * math.sin(y * .35 + shift * .6 + x * .015))
                 cv.bl(x, y, fc, a)
 

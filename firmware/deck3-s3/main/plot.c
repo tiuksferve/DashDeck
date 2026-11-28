@@ -1,6 +1,7 @@
 // Template "plot", portado do DashDeck (firmware/main/ui.c: draw_plot, draw_tracks, draw_icons, draw_tag,
 // build_ctrl, map_ev) para o ecrã de 480x480: texto 16 px, ícones dos alvos 1,5x, botões maiores.
 #include "plot.h"
+#include "esp_attr.h"   // EXT_RAM_BSS_ATTR: tabelas grandes na PSRAM (a RAM interna é pouca)
 #include "bg.h"
 
 #include <math.h>
@@ -370,7 +371,7 @@ static void draw_sky(const cJSON *p, int32_t w, int32_t h)
     text(&layer, "W", cx - R + 14, cy, 24, sub, LV_TEXT_ALIGN_CENTER);
     // satélites: posições primeiro (os rótulos evitam os pontos e os outros rótulos), depois o desenho
     enum { SKY_MAX = 40 };
-    static struct { int16_t x, y, lx, ly; } sp[SKY_MAX];
+    EXT_RAM_BSS_ATTR static struct { int16_t x, y, lx, ly; } sp[SKY_MAX];
     int ns = 0;
     {
         const cJSON *st;

@@ -2,6 +2,7 @@
 // seguem as do DashDeck (bootanim.c "Pixels", notify.c "Ondas LoRa", aboutanim.c "Hiperespaço"); as cenas
 // grandes desenham-se a 240x240 (s_lo) e ampliam-se 2x (píxeis grossos).
 #include "anim.h"
+#include "esp_attr.h"   // EXT_RAM_BSS_ATTR: tabelas grandes na PSRAM (a RAM interna é pouca)
 
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
@@ -307,7 +308,7 @@ static int cells(const char *f, int x, int y, int sc, int16_t (*out)[3], int max
     return n;
 }
 
-static int16_t s_tmp[1200][3];
+EXT_RAM_BSS_ATTR static int16_t s_tmp[1200][3];
 
 void pfont_draw(uint32_t *buf, int w, int h, int stride, const char *s, int x, int y, int sc, uint32_t col,
                 uint32_t outline, int nchars)
@@ -331,7 +332,7 @@ void pfont_draw(uint32_t *buf, int w, int h, int stride, const char *s, int x, i
 // ------------------------------------------------------------------------------------- estrelas
 
 #define NSTAR 90
-static int16_t s_star[NSTAR][3];
+EXT_RAM_BSS_ATTR static int16_t s_star[NSTAR][3];
 
 static void stars_init(int w, int h)
 {
@@ -363,7 +364,7 @@ static void stars_draw(float t, int amax)
 #define MAXC 400
 
 // o nome no "Sobre" (células acesas)
-static int16_t s_cells[MAXC][3];
+EXT_RAM_BSS_ATTR static int16_t s_cells[MAXC][3];
 static int s_ncells;
 
 // ------------------------------------------------------------------------------------- avisos
@@ -675,8 +676,8 @@ void anim_badge(uint32_t *buf, int size, int stride, uint32_t col, const char *l
 #define AP2 6                      // píxel dos sprites grandes (nave de pouso, astronauta, dono; o cão a metade)
 #define NWARP 160
 #define NSTAR2 200
-static float s_wx[NWARP], s_wy[NWARP], s_wz[NWARP];
-static int16_t s_st2[NSTAR2][3];
+EXT_RAM_BSS_ATTR static float s_wx[NWARP], s_wy[NWARP], s_wz[NWARP];
+EXT_RAM_BSS_ATTR static int16_t s_st2[NSTAR2][3];
 static int s_lsc2, s_ly2, s_sup2;
 static const uint8_t BAYER[16] = {0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5};
 
@@ -1291,8 +1292,8 @@ void anim_away_draw(uint32_t *buf, int w, int h, int stride, float t, const away
 }
 
 // ------------------------------------------------------------------------------------- relógio
-// Faces do relógio do uConsole no cubo (tpl "clock"): 0 paisagem (a cena do DashDeck, desenhada pelo dashd a
-// 240x240 e enviada como fundo, com a chuva/neve e o cão por cima), 1 aurora boreal (about_aurora, composta para o
+// Faces do relógio do uConsole no cubo (tpl "clock"): 0 paisagem (o chão da cena do DashDeck, desenhado pelo dashd a
+// 240x240 com o céu na cor-chave; o céu animado é do cubo, sky_layer sem aurora; a chuva/neve e o cão por cima), 1 aurora boreal (about_aurora, composta para o
 // quadrado, com o céu de agora: de dia não há aurora), 2 o cubo, 3 temporizador e alarme. As cenas desenham-se a meia resolução (pixel art como no C6)
 // e ampliam-se 2x; a hora, a data e o tempo vão por cima em resolução total.
 
@@ -1307,10 +1308,10 @@ static bool lo_ensure(void)
 // da aurora a subir da serra até perto dele), picos com neve, colinas com a cabana e o lago no terço de baixo,
 // onde ficam os créditos. É uma cena própria (o mostrador "Aurora" do relógio tem a hora por cima).
 #define AB_HZ 168   // horizonte (linha do lago), em píxeis do buffer baixo
-static int16_t s_abfar[LO], s_abmid[LO], s_abst[80][3];
+EXT_RAM_BSS_ATTR static int16_t s_abfar[LO], s_abmid[LO], s_abst[80][3];
 static bool s_ab_init;
 
-static int8_t s_abrise[LO], s_abmrise[LO];   // encosta virada à luz (serra e colinas)
+EXT_RAM_BSS_ATTR static int8_t s_abrise[LO], s_abmrise[LO];   // encosta virada à luz (serra e colinas)
 
 static void about_aurora_init(void)
 {
@@ -1342,10 +1343,13 @@ static inline int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? 
 
 // k: céu real (relógio); NULL = noite limpa (o "Sobre"). De dia não há aurora (como no céu verdadeiro); ao crepúsculo
 // e com nuvens fica mais fraca; as nuvens, o sol e a lua seguem o dashd.
-static void about_aurora(float t, const sky_t *k)
+// Céu animado (o de agora, com k; NULL = noite limpa): gradiente, estrelas, sol e lua no arco, cortinas da aurora
+// (se aurora), estrela cadente e nuvens a andar. HZ = linha do horizonte (o céu desenha-se de 0 a HZ). Usado pela
+// aurora e, sem as cortinas, pela paisagem (o chão vem do dashd com o céu na cor-chave). Devolve a força da aurora
+// (0..256) e a cor do céu junto ao horizonte.
+static void sky_layer(float t, const sky_t *k, int HZ, bool aurora, int *aur_out, uint32_t *bot_out)
 {
     if (!s_ab_init) about_aurora_init();
-    const int HZ = AB_HZ;
     const int L = k && k->ok ? clampi(k->l, 0, 100) : 0, G = k && k->ok ? clampi(k->g, 0, 100) : 0;
     const int CF = k && k->ok ? clampi(k->cf, 0, 100) : 0;
     // céu: as cores da paisagem do dashd (noite funda / azul do dia, laranja e violeta ao crepúsculo, cinza com nuvens)
@@ -1398,7 +1402,7 @@ static void about_aurora(float t, const sky_t *k)
     }
     // cortinas: uma de trás (larga, violeta e rosa) e a da frente (verde, com raios); sobem da serra até ~y 56
     int aur = night * (100 - CF * 7 / 10) / 100;   // 0..256
-    for (int layer = 0; layer < 2 && aur > 8; layer++) {
+    for (int layer = 0; layer < 2 && aurora && aur > 8; layer++) {
         for (int x = 0; x < LO; x++) {
             float fx = (float)x;
             float base, inten;
@@ -1466,6 +1470,18 @@ static void about_aurora(float t, const sky_t *k)
             }
         }
     }
+    if (aur_out) *aur_out = aurora ? aur : 0;
+    if (bot_out) *bot_out = bot;
+}
+
+static void about_aurora(float t, const sky_t *k)
+{
+    if (!s_ab_init) about_aurora_init();
+    const int HZ = AB_HZ;
+    const int L = k && k->ok ? clampi(k->l, 0, 100) : 0, G = k && k->ok ? clampi(k->g, 0, 100) : 0;
+    int aur;
+    uint32_t bot;
+    sky_layer(t, k, HZ, true, &aur, &bot);
     // montanhas como na paisagem do lago: as cores do dashd conforme a luz (e o fundo do céu na serra ao longe)
     const int LL = L * 256 / 100;
     const uint32_t far = mix(mix(0x1C2244, 0x6178A6, LL), bot, 77), far_l = mix(far, 0xFFFFFF, 26);
@@ -1552,7 +1568,7 @@ static void scrim_lo(int x, int y, int w, int h, int a)
 // ---- chuva, trovoada e neve (como no DashDeck), a meia resolução
 #define N_DROPS 110
 #define N_FLAKES 70
-static float s_drop[N_DROPS][3], s_flake[N_FLAKES][4];
+EXT_RAM_BSS_ATTR static float s_drop[N_DROPS][3], s_flake[N_FLAKES][4];
 static bool s_part_init;
 static uint32_t s_pseed;
 static float prand(void)
@@ -2046,10 +2062,23 @@ void anim_clock_draw(int face, uint32_t *buf, int w, int h, int stride, float t,
     if (face == 0 && c->scene) {   // paisagem: a cena do dashd, a chuva/neve e o cão
         const bgimg_t *sc = c->scene;
         uint32_t pal[256];
-        for (int i = 0; i < 256; i++) pal[i] = 0xFF000000u | sc->pal[i];
+        bool key[256], keyed = false;   // céu na cor-chave (magenta): o cubo desenha-o animado por trás
+        for (int i = 0; i < 256; i++) {
+            uint32_t v = sc->pal[i];
+            key[i] = (v >> 16 & 255) > 230 && (v >> 8 & 255) < 30 && (v & 255) > 230;
+            keyed |= key[i];
+            pal[i] = 0xFF000000u | v;
+        }
+        if (keyed) sky_layer(t, &c->sky, LO - 22, false, NULL, NULL);   // o lago da paisagem começa em LO-22
         for (int y = 0; y < LO; y++)
-            for (int x = 0; x < LO; x++)
-                s_lo[y * LO + x] = (x < sc->w && y < sc->h) ? pal[bg_px(sc, x, y)] : 0xFF101830;
+            for (int x = 0; x < LO; x++) {
+                if (x >= sc->w || y >= sc->h) {
+                    s_lo[y * LO + x] = 0xFF101830;
+                    continue;
+                }
+                uint8_t ix = bg_px(sc, x, y);
+                if (!key[ix]) s_lo[y * LO + x] = pal[ix];
+            }
         if (c->pet >= 0) pet_draw(c, t);
         particles(c->anim, c->night, t);
     } else if (face == 0) {   // a cena ainda não chegou
@@ -2200,9 +2229,9 @@ void anim_pomo_draw(uint32_t *buf, int w, int h, int stride, float t, const pomo
 #define T_DONE 3.6f
 
 static int s_bh, s_bcx, s_bcy, s_bsup_x, s_bsup_y, s_bsup_top, s_bname_y;
-static int16_t s_bc[260][3];
+EXT_RAM_BSS_ATTR static int16_t s_bc[260][3];
 static int s_bn;
-static int16_t s_bstar[70][3];
+EXT_RAM_BSS_ATTR static int16_t s_bstar[70][3];
 
 static float bounce(float t)
 {

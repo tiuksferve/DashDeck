@@ -2969,10 +2969,13 @@ class ClockProvider(Provider):
             winter = bool(self.node.get("winter_snow", True)) and now.tm_mon in (12, 1, 2)
             w, h = (240, 240) if deck else (self.app.esp_w, self.app.esp_h)
             key = f"clk{w}{scene[:2]}{'w' if winter else ''}{kind[:3]}{time.strftime('%d%H')}{minute % 60 // 5}"
+            if deck:
+                key += "k"   # com o céu vazio (cor-chave): não confundir com uma cena antiga no cartão/memória
             cached = self._scene_deck if deck else self._scene
             if not cached or cached[0] != key:
                 t0 = time.monotonic()
-                img = self.cs.render_scene(w, h, minute, kind, sr, ss, time.time(), scene=scene, winter=winter)
+                img = self.cs.render_scene(w, h, minute, kind, sr, ss, time.time(), scene=scene, winter=winter,
+                                           sky=not deck)   # no cubo o céu é animado no aparelho
                 cached = self.cs.scene_bg(key, img)
                 if deck:
                     self._scene_deck = cached

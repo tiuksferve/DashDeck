@@ -77,3 +77,10 @@ CONFIG_LV_FS_STDIO_PATH="/sdcard/deck3/"
 CONFIG_LV_FS_STDIO_CACHE_SIZE=4096
 CONFIG_LV_USE_LODEPNG=y
 CONFIG_LV_USE_TJPGD=y
+
+# Memória interna (0.13.5): tabelas grandes do firmware na PSRAM (EXT_RAM_BSS_ATTR) e a folga das stacks
+# por tarefa no {"t":"mem"}
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+# Threads de desenho do LVGL: medido ({"t":"mem"}) ~1,7 KB de 8 KB; 4 KB chegam e poupam 8 KB internos
+CONFIG_LV_DRAW_THREAD_STACK_SIZE=4096
