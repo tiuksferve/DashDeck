@@ -105,6 +105,12 @@ tudo se faz aqui. A união com o DashDeck segue `docs/deck3/unificacao.md`.
   o header é `src/libs/tjpgd/tjpgd.h` (sem redução de escala; entrega B, G, R). ~70 ms por quadro de 444×250.
   Atenção: `/dev/ttyACM0` costuma ser a XIAO da câmara (o cubo é `/dev/deck3`); um esptool na porta errada deixa-a
   sem resposta até `systemctl --user restart camd`.
+- **Relógio (0.13.4):** o céu das faces segue a hora e o tempo reais (`clock.sky` do dashd). Aurora: a cena do
+  "Sobre" (`about_aurora(t, &sky)`) com céu de dia/crepúsculo/noite, sol e lua no arco, nuvens e chuva/neve; de dia
+  não há aurora, ao crepúsculo e com nuvens fica mais fraca. As montanhas, o prado, os pinheiros e a casa são os da
+  paisagem do lago (as mesmas fórmulas e cores de `clockscene.render_scene`), para as duas cenas combinarem. Paisagem e aurora: scrim redondo (`scrim_lo`) atrás da
+  hora e da previsão, e as nuvens ficam por baixo da zona da hora (no dashd, `render_scene` com w == h). Colorida:
+  fundo com o céu de agora (azul fundo de dia, brilho ao crepúsculo, estrelas de noite) e a bateria numa pilha.
 - **Emojis no texto:** como no C6 (imgfont no fallback das `deck_font_*`, imagens de 18 px na PSRAM). O registo de que
   emojis cada ecrã tem é por sessão no dashd (`Session.emoji`): os códigos privados do C6 não valem no cubo.
 - **Teclado (`input`):** `lv_keyboard` com mapas PT próprios; o `lv_keyboard_def_event_cb` é trocado por `input_kb`

@@ -52,6 +52,13 @@ float anim_about_credits_at(void);
 // Toque em (x, y) no instante t: true se a cena o usou (então não fecha).
 bool anim_about_touch(int x, int y, float t);
 
+// Céu de agora (do dashd, as contas da paisagem): l luz do dia, g brilho do nascer/pôr do sol, cf nuvens (0..100);
+// sun/moon posição no arco (0..100, -1 = fora do céu); ph fase da lua (0..100, 50 = cheia).
+typedef struct {
+    bool ok;
+    int l, g, cf, sun, moon, ph;
+} sky_t;
+
 // ---- "fora de casa" (sem o uConsole): relógio grande, data, bateria, eventos guardados no cartão.
 // Desenho leve (o chamador refresca 4 vezes por segundo); a posição desloca-se a cada minuto (AMOLED).
 typedef struct {
@@ -63,6 +70,7 @@ typedef struct {
     bool sd;
     const char *status;   // estado da ligação
     int shift;            // deslocamento anti-marcas (0..8)
+    const sky_t *sky;     // céu real (relógio do uConsole); NULL = noite com estrelas (fora de casa)
 } away_t;
 void anim_away_draw(uint32_t *buf, int w, int h, int stride, float t, const away_t *a);
 
@@ -88,6 +96,7 @@ typedef struct {
     const bgimg_t *scene; // paisagem (240x240, 8 bpp) enviada pelo dashd, ou NULL
     int anim;             // CLK_RAIN...
     bool night;
+    sky_t sky;            // céu real (faces aurora e colorida)
     int pet, pet_x, pet_y, pet_l;   // o cão junto à casa (-1 nenhum, 0 a dormir, 1 a brincar)
     int tset, tleft;      // temporizador: duração escolhida; em pausa, o que falta
     int64_t tend, now;    // a contar: fim (epoch local); agora (epoch local)

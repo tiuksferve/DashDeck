@@ -19,8 +19,7 @@
 static uint32_t *s_lo;
 static void up2(uint32_t *dst, int w, int h, int stride);
 static bool lo_ensure(void);
-static void aurora_scene(float t);
-static void about_aurora(float t);
+static void about_aurora(float t, const sky_t *k);
 static int s_about_var;   // "Sobre": 0 aurora boreal, 1 hiperespaço (alternam a cada toque no nome)
 static uint32_t *B;
 static int BW, BH, BS;
@@ -1138,7 +1137,7 @@ void anim_about_draw(uint32_t *buf, int w, int h, int stride, float t)
     if (s_about_var == 0) {   // aurora composta para o quadrado (about_aurora), o nome por cima
         if (!s_lo) return;
         B = s_lo; BW = LO; BH = LO; BS = LO;
-        about_aurora(t);
+        about_aurora(t, NULL);
         up2(buf, w, h, stride);
         B = buf; BW = w; BH = h; BS = stride;
         logo2((int)(fminf(fmaxf((t - 0.3f) / 1.4f, 0), 1) * 16), 0x0A0C1C);
@@ -1164,16 +1163,92 @@ bool anim_about_touch(int x, int y, float t)
 
 // ------------------------------------------------------------------------------------- fora de casa
 
+// pilha de bateria em pixel art: corpo, polo, carga na cor do nível e um raio a piscar quando carrega
+static void battery_icon(int x, int y, int pct, bool chg, float t)
+{
+    const int W = 84, H = 40, T = 4;
+    uint32_t c = chg || pct > 40 ? 0x4BE38A : pct > 15 ? 0xFFB23E : 0xFF5470;
+    rect(x - 2, y - 2, W + 4, H + 4, 0x0E1020);                               // contorno escuro
+    rect(x, y, W, H, 0xC8D2E0);                                                // caixa
+    rect(x + T, y + T, W - 2 * T, H - 2 * T, 0x0B0F1A);                        // interior
+    rect(x + W, y + H / 2 - 8, 6, 16, 0xC8D2E0);                               // polo
+    int fw = (W - 4 * T) * (pct < 0 ? 0 : pct > 100 ? 100 : pct) / 100;
+    rect(x + 2 * T, y + 2 * T, fw, H - 4 * T, c);
+    rect(x + 2 * T, y + 2 * T, fw, 4, mix(c, 0xFFFFFF, 100));                  // brilho
+    if (chg && (int)(t * 2) % 2 == 0) {   // raio
+        static const char *BOLT[9] = {"...##", "..##.", ".##..", "#####", "..##.", ".##..", "##...", "#....", "....."};
+        int bx = x + W / 2 - 10, by = y + 3;
+        for (int r = 0; r < 9; r++)
+            for (int q = 0; q < 5; q++)
+                if (BOLT[r][q] == '#') {
+                    rect(bx + q * 4 - 1, by + r * 4 - 1, 6, 6, 0x0E1020);
+                }
+        for (int r = 0; r < 9; r++)
+            for (int q = 0; q < 5; q++)
+                if (BOLT[r][q] == '#') rect(bx + q * 4, by + r * 4, 4, 4, 0xFFF2A0);
+    }
+}
+
 void anim_away_draw(uint32_t *buf, int w, int h, int stride, float t, const away_t *a)
 {
     B = buf; BW = w; BH = h; BS = stride;
-    fill(0x000000);   // AMOLED: preto = píxeis apagados
+    // fundo: o céu de agora, discreto (AMOLED: o preto domina). De dia um azul fundo em cima, ao crepúsculo um
+    // brilho quente junto ao chão, de noite preto com estrelas. Fora de casa (sem céu): noite.
+    const sky_t *k = a->sky && a->sky->ok ? a->sky : NULL;
+    int L = k ? k->l : 0, G = k ? k->g : 0, CF = k ? k->cf : 0;
+    if (!k || (L < 4 && G < 4)) {
+        fill(0x000000);
+    } else {
+        uint32_t day = mix(0x000000, mix(0x0E3470, 0x2A3444, CF * 256 / 100), L * 200 / 100);
+        uint32_t glow = mix(0x000000, 0x8A3A28, G * 220 / 100);
+        for (int y = 0; y < h; y++) {
+            int fy = y * 256 / h;
+            uint32_t c = mix(day, 0x000000, fy < 160 ? fy * 256 / 160 : 256);   // azul em cima até ~60%
+            if (fy > 150) c = mix(c, glow, (fy - 150) * 256 / 106);             // brilho em baixo
+            uint16_t v = c565(c);
+            if (b16()) {
+                uint16_t *row = &((uint16_t *)B)[y * BS];
+                for (int x = 0; x < w; x++) row[x] = v;
+            } else {
+                for (int x = 0; x < w; x++) B[y * BS + x] = 0xFF000000u | c;
+            }
+        }
+    }
     static bool init;
     if (!init) {
         stars_init(w, h);
         init = true;
     }
-    stars_draw(t, 70);
+    int night = k ? (256 - L * 256 / 30) * (100 - CF) / 100 : 256;
+    if (night > 0) {   // estrelas: mais e mais visíveis, algumas coloridas, e uma estrela cadente de vez em quando
+        for (int i = 0; i < NSTAR; i++) {
+            int aa = (int)(150 + 105 * sinf(t * 2.2f + s_star[i][2] * 0.1f)) * night / 256;
+            uint32_t col = s_star[i][2] % 7 == 0 ? 0xA8C8FF : s_star[i][2] % 11 == 0 ? 0xFFE0A8 : 0xF0F4FF;
+            int sx = s_star[i][0], sy = s_star[i][1];
+            blend(sx, sy, col, aa);
+            blend(sx + 1, sy, col, aa);
+            blend(sx, sy + 1, col, aa);
+            blend(sx + 1, sy + 1, col, aa);
+            if (s_star[i][2] % 9 == 0) {   // as maiores em cruz
+                blend(sx - 1, sy, col, aa / 2); blend(sx + 2, sy, col, aa / 2);
+                blend(sx, sy - 1, col, aa / 2); blend(sx, sy + 2, col, aa / 2);
+            }
+        }
+        float ph = fmodf(t, 7.0f);
+        if (ph < 0.9f && night > 128) {
+            int kk = (int)(t / 7.0f);
+            float sx = w * (0.1f + 0.6f * ((kk * 37) % 10) / 10.0f), sy = h * 0.08f + (kk * 29) % 60;
+            float p = ph / 0.9f;
+            for (int i = 0; i < 24; i++) {
+                float q = p - i * 0.015f;
+                if (q < 0) break;
+                int ax = (int)(sx + q * 160), ay = (int)(sy + q * 60);
+                int aa = (int)(230 * (1 - i / 24.0f) * (1 - p * 0.5f));
+                blend(ax, ay, 0xFFFFFF, aa);
+                blend(ax, ay + 1, 0xFFFFFF, aa / 2);
+            }
+        }
+    }
     int dx = (a->shift % 3 - 1) * 6, dy = (a->shift / 3 - 1) * 5;
     int cx = w / 2 + dx;
     // o cubo de 8 bits (blocos de 2 px) a flutuar devagar
@@ -1191,23 +1266,16 @@ void anim_away_draw(uint32_t *buf, int w, int h, int stride, float t, const away
     }
     B = buf; BS = stride;
     pfont_draw(buf, w, h, stride, a->date, cx - pfont_width(a->date, 4) / 2, y + 7 * sc + 20, 4, 0xB8C2D0, 0, -1);
-    // bateria: barra em 10 blocos com a percentagem
-    int by = y + 7 * sc + 70;
+    // bateria: uma pilha (não uma barra) com a percentagem ao lado
+    int by = y + 7 * sc + 64;
     if (a->bat >= 0) {
-        uint32_t c = a->chg ? 0x4BE38A : a->bat > 40 ? 0x4BE38A : a->bat > 15 ? 0xFFB23E : 0xFF5470;
-        int bx = cx - 130;
-        for (int i = 0; i < 10; i++) {
-            bool on = a->bat >= i * 10 + 5;
-            uint32_t cc = on ? c : 0x1A2030;
-            if (on && a->chg && i == (int)(t * 4) % 10) cc = mix(c, 0xFFFFFF, 140);   // a carregar: um bloco corre
-            rect(bx + i * 20, by, 16, 16, cc);
-            rect(bx + i * 20, by, 16, 3, mix(cc, 0xFFFFFF, 90));                       // brilho de cima
-            rect(bx + i * 20, by + 13, 16, 3, mix(cc, 0x000000, 110));                 // sombra
-        }
         char b[16];
         snprintf(b, sizeof(b), "%d%%", a->bat);
-        pfont_draw(buf, w, h, stride, b, bx + 210, by, 2, 0xE8F0FF, 0, -1);
-        B = buf; BS = stride;
+        int tw2 = pfont_width(b, 4), total = 90 + 18 + tw2, bx = cx - total / 2;
+        battery_icon(bx, by, a->bat, a->chg, t);
+        pfont_draw(buf, w, h, stride, b, bx + 90 + 18, by + 6, 4, 0xE8F0FF, 0x0E1020, -1);
+        B = buf; BW = w; BH = h; BS = stride;
+        by += 16;
     }
     // eventos guardados e estado
     char ev[48];
@@ -1224,108 +1292,15 @@ void anim_away_draw(uint32_t *buf, int w, int h, int stride, float t, const away
 
 // ------------------------------------------------------------------------------------- relógio
 // Faces do relógio do uConsole no cubo (tpl "clock"): 0 paisagem (a cena do DashDeck, desenhada pelo dashd a
-// 240x240 e enviada como fundo, com a chuva/neve e o cão por cima), 1 aurora boreal (a cena "Sobre" do
-// DashDeck), 2 o cubo, 3 temporizador e alarme. As cenas desenham-se a meia resolução (pixel art como no C6)
+// 240x240 e enviada como fundo, com a chuva/neve e o cão por cima), 1 aurora boreal (about_aurora, composta para o
+// quadrado, com o céu de agora: de dia não há aurora), 2 o cubo, 3 temporizador e alarme. As cenas desenham-se a meia resolução (pixel art como no C6)
 // e ampliam-se 2x; a hora, a data e o tempo vão por cima em resolução total.
 
-static int16_t s_cfar[LO], s_cmid[LO], s_cstar[70][3];
-
-static void aurora_init(void)
-{
-    const int HZ = LO * 70 / 100;
-    for (int x = 0; x < LO; x++) {
-        float f = HZ - LO * 0.20f - (14 * sinf(x * .030f + 1.3f) + 8 * sinf(x * .081f + .4f) + 3 * sinf(x * .19f + 2));
-        s_cfar[x] = (int16_t)(lroundf(f / 2) * 2);
-        s_cmid[x] = (int16_t)lroundf(HZ - 10 - (5 * sinf(x * .047f + 2.1f) + 3 * sinf(x * .12f) + 2 * sinf(x * .28f + 1)));
-    }
-    uint32_t seed = 11;
-    for (int i = 0; i < 70; i++) {
-        seed = seed * 1664525u + 1013904223u;
-        s_cstar[i][0] = (int16_t)((seed >> 8) % LO);
-        seed = seed * 1664525u + 1013904223u;
-        s_cstar[i][1] = (int16_t)((seed >> 8) % (HZ - 30));
-        s_cstar[i][2] = (int16_t)((seed >> 4) % 628);
-    }
-}
-
-// buffer baixo (240x240, PSRAM) e a serra da aurora, na primeira vez (relógio ou "Sobre")
+// buffer baixo (240x240, PSRAM), na primeira vez (relógio ou "Sobre"; a serra da aurora inicia-se nela)
 static bool lo_ensure(void)
 {
-    static bool aur;   // o s_lo também é reservado por outras cenas: a serra tem a sua marca
-    if (!s_lo) s_lo = heap_caps_malloc(LO * LO * 4, MALLOC_CAP_SPIRAM);
-    if (!s_lo) return false;
-    if (!aur) {
-        aurora_init();
-        aur = true;
-    }
-    return true;
-}
-
-static void aurora_scene(float t)
-{
-    const int HZ = LO * 70 / 100;
-    for (int y = 0; y < HZ; y++) {
-        int f = y * 12 * 256 / HZ, b = f >> 8, fr = f & 255;
-        uint32_t c0 = mix(0x050818, 0x1A1440, b * 256 / 12), c1 = mix(0x050818, 0x1A1440, (b + 1) * 256 / 12);
-        uint32_t *row = &B[y * BS];
-        for (int x = 0; x < LO; x++) row[x] = 0xFF000000u | ((fr > 128 && ((x + y) & 1) == 0) ? c1 : c0);
-    }
-    for (int i = 0; i < 70; i++)
-        blend(s_cstar[i][0], s_cstar[i][1], 0xFFFFF0, (int)(140 + 100 * sinf(t * 2.3f + s_cstar[i][2] / 100.0f)));
-    for (int x = 0; x < LO; x++) {   // cortinas verticais que ondulam, mais intensas em baixo
-        float fx = (float)x * 1.333f;
-        float base = HZ * 0.55f + 9 * sinf(fx * 0.018f + t * 0.7f) + 5 * sinf(fx * 0.047f - t * 1.1f);
-        float inten = 0.55f + 0.45f * sinf(fx * 0.031f + t * 0.9f) * sinf(fx * 0.013f - t * 0.4f + 1);
-        if (inten < 0.1f) continue;
-        int hh = (int)(22 + 30 * inten), y0 = (int)base, ai = (int)(inten * 175);
-        uint32_t c0 = mix(0x3CFFB0, 0x50E0FF, (int)(128 + 127 * sinf(fx * 0.02f + t)));
-        for (int k = 0; k < hh; k++) {
-            int y = y0 - k;
-            if (y < 0) break;
-            blend(x, y, k > hh * 2 / 3 ? 0xB070FF : c0, ai * (hh - k) / hh);
-        }
-        blend(x, y0 + 1, c0, ai / 3);
-    }
-    float ph = fmodf(t, 4.0f);   // estrela cadente a cada 4 s
-    if (ph < 0.8f) {
-        int k = (int)(t / 4.0f);
-        float sx = LO * (0.15f + 0.6f * ((k * 37) % 10) / 10.0f), sy = HZ * 0.10f + (k * 13) % 18;
-        float p = ph / 0.8f;
-        for (int i = 0; i < 16; i++) {
-            float q = p - i * 0.02f;
-            if (q < 0) break;
-            blend((int)(sx + q * 70), (int)(sy + q * 26), 0xFFFFFF, (int)(240 * (1 - i / 16.0f) * (1 - p * 0.5f)));
-        }
-    }
-    for (int x = 0; x < LO; x++) {   // longe: azul escuro com neve no cimo; perto: colinas quase pretas
-        int fh = s_cfar[x], mh = s_cmid[x];
-        for (int y = fh; y < HZ; y++) {
-            uint32_t c = y >= mh ? 0x070D10 : mix(0x0C1030, 0x080A1E, (y - fh) * 256 / (HZ - fh + 1));
-            if (y < mh && y < fh + 5 && (x * 7 + y) % 5) c = mix(c, 0x8FA6C8, 120);
-            B[y * BS + x] = 0xFF000000u | c;
-        }
-        put(x, fh, 0x4FA89A);
-    }
-    int cx = LO * 20 / 100, cy = HZ - 2;   // cabana com a janela acesa e fumo
-    rect(cx - 8, cy - 9, 16, 9, 0x2A1A12);
-    for (int i = 0; i < 10; i++) rect(cx - 10 + i, cy - 9 - i / 2, 20 - 2 * i, 1, 0x3A2416);
-    rect(cx + 2, cy - 6, 4, 3, ((int)(t * 3) % 7) ? 0xFFC860 : 0xFFE0A0);
-    for (int i = 0; i < 6; i++) {
-        float q = fmodf(t * 0.5f + i / 6.0f, 1);
-        blend(cx + 5 + (int)(4 * sinf(q * 6 + t)), cy - 15 - (int)(q * 26), 0x9098B0, (int)(120 * (1 - q)));
-    }
-    int phs = (int)(t * 3 * 256);   // lago: reflexo ondulado e mais escuro
-    for (int y = HZ; y < LO; y++) {
-        int sy2 = HZ - 1 - (y - HZ) * 2;
-        if (sy2 < 0) sy2 = 0;
-        int off = ((y * 230 + phs) / 256) % 3 - 1;
-        for (int x = 0; x < LO; x++) {
-            int xx = x + off < 0 ? 0 : x + off >= LO ? LO - 1 : x + off;
-            uint32_t p = B[sy2 * BS + xx];
-            int r = ((p >> 16) & 255) * 5 / 8, g = ((p >> 8) & 255) * 5 / 8, b = (p & 255) * 2 / 3 + 10;
-            B[y * BS + x] = 0xFF000000u | (uint32_t)(r << 16 | g << 8 | (b > 255 ? 255 : b));
-        }
-    }
+    if (!s_lo) s_lo = heap_caps_malloc(LO * LO * 4, MALLOC_CAP_SPIRAM);   // também o do arranque
+    return s_lo != NULL;
 }
 
 // ---- "Sobre": aurora composta para o ecrã quadrado (240x240, ampliada 2x). Céu alto (o nome em cima e as cortinas
@@ -1335,18 +1310,22 @@ static void aurora_scene(float t)
 static int16_t s_abfar[LO], s_abmid[LO], s_abst[80][3];
 static bool s_ab_init;
 
+static int8_t s_abrise[LO], s_abmrise[LO];   // encosta virada à luz (serra e colinas)
+
 static void about_aurora_init(void)
 {
-    for (int x = 0; x < LO; x++) {   // picos: dentes de serra suavizados, com alturas diferentes
-        float f = 0;
-        static const float PK[6][3] = {{18, 40, 30}, {70, 58, 26}, {118, 34, 22}, {160, 64, 34}, {205, 46, 28}, {250, 30, 24}};
-        for (int k = 0; k < 6; k++) {
-            float d = fabsf(x - PK[k][0]) / PK[k][2];
-            float hgt = PK[k][1] * (1 - d) + 3 * sinf(x * 0.5f + k);
-            if (hgt > f) f = hgt;
-        }
-        s_abfar[x] = (int16_t)(AB_HZ - 14 - f * 0.9f);
-        s_abmid[x] = (int16_t)lroundf(AB_HZ - 8 - (6 * sinf(x * .047f + 2.1f) + 3 * sinf(x * .12f) + 2 * sinf(x * .28f + 1)));
+    // as montanhas da paisagem do lago (clockscene.render_scene no dashd): serra em patamares de 2 px com neve nos
+    // cumes, colinas à frente e o prado junto à água
+    float prev_f = 0, prev_m = 0;
+    for (int x = 0; x < LO; x++) {
+        float fr = AB_HZ - 44 - (17 * sinf(x * .022f + 1.3f) + 9 * sinf(x * .061f + .4f) + 4 * sinf(x * .14f + 2));
+        float mr = AB_HZ - 18 - (6 * sinf(x * .035f + 2.1f) + 4 * sinf(x * .09f) + 2 * sinf(x * .21f + 1));
+        s_abfar[x] = (int16_t)(lroundf(fr / 2) * 2);
+        s_abmid[x] = (int16_t)lroundf(mr);
+        s_abrise[x] = x > 0 && fr < prev_f;
+        s_abmrise[x] = x > 0 && mr < prev_m;
+        prev_f = fr;
+        prev_m = mr;
     }
     uint32_t seed = 23;
     for (int i = 0; i < 80; i++) {
@@ -1359,20 +1338,67 @@ static void about_aurora_init(void)
     s_ab_init = true;
 }
 
-static void about_aurora(float t)
+static inline int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
+
+// k: céu real (relógio); NULL = noite limpa (o "Sobre"). De dia não há aurora (como no céu verdadeiro); ao crepúsculo
+// e com nuvens fica mais fraca; as nuvens, o sol e a lua seguem o dashd.
+static void about_aurora(float t, const sky_t *k)
 {
     if (!s_ab_init) about_aurora_init();
     const int HZ = AB_HZ;
-    for (int y = 0; y < HZ; y++) {   // céu: noite funda em cima, violeta junto à serra (com pontilhado)
+    const int L = k && k->ok ? clampi(k->l, 0, 100) : 0, G = k && k->ok ? clampi(k->g, 0, 100) : 0;
+    const int CF = k && k->ok ? clampi(k->cf, 0, 100) : 0;
+    // céu: as cores da paisagem do dashd (noite funda / azul do dia, laranja e violeta ao crepúsculo, cinza com nuvens)
+    uint32_t top = mix(0x03050F, 0x2F6FD0, L * 256 / 100), bot = mix(0x241850, 0xA3D6F7, L * 256 / 100);
+    top = mix(top, 0x4A3A7A, G * 128 / 100);
+    bot = mix(bot, 0xF2884A, G * 218 / 100);
+    uint32_t gt = (((top >> 16 & 255) * 30 + (top >> 8 & 255) * 59 + (top & 255) * 11) / 100) * 82 / 100;
+    uint32_t gb = (((bot >> 16 & 255) * 30 + (bot >> 8 & 255) * 59 + (bot & 255) * 11) / 100) * 82 / 100;
+    top = mix(top, gt << 16 | gt << 8 | gt, CF * 256 / 100);
+    bot = mix(bot, gb << 16 | gb << 8 | gb, CF * 256 / 100);
+    for (int y = 0; y < HZ; y++) {
         int f = y * 12 * 256 / HZ, b = f >> 8, fr = f & 255;
-        uint32_t c0 = mix(0x03050F, 0x241850, b * 256 / 12), c1 = mix(0x03050F, 0x241850, (b + 1) * 256 / 12);
+        uint32_t c0 = mix(top, bot, b * 256 / 12), c1 = mix(top, bot, (b + 1) * 256 / 12);
         uint32_t *row = &B[y * BS];
         for (int x = 0; x < LO; x++) row[x] = 0xFF000000u | ((fr > 128 && ((x + y) & 1) == 0) ? c1 : c0);
     }
-    for (int i = 0; i < 80; i++)
-        blend(s_abst[i][0], s_abst[i][1], 0xFFFFF0, (int)(130 + 110 * sinf(t * 2.1f + s_abst[i][2] / 100.0f)));
+    int night = clampi(256 - L * 256 / 35, 0, 256) * (100 - CF) / 100;   // estrelas e aurora: só com céu escuro
+    if (night > 0)
+        for (int i = 0; i < 80; i++)
+            blend(s_abst[i][0], s_abst[i][1] - 40, 0xFFFFF0,
+                  (int)(130 + 110 * sinf(t * 2.1f + s_abst[i][2] / 100.0f)) * night / 256);
+    // sol e lua no arco do céu (atrás da serra quando baixos)
+    if (k && k->ok && k->sun >= 0) {
+        float p = k->sun / 100.0f;
+        int sx = 16 + (int)((LO - 32) * p), sy = 150 - (int)(68 * sinf((float)M_PI * p));   // abaixo da hora
+        uint32_t col = mix(0xFF6A1C, 0xFFD060, clampi((int)(256 * sinf((float)M_PI * p) * 1.6f), 0, 256));
+        int vis = 256 - CF * 220 / 100;
+        for (int y = -11; y <= 11; y++)
+            for (int x = -11; x <= 11; x++) {
+                int d2 = x * x + y * y;
+                if (d2 <= 49) blend(sx + x, sy + y, col, vis);
+                else if (d2 <= 121) blend(sx + x, sy + y, col, vis * 50 / 256);
+            }
+    }
+    if (k && k->ok && k->moon >= 0) {
+        float p = k->moon / 100.0f, ph = k->ph / 100.0f, kc = cosf(2 * (float)M_PI * ph);
+        int mx = 16 + (int)((LO - 32) * p), my = 140 - (int)(60 * sinf((float)M_PI * p)), r = 6;
+        int vis = 256 - CF * 200 / 100;
+        for (int y = -r; y <= r; y++)
+            for (int x = -r; x <= r; x++) {
+                if (x * x + y * y > r * r + r * 6 / 10) continue;
+                float nx = (float)x / r, ny = (float)y / r, ww = sqrtf(fmaxf(0, 1 - ny * ny));
+                bool lit = ph < 0.5f ? nx > kc * ww : nx < -kc * ww;
+                blend(mx + x, my + y, lit ? 0xF6DC84 : 0x5A6080, lit ? vis : vis * 90 / 256);
+            }
+    } else if (!k || !k->ok) {   // "Sobre": lua cheia pequena
+        for (int y = -5; y <= 5; y++)
+            for (int x = -5; x <= 5; x++)
+                if (x * x + y * y <= 28) put(196 + x, 64 + y, 0xF6DC84);
+    }
     // cortinas: uma de trás (larga, violeta e rosa) e a da frente (verde, com raios); sobem da serra até ~y 56
-    for (int layer = 0; layer < 2; layer++) {
+    int aur = night * (100 - CF * 7 / 10) / 100;   // 0..256
+    for (int layer = 0; layer < 2 && aur > 8; layer++) {
         for (int x = 0; x < LO; x++) {
             float fx = (float)x;
             float base, inten;
@@ -1389,45 +1415,102 @@ static void about_aurora(float t)
                 hh = (int)(30 + 34 * inten);
             }
             if (inten < 0.08f) continue;
-            int y0 = (int)base, ai = (int)(inten * (layer ? 190 : 110));
+            int y0 = (int)base, ai = (int)(inten * (layer ? 190 : 110)) * aur / 256;
             uint32_t cl = layer ? mix(0x3CFFB0, 0x50E0FF, (int)(128 + 127 * sinf(fx * 0.02f + t)))
                                 : mix(0x9A5CFF, 0xFF6FB8, (int)(128 + 127 * sinf(fx * 0.015f - t * 0.6f)));
-            for (int k = 0; k < hh; k++) {
-                int y = y0 - k;
-                if (y < 52) break;   // não entra no nome
-                uint32_t c = layer && k > hh * 2 / 3 ? mix(cl, 0xB070FF, (k - hh * 2 / 3) * 256 / (hh / 3 + 1)) : cl;
-                blend(x, y, c, ai * (hh - k) / hh);
+            for (int kk = 0; kk < hh; kk++) {
+                int y = y0 - kk;
+                if (y < 52) break;   // não entra no nome / na hora
+                uint32_t c = layer && kk > hh * 2 / 3 ? mix(cl, 0xB070FF, (kk - hh * 2 / 3) * 256 / (hh / 3 + 1)) : cl;
+                blend(x, y, c, ai * (hh - kk) / hh);
             }
             if (layer) blend(x, y0 + 1, cl, ai / 2);   // fímbria brilhante em baixo
         }
     }
-    float ph = fmodf(t, 4.0f);   // estrela cadente a cada 4 s
-    if (ph < 0.8f) {
-        int k = (int)(t / 4.0f);
-        float sx = LO * (0.1f + 0.6f * ((k * 37) % 10) / 10.0f), sy = 60 + (k * 13) % 24;
-        float p = ph / 0.8f;
-        for (int i = 0; i < 16; i++) {
-            float q = p - i * 0.02f;
-            if (q < 0) break;
-            blend((int)(sx + q * 70), (int)(sy + q * 22), 0xFFFFFF, (int)(240 * (1 - i / 16.0f) * (1 - p * 0.5f)));
+    if (night > 128) {   // estrela cadente a cada 4 s
+        float ph = fmodf(t, 4.0f);
+        if (ph < 0.8f) {
+            int kk = (int)(t / 4.0f);
+            float sx = LO * (0.1f + 0.6f * ((kk * 37) % 10) / 10.0f), sy = 60 + (kk * 13) % 24;
+            float p = ph / 0.8f;
+            for (int i = 0; i < 16; i++) {
+                float q = p - i * 0.02f;
+                if (q < 0) break;
+                blend((int)(sx + q * 70), (int)(sy + q * 22), 0xFFFFFF, (int)(240 * (1 - i / 16.0f) * (1 - p * 0.5f)));
+            }
         }
     }
-    for (int x = 0; x < LO; x++) {   // picos azulados com neve; colinas quase pretas à frente
+    // nuvens (como na paisagem: quantas e de que cor conforme o tempo), por baixo da zona da hora
+    if (CF > 0) {
+        uint32_t cl = mix(0x3C4260, 0xF5F7FC, L * 256 / 100);
+        cl = mix(cl, 0xFFB89A, G * 140 / 100);
+        if (k && k->ok && CF >= 70) cl = mix(cl, 0x000000, 96);   // chuva e trovoada: mais escuras
+        uint32_t cs = mix(cl, 0x000000, 46);
+        int n = CF * 10 / 100 + 1;
+        uint32_t seed = 9;
+        for (int i = 0; i < n; i++) {
+            seed = seed * 1664525u + 1013904223u;
+            float x0 = (seed >> 8) % (LO + 80);
+            seed = seed * 1664525u + 1013904223u;
+            int y0 = 76 + (seed >> 8) % 40;   // por baixo da hora
+            seed = seed * 1664525u + 1013904223u;
+            float cw = 18 + (seed >> 8) % 30, sp = 1.5f + (seed >> 4) % 4;
+            float cx = fmodf(x0 + t * sp, LO + 80) - 40;
+            for (int bI = 0; bI < 4; bI++) {
+                seed = seed * 1664525u + 1013904223u;
+                float bx = cx + (((seed >> 8) % 100) / 100.0f - .5f) * cw, by = y0 + ((seed >> 4) % 4);
+                int r = (int)(cw * .32f * (.5f + ((seed >> 12) % 50) / 100.0f));
+                for (int y = -r; y <= r; y++)
+                    for (int x = -r; x <= r; x++)
+                        if (x * x + y * y <= r * r) put((int)bx + x, (int)by + y, y > r * 35 / 100 ? cs : cl);
+            }
+        }
+    }
+    // montanhas como na paisagem do lago: as cores do dashd conforme a luz (e o fundo do céu na serra ao longe)
+    const int LL = L * 256 / 100;
+    const uint32_t far = mix(mix(0x1C2244, 0x6178A6, LL), bot, 77), far_l = mix(far, 0xFFFFFF, 26);
+    uint32_t snow = mix(0x6A7496, 0xEEF2FA, LL);
+    if (aur > 64) snow = mix(snow, 0x7FE8C8, aur / 6);   // a neve apanha um pouco da luz da aurora
+    const uint32_t hill = mix(0x101E1C, 0x3A6E40, LL), hill_l = mix(hill, 0xFFFFFF, 20);
+    const uint32_t mead = mix(0x16301F, 0x5A9A48, LL), mead_d = mix(mead, 0x000000, 38);
+    const int snow_line = HZ - 58;
+    for (int x = 0; x < LO; x++) {
         int fh = s_abfar[x], mh = s_abmid[x];
         for (int y = fh; y < HZ; y++) {
-            uint32_t c = y >= mh ? 0x060B0E : mix(0x1A2050, 0x0A0C24, (y - fh) * 256 / (HZ - fh + 1));
-            if (y < mh && y < fh + 7 && (x * 7 + y) % 5) c = mix(c, 0xC8D8F0, 150 - (y - fh) * 18);
+            uint32_t c;
+            if (y >= HZ - 6) c = ((x * 73 + y * 151) * 2654435761u >> 24) % 10 >= 8 ? mead_d : mead;   // prado
+            else if (y >= mh) c = s_abmrise[x] && y < mh + 3 ? hill_l : hill;
+            else if (y < snow_line + (x * 7) % 5 && y < fh + 14) c = snow;
+            else c = s_abrise[x] ? far_l : far;
             B[y * BS + x] = 0xFF000000u | c;
         }
-        put(x, fh, 0x6FE0C0);   // o cimo apanha a luz da aurora
     }
-    int cx = LO * 22 / 100, cy = s_abmid[LO * 22 / 100] + 2;   // cabana na colina, janela acesa e fumo
-    rect(cx - 8, cy - 9, 16, 9, 0x2A1A12);
-    for (int i = 0; i < 10; i++) rect(cx - 10 + i, cy - 9 - i / 2, 20 - 2 * i, 1, 0x3A2416);
-    rect(cx + 2, cy - 6, 4, 3, ((int)(t * 3) % 7) ? 0xFFC860 : 0xFFE0A0);
+    const uint32_t tree = mix(0x0A1A14, 0x24563A, LL), trunk = mix(0x20140C, 0x5A3A22, LL);
+    const int base = HZ - 5;
+    static const int TX[6] = {26, 38, 54, LO - 52, LO - 36, LO - 20};
+    for (int i = 0; i < 6; i++) {   // pinheiros
+        int tx = TX[i], hgt = tx % 3 ? 10 : 13;
+        rect(tx, base - 2, 1, 3, trunk);
+        for (int r = 0; r < hgt - 2; r++) {
+            int wd = 1 + 2 * (int)(r / 2.2f);
+            rect(tx - wd / 2, base - hgt + r, wd, 1, tree);
+        }
+    }
+    int hx = LO * 30 / 100;   // casa: parede, telhado, chaminé com fumo, porta e janela acesa de noite
+    const uint32_t wall = mix(0x3C3236, 0xD6B892, LL), roof = mix(0x3A1A20, 0xB0473A, LL);
+    rect(hx, base - 8, 13, 8, wall);
+    for (int r = 0; r < 7; r++) rect(hx - 1 + r, base - 9 - r, 15 - 2 * r, 1, roof);
+    rect(hx + 10, base - 15, 2, 4, mix(wall, 0x000000, 77));
+    rect(hx + 2, base - 4, 2, 4, mix(wall, 0x000000, 140));
+    bool lit = L < 55;
+    rect(hx + 7, base - 6, 3, 2, lit ? (((int)(t * 3) % 9) ? 0xFFD36A : 0xFFE6A0) : 0x8FB6D4);
+    if (lit)
+        for (int y = -4; y <= 4; y++)
+            for (int x = -4; x <= 4; x++)
+                if (x * x + y * y <= 16) blend(hx + 8 + x, base - 5 + y, 0xFFD36A, 30);
     for (int i = 0; i < 6; i++) {
         float q = fmodf(t * 0.5f + i / 6.0f, 1);
-        blend(cx + 5 + (int)(4 * sinf(q * 6 + t)), cy - 15 - (int)(q * 26), 0x9098B0, (int)(120 * (1 - q)));
+        blend(hx + 11 + (int)(3 * sinf(q * 6 + t)), base - 17 - (int)(q * 22), 0x9098B0, (int)(110 * (1 - q)));
     }
     int phs = (int)(t * 3 * 256);   // lago: reflexo ondulado e mais escuro
     for (int y = HZ; y < LO; y++) {
@@ -1439,6 +1522,29 @@ static void about_aurora(float t)
             uint32_t p = B[sy2 * BS + xx];
             int r = ((p >> 16) & 255) * 5 / 8, g = ((p >> 8) & 255) * 5 / 8, b = (p & 255) * 2 / 3 + 10;
             B[y * BS + x] = 0xFF000000u | (uint32_t)(r << 16 | g << 8 | (b > 255 ? 255 : b));
+        }
+    }
+}
+
+// Fundo escuro translúcido de bordas esbatidas atrás de um bloco de texto (como no DashDeck: a hora lê-se sobre
+// nuvens e céu claro sem tapar a paisagem). Coordenadas do ecrã (480); desenha-se no buffer baixo (antes do up2).
+static void scrim_lo(int x, int y, int w, int h, int a)
+{
+    const int F = 16;   // bordas largas e redondas: lê-se como sombra, não como painel
+    x /= 2; y /= 2; w = (w + 1) / 2; h = (h + 1) / 2;
+    x += 7; y += 6; w -= 14; h -= 12;
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    for (int j = y - F; j < y + h + F; j++) {
+        if (j < 0 || j >= LO) continue;
+        int dy = j < y ? y - j : (j >= y + h ? j - (y + h - 1) : 0);
+        for (int i = x - F; i < x + w + F; i++) {
+            if (i < 0 || i >= LO) continue;
+            int dx = i < x ? x - i : (i >= x + w ? i - (x + w - 1) : 0);
+            int d2 = dx * dx + dy * dy;                       // distância real: cantos redondos
+            if (d2 >= F * F) continue;
+            float u = 1 - sqrtf((float)d2) / F;               // 1 dentro .. 0 na borda
+            blend(i, j, 0x060A14, (int)(a * u * u * (3 - 2 * u)));   // queda suave (smoothstep)
         }
     }
 }
@@ -1931,7 +2037,7 @@ void anim_clock_draw(int face, uint32_t *buf, int w, int h, int stride, float t,
         char wx[40] = "";
         if (c->has_wx) snprintf(wx, sizeof(wx), "%d\xC2\xB0  %d/%d  CHUVA %d%%", c->temp, c->tmax, c->tmin, c->rain);
         away_t a = {.time = c->time, .date = c->date, .bat = c->bat, .chg = c->chg, .pending = -1, .sd = true,
-                    .status = wx, .shift = c->shift};
+                    .status = wx, .shift = c->shift, .sky = &c->sky};
         anim_away_draw(buf, w, h, stride, t, &a);
         return;
     }
@@ -1948,12 +2054,21 @@ void anim_clock_draw(int face, uint32_t *buf, int w, int h, int stride, float t,
         particles(c->anim, c->night, t);
     } else if (face == 0) {   // a cena ainda não chegou
         fill(0x101830);
-    } else {
-        aurora_scene(t);
+    } else {   // aurora: a cena composta para o quadrado, com o céu de agora (dia, crepúsculo, noite, nuvens)
+        about_aurora(t, &c->sky);
+        particles(c->anim, c->night, t);
+    }
+    // scrim atrás da hora e da previsão (nuvens e céu claro não as escondem)
+    int dx = (c->shift % 3 - 1) * 4, dy = (c->shift / 3 - 1) * 4;   // desloca-se um pouco a cada minuto (AMOLED)
+    int tsc = face == 0 ? 7 : 8, ttw = pfont_width(c->time, tsc) + 4 * tsc;
+    int tx = face == 0 ? 28 + dx : w / 2 - ttw / 2, ty = face == 0 ? 26 + dy : 30 + dy;
+    scrim_lo(tx - 6, ty - 6, ttw + 12, 7 * tsc + tsc + 2 + 16 + 12, 100);
+    if (c->has_wx) {
+        int wy = face == 0 ? 30 : h - 82;
+        scrim_lo(w - 30 - 200, wy - 6, 206, 66, 100);
     }
     up2(buf, w, h, stride);
     B = buf; BW = w; BH = h; BS = stride;
-    int dx = (c->shift % 3 - 1) * 4, dy = (c->shift / 3 - 1) * 4;   // desloca-se um pouco a cada minuto (AMOLED)
     if (face == 0) time_block(28 + dx, 26 + dy, 7, t, c, 0xFFFFFF, 0x6A7488, 0x0E1020);
     else time_block(-1, 30 + dy, 8, t, c, 0xEFFFF8, 0x2E6A60, 0x07161C);
     wx_block(c, face == 0 ? 0x0E1020 : 0x07161C, face == 0);   // na paisagem, em cima (em baixo está a casa)

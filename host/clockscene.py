@@ -382,6 +382,22 @@ def light(minute: int, sr: int, ss: int) -> float:
     return _clamp((sun_elev(minute, sr, ss) + .12) / .4)
 
 
+def sky_state(minute: int, kind: str, sr: int, ss: int, epoch: float) -> dict:
+    """O céu de agora para as faces do DashDeck³ que o desenham no cubo (aurora, relógio colorido), com as contas
+    da paisagem: l luz do dia, g brilho do nascer/pôr do sol, cf nuvens (0..100); sun/moon posição no arco
+    (0..100, -1 = fora do céu); ph fase da lua (0..100, 50 = cheia)."""
+    cf = CLOUD_FACTOR.get(kind, 0)
+    e = sun_elev(minute, sr, ss)
+    g = _clamp(1 - abs(e) / .3) * (1 - cf * .6)
+    sun = round(_clamp((minute - sr) / (ss - sr)) * 100) if e > -.08 else -1
+    moon = -1
+    if e < .05:
+        p = ((minute - ss + 1440) % 1440) / (1440 - (ss - sr))
+        moon = round(p * 100) if p <= 1 else -1
+    return {"l": round(light(minute, sr, ss) * 100), "g": round(g * 100), "cf": round(cf * 100),
+            "sun": sun, "moon": moon, "ph": round(moon_phase(epoch) * 100) % 100}
+
+
 def render_scene(w: int, h: int, minute: int, kind: str, sr: int, ss: int, epoch: float,
                  scene: str = "lago", winter: bool = False) -> Image.Image:
     """Paisagem sem a hora nem as partículas (essas são do ESP). Devolve uma imagem RGB w x h.
@@ -463,6 +479,8 @@ def render_scene(w: int, h: int, minute: int, kind: str, sr: int, ss: int, epoch
     drift = epoch / 60
     for _ in range(n_cl):
         x0, y0 = rc.random() * (w + 80), (12 + rc.random() * 62) * HZ / 150
+        if w == h:   # DashDeck³ (quadrado): a hora e a previsão ocupam o cimo; as nuvens ficam por baixo delas
+            y0 = 74 + (y0 * 150 / HZ - 12) / 62 * 48
         cw, sp = 18 + rc.random() * 30, 2 + rc.random() * 4
         blobs = [(rc.random(), rc.random() * .5, .5 + rc.random() * .5) for _ in range(4)]
         cx = (x0 + drift * sp) % (w + 80) - 40

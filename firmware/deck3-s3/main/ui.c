@@ -2271,6 +2271,16 @@ static void clock_apply(const cJSON *scr)
     d->anim = !an ? CLK_NONE : !strcmp(an, "rain") ? CLK_RAIN : !strcmp(an, "storm") ? CLK_STORM
             : !strcmp(an, "snow") ? CLK_SNOW : CLK_NONE;
     d->night = cJSON_IsTrue(cJSON_GetObjectItem(c, "night"));
+    const cJSON *sk = cJSON_GetObjectItem(c, "sky");   // céu real: luz, crepúsculo, nuvens, sol, lua
+    d->sky.ok = cJSON_IsObject(sk);
+    if (d->sky.ok) {
+        d->sky.l = jint(sk, "l", 0);
+        d->sky.g = jint(sk, "g", 0);
+        d->sky.cf = jint(sk, "cf", 0);
+        d->sky.sun = jint(sk, "sun", -1);
+        d->sky.moon = jint(sk, "moon", -1);
+        d->sky.ph = jint(sk, "ph", 50);
+    }
     const cJSON *pj = cJSON_GetObjectItem(c, "pet");   // [x da casa, base, luz 0..100, 1 brinca|0 dorme]
     if (cJSON_GetArraySize(pj) >= 4) {
         d->pet_x = cJSON_GetArrayItem(pj, 0)->valueint;

@@ -2946,6 +2946,7 @@ class ClockProvider(Provider):
         if wx:
             clock["wx"] = {k: wx[k] for k in ("t", "max", "min", "rain", "wind")}
             clock["icon"] = self.cs.weather_icon(kind, night)
+        clock["sky"] = self.cs.sky_state(minute, kind, sr, ss, time.time())   # céu real nas faces do cubo
         scr = {"tpl": "clock", "clock": clock}
         if self.face == 2:
             hours, icons, keys = [], [], []
